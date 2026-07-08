@@ -1,9 +1,13 @@
 from io import StringIO
 
 from config import MOVE_TIME_PER_CELL
-from game import AirbornePiece, GameState, MovingPiece, handle_click, handle_jump, handle_print_board, handle_wait, resolve_arrival, run
-from movement_rules import can_move
+from game import run
+from handlers.click import handle_click
+from handlers.jump import handle_jump
+from handlers.print_board import handle_print_board
+from handlers.wait import handle_wait, resolve_arrival
 from piece import EMPTY
+from state import AirbornePiece, GameState, MovingPiece
 
 
 def make_state(board):
