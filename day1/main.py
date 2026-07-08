@@ -1,6 +1,22 @@
+# Test suite: https://github.com/neomi12345678/KFChess
+
 import sys
+from dataclasses import dataclass
+
 from board import parse_board, validate_board
-from pieces import can_move
+from config import CELL_SIZE, MOVE_TIME_PER_CELL
+from piece import EMPTY, color, is_empty
+from pieces import can_move, on_arrival
+
+
+@dataclass
+class MovingPiece:
+    piece: str
+    sr: int
+    sc: int
+    r: int
+    c: int
+    remaining: int
 
 
 lines = [line.strip() for line in sys.stdin.read().splitlines()]
@@ -55,8 +71,8 @@ if "Commands:" in lines:
                 continue
 
 
-            c = x // 100
-            r = y // 100
+            c = x // CELL_SIZE
+            r = y // CELL_SIZE
 
 
             if r < 0 or r >= rows or c < 0 or c >= cols:
@@ -66,28 +82,19 @@ if "Commands:" in lines:
 
             cell = board[r][c]
 
-
             if selected is None:
-
-                if cell != ".":
+                if not is_empty(cell):
                     selected = (r, c)
-
-
             else:
-
                 sr, sc = selected
                 piece = board[sr][sc]
 
-
-                if cell != "." and cell[0] == piece[0]:
+                if not is_empty(cell) and color(cell) == color(piece):
                     selected = (r, c)
-
-
                 else:
-
                     if can_move(board, piece, sr, sc, r, c, rows):
                         distance = max(abs(r - sr), abs(c - sc))
-                        moving_piece = (piece, sr, sc, r, c, distance * 1000)
+                        moving_piece = MovingPiece(piece, sr, sc, r, c, distance * MOVE_TIME_PER_CELL)
                         selected = None
 
 
@@ -102,37 +109,31 @@ if "Commands:" in lines:
             t = int(cmd[1])
 
             if moving_piece is not None:
-                piece, sr, sc, r, c, remaining = moving_piece
+                piece = moving_piece.piece
+                sr = moving_piece.sr
+                sc = moving_piece.sc
+                r = moving_piece.r
+                c = moving_piece.c
+                remaining = moving_piece.remaining
 
                 remaining -= t
                 if remaining <= 0:
-
                     target = board[r][c]
 
                     # אם יש כלי של אותו צד ביעד - אי אפשר לנחות עליו
-                    if target != "." and target[0] == piece[0]:
+                    if not is_empty(target) and color(target) == color(piece):
                         moving_piece = None
                         selected = None
-
                     else:
-                        # שומרים מה היה במשבצת לפני האכילה
                         captured = board[r][c]
-                    
-                        board[r][c] = piece
-                        board[sr][sc] = "."
-                        if piece == "wP" and r == 0:
-                            board[r][c] = "wQ"
-
-                        elif piece == "bP" and r == rows-1:
-                            board[r][c] = "bQ"
-                        
+                        board[r][c] = on_arrival(piece, r, rows)
+                        board[sr][sc] = EMPTY
                         moving_piece = None
-                    
+
                         # אכלנו מלך - המשחק נגמר
                         if captured == "wK" or captured == "bK":
                             game_over = True
                 else:
-                    moving_piece = (piece, sr, sc, r, c, remaining)
-                                    
+                    moving_piece = MovingPiece(piece, sr, sc, r, c, remaining)
 
         i += 1

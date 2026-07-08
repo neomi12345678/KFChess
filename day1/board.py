@@ -1,6 +1,9 @@
+from piece import EMPTY
+
+
 def validate_board(board):
     legal = {
-        ".",
+        EMPTY,
         "wK", "wQ", "wR", "wB", "wN", "wP",
         "bK", "bQ", "bR", "bB", "bN", "bP"
     }
