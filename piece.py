@@ -1,9 +1,18 @@
-from config import KING_KIND
+from config import (
+    BISHOP_KIND,
+    BLACK_COLOR,
+    KING_KIND,
+    KNIGHT_KIND,
+    PAWN_KIND,
+    QUEEN_KIND,
+    ROOK_KIND,
+    WHITE_COLOR,
+)
 
 EMPTY = "."
 
-PIECE_TYPES = {'K', 'Q', 'R', 'B', 'N', 'P'}
-PIECE_COLORS = {'w', 'b'}
+PIECE_TYPES = {KING_KIND, QUEEN_KIND, ROOK_KIND, BISHOP_KIND, KNIGHT_KIND, PAWN_KIND}
+PIECE_COLORS = {WHITE_COLOR, BLACK_COLOR}
 
 
 def make(piece_color, piece_kind):
@@ -23,9 +32,7 @@ def kind(piece):
 
 
 def other_color(c):
-    return 'b' if c == 'w' else 'w'
-
-from config import KING_KIND
+    return BLACK_COLOR if c == WHITE_COLOR else WHITE_COLOR
 
 
 def is_king(piece):

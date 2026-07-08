@@ -1,5 +1,5 @@
 from piece import color, kind, is_empty
-from config import BISHOP_KIND, KING_KIND, KNIGHT_KIND, PAWN_KIND, QUEEN_KIND, ROOK_KIND
+from config import BISHOP_KIND, KING_KIND, KNIGHT_KIND, PAWN_KIND, QUEEN_KIND, ROOK_KIND, WHITE_COLOR
 
 REQUIRES_PATH = {ROOK_KIND, BISHOP_KIND, QUEEN_KIND}
 
@@ -59,8 +59,8 @@ def pawn_rule(board, piece, sr, sc, r, c, rows):
     dr = r - sr
     dc = abs(c - sc)
     piece_color = color(piece)
-    forward = -1 if piece_color == 'w' else 1
-    start_row = rows - 1 if piece_color == 'w' else 0
+    forward = -1 if piece_color == WHITE_COLOR else 1
+    start_row = rows - 1 if piece_color == WHITE_COLOR else 0
 
     if dr == forward and dc == 0 and is_empty(board[r][c]):
         return True

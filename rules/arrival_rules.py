@@ -1,5 +1,5 @@
 from piece import color, kind, make
-from config import PAWN_KIND, QUEEN_KIND
+from config import PAWN_KIND, QUEEN_KIND, WHITE_COLOR
 
 """Arrival rules for pieces.
 
@@ -13,7 +13,7 @@ promoting", the piece model would need additional state (for example,
 def pawn_promotion(piece, r, rows):
     assert kind(piece) == PAWN_KIND
 
-    last_row = 0 if color(piece) == 'w' else rows - 1
+    last_row = 0 if color(piece) == WHITE_COLOR else rows - 1
     if r == last_row:
         return make(color(piece), QUEEN_KIND)
     return piece

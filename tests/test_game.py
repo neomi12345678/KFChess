@@ -143,6 +143,23 @@ def test_handle_jump_out_of_bounds_ignored():
     assert state.airborne_pieces == []
 
 
+def test_handle_jump_negative_coordinates_ignored():
+    state = make_state([['wN', '.'], ['.', '.']])
+
+    handle_jump(state, -10, 50)
+
+    assert state.airborne_pieces == []
+
+
+def test_handle_jump_clears_selection_of_jumped_cell():
+    state = make_state([['wN', '.'], ['.', '.']])
+    state.selected = (0, 0)
+
+    handle_jump(state, 50, 50)
+
+    assert state.selected is None
+
+
 def test_print_board_while_airborne_shows_piece_unchanged():
     state = make_state([['wN', '.'], ['.', '.']])
     handle_jump(state, 50, 50)
@@ -160,6 +177,17 @@ def test_wait_removes_airborne_after_jump_time_and_board_unchanged():
     handle_wait(state, 1000)
 
     assert state.airborne_pieces == []
+    assert state.board == [['wN', '.'], ['.', '.']]
+
+
+def test_handle_wait_partial_tick_keeps_airborne_piece_counting_down():
+    state = make_state([['wN', '.'], ['.', '.']])
+    state.airborne_pieces.append(AirbornePiece(piece='wN', r=0, c=0, remaining=1000))
+
+    handle_wait(state, 400)
+
+    assert len(state.airborne_pieces) == 1
+    assert state.airborne_pieces[0].remaining == 600
     assert state.board == [['wN', '.'], ['.', '.']]
 
 
