@@ -1,6 +1,7 @@
 from config import JUMP_TIME_MS
+from coords import pixel_to_cell
 from piece import is_empty
-from state import AirbornePiece, GameState, pixel_to_cell
+from state import AirbornePiece, GameState
 
 
 def handle_jump(state: GameState, x: int, y: int) -> None:

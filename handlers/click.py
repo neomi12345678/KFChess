@@ -1,7 +1,8 @@
 from config import MOVE_TIME_PER_CELL
+from coords import pixel_to_cell
 from piece import color, is_empty
 from rules.movement_rules import can_move
-from state import GameState, MovingPiece, pixel_to_cell
+from state import GameState, MovingPiece
 
 
 def handle_click(state: GameState, x: int, y: int) -> None:
