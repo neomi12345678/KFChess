@@ -1,0 +1,12 @@
+Board
+. . .
+. wQ .
+. . .
+
+click 150 150
+click 50 50
+wait 1000
+print board
+wQ . .
+. . .
+. . .
