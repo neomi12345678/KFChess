@@ -23,6 +23,16 @@ def test_validate_move_rejects_outside_board_destination():
     assert result.reason == "outside_board"
 
 
+def test_validate_move_rejects_outside_board_source():
+    board = parse(". . .\n. wR .\n. . .")
+    engine = RuleEngine()
+
+    result = engine.validate_move(board, Position(-1, -1), Position(1, 1))
+
+    assert result.is_valid is False
+    assert result.reason == "outside_board"
+
+
 def test_validate_move_rejects_empty_source():
     board = parse(". . .\n. . .\n. . .")
     engine = RuleEngine()
