@@ -1,0 +1,12 @@
+Board
+wR . .
+. . .
+. . bK
+
+click 50 50
+click 250 50
+wait 2000
+print board
+. . wR
+. . .
+. . bK
