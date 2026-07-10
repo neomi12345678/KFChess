@@ -35,6 +35,20 @@ def test_parse_rejects_illegal_piece_token():
         parse("wK . .\n. wZ .\n. . bK")
 
 
+def test_row_width_mismatch_error_has_structured_code():
+    with pytest.raises(BoardParseError) as excinfo:
+        parse("wK . .\n. bK")
+
+    assert excinfo.value.code == "ROW_WIDTH_MISMATCH"
+
+
+def test_unknown_token_error_has_structured_code():
+    with pytest.raises(BoardParseError) as excinfo:
+        parse("wK xZ\n. .")
+
+    assert excinfo.value.code == "UNKNOWN_TOKEN"
+
+
 def test_parse_empty_text_returns_empty_board():
     board = parse("")
 

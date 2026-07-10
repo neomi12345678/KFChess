@@ -5,6 +5,7 @@ from model.position import Position
 IDLE = "idle"
 MOVING = "moving"
 CAPTURED = "captured"
+AIRBORNE = "airborne"
 
 
 @dataclass

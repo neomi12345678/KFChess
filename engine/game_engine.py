@@ -16,6 +16,12 @@ class MoveResult:
 
 
 @dataclass
+class JumpResult:
+    is_accepted: bool
+    reason: str
+
+
+@dataclass
 class PieceSnapshot:
     id: str
     kind: str
@@ -56,6 +62,19 @@ class GameEngine:
         self._real_time_arbiter.start_motion(piece, source, destination)
 
         return MoveResult(is_accepted=True, reason="ok")
+
+    def request_jump(self, position: Position) -> JumpResult:
+        if self.game_over:
+            return JumpResult(is_accepted=False, reason="game_over")
+
+        piece = self._board.get_piece(position)
+        if piece is None:
+            return JumpResult(is_accepted=False, reason="empty_cell")
+
+        if not self._real_time_arbiter.start_jump(piece):
+            return JumpResult(is_accepted=False, reason="piece_is_moving")
+
+        return JumpResult(is_accepted=True, reason="ok")
 
     def wait(self, ms: int) -> None:
         events = self._real_time_arbiter.advance_time(ms)

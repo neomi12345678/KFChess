@@ -8,6 +8,7 @@ from rules.rule_engine import RuleEngine
 from texttests.script_parser import (
     AssertPrintBoardInstruction,
     ClickInstruction,
+    JumpInstruction,
     SetBoardInstruction,
     WaitInstruction,
     parse,
@@ -33,6 +34,8 @@ class ScriptRunner:
             self._set_board("\n".join(instruction.rows))
         elif isinstance(instruction, ClickInstruction):
             self.controller.click(instruction.x, instruction.y)
+        elif isinstance(instruction, JumpInstruction):
+            self.controller.jump(instruction.x, instruction.y)
         elif isinstance(instruction, WaitInstruction):
             self.game_engine.wait(instruction.ms)
         elif isinstance(instruction, AssertPrintBoardInstruction):

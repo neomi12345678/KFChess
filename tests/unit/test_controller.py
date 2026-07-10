@@ -10,9 +10,13 @@ from rules.rule_engine import RuleEngine
 class FakeGameEngine:
     def __init__(self):
         self.requested_moves = []
+        self.requested_jumps = []
 
     def request_move(self, source, destination):
         self.requested_moves.append((source, destination))
+
+    def request_jump(self, position):
+        self.requested_jumps.append(position)
 
 
 def make_controller(board_text):
@@ -74,15 +78,54 @@ def test_second_in_board_click_sends_move_request_and_clears_selection():
 
 
 def test_selection_clears_after_second_click_even_when_the_engine_rejects_the_move():
-    board = parse("wK wP .\n. . .\n. . .")
+    board = parse("wK . .\n. . .\n. . .")
     mapper = BoardMapper(width=board.width, height=board.height)
     engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=RealTimeArbiter(board))
     controller = Controller(board=board, board_mapper=mapper, game_engine=engine)
     controller.click(50, 50)
 
-    result = controller.click(150, 50)
+    result = controller.click(250, 250)
 
     assert controller.selected is None
     assert result.move_requested is True
     assert board.get_piece(Position(0, 0)) is not None
-    assert board.get_piece(Position(0, 1)) is not None
+    assert board.get_piece(Position(2, 2)) is None
+
+
+def test_clicking_another_own_piece_switches_selection_instead_of_requesting_a_move():
+    controller, engine = make_controller("wK . wR\n. . .\n. . .")
+    controller.click(50, 50)
+
+    result = controller.click(250, 50)
+
+    assert controller.selected == Position(0, 2)
+    assert result.selected == Position(0, 2)
+    assert result.move_requested is False
+    assert engine.requested_moves == []
+
+
+def test_clicking_an_enemy_piece_still_requests_a_move():
+    controller, engine = make_controller("wK . bR\n. . .\n. . .")
+    controller.click(50, 50)
+
+    result = controller.click(250, 50)
+
+    assert engine.requested_moves == [(Position(0, 0), Position(0, 2))]
+    assert controller.selected is None
+    assert result.move_requested is True
+
+
+def test_jump_forwards_the_mapped_cell_to_the_game_engine():
+    controller, engine = make_controller("wK . .\n. . .\n. . .")
+
+    controller.jump(50, 50)
+
+    assert engine.requested_jumps == [Position(0, 0)]
+
+
+def test_jump_outside_the_board_is_ignored():
+    controller, engine = make_controller("wK . .\n. . .\n. . .")
+
+    controller.jump(-10, 50)
+
+    assert engine.requested_jumps == []

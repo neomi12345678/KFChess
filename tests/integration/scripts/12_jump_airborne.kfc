@@ -1,12 +1,13 @@
 Board
 . . .
-. wP .
+wK bR .
 . . .
 
+jump 50 150
 click 150 150
-click 150 50
+click 50 150
 wait 1000
 print board
-. wQ .
 . . .
+wK . .
 . . .

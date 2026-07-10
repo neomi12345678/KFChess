@@ -31,7 +31,19 @@ class Controller:
                 self.selected = cell
             return ControllerResult(selected=self.selected, move_requested=False)
 
+        clicked_piece = self._board.get_piece(cell)
+        selected_piece = self._board.get_piece(self.selected)
+        if clicked_piece is not None and selected_piece is not None and clicked_piece.color == selected_piece.color:
+            self.selected = cell
+            return ControllerResult(selected=self.selected, move_requested=False)
+
         source = self.selected
         self.selected = None
         self._game_engine.request_move(source, cell)
         return ControllerResult(selected=None, move_requested=True)
+
+    def jump(self, x: int, y: int):
+        cell = self._board_mapper.pixel_to_cell(x, y)
+        if cell is None:
+            return None
+        return self._game_engine.request_jump(cell)

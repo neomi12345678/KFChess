@@ -79,11 +79,18 @@ class PawnRule:
     def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]:
         destinations = set()
         forward = -1 if piece.color == "w" else 1
+        start_row = board.height - 1 if piece.color == "w" else 0
         row = piece.cell.row + forward
 
         forward_position = Position(row, piece.cell.col)
-        if board.is_in_bounds(forward_position) and board.get_piece(forward_position) is None:
+        forward_open = board.is_in_bounds(forward_position) and board.get_piece(forward_position) is None
+        if forward_open:
             destinations.add(forward_position)
+
+            if piece.cell.row == start_row:
+                double_position = Position(row + forward, piece.cell.col)
+                if board.is_in_bounds(double_position) and board.get_piece(double_position) is None:
+                    destinations.add(double_position)
 
         for dc in (-1, 1):
             capture_position = Position(row, piece.cell.col + dc)

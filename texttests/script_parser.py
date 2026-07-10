@@ -14,6 +14,12 @@ class ClickInstruction:
 
 
 @dataclass
+class JumpInstruction:
+    x: int
+    y: int
+
+
+@dataclass
 class WaitInstruction:
     ms: int
 
@@ -23,7 +29,9 @@ class AssertPrintBoardInstruction:
     expected_rows: List[str]
 
 
-Instruction = Union[SetBoardInstruction, ClickInstruction, WaitInstruction, AssertPrintBoardInstruction]
+Instruction = Union[
+    SetBoardInstruction, ClickInstruction, JumpInstruction, WaitInstruction, AssertPrintBoardInstruction
+]
 
 
 def parse(text: str) -> List[Instruction]:
@@ -45,6 +53,10 @@ def parse(text: str) -> List[Instruction]:
         elif line.startswith("click "):
             _, x, y = line.split()
             instructions.append(ClickInstruction(x=int(x), y=int(y)))
+            i += 1
+        elif line.startswith("jump "):
+            _, x, y = line.split()
+            instructions.append(JumpInstruction(x=int(x), y=int(y)))
             i += 1
         elif line.startswith("wait "):
             _, ms = line.split()

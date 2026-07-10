@@ -1,5 +1,6 @@
 from engine.game_engine import GameEngine
 from boardio.board_parser import parse
+from model.piece import AIRBORNE, MOVING
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
@@ -88,6 +89,46 @@ def test_non_king_capture_does_not_set_game_over_flag():
     engine.wait(2000)
 
     assert engine.game_over is False
+
+
+def test_request_jump_marks_the_piece_airborne():
+    board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
+
+    result = engine.request_jump(Position(1, 1))
+
+    assert result.is_accepted is True
+    assert result.reason == "ok"
+    assert board.get_piece(Position(1, 1)).state == AIRBORNE
+
+
+def test_request_jump_rejects_an_empty_cell():
+    board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
+
+    result = engine.request_jump(Position(0, 0))
+
+    assert result.is_accepted is False
+    assert result.reason == "empty_cell"
+
+
+def test_request_jump_rejects_a_piece_that_is_already_moving():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    engine.request_move(Position(1, 1), Position(0, 1))
+
+    result = engine.request_jump(Position(1, 1))
+
+    assert result.is_accepted is False
+    assert result.reason == "piece_is_moving"
+    assert board.get_piece(Position(1, 1)).state == MOVING
+
+
+def test_request_jump_rejects_when_game_is_over():
+    board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
+    engine.game_over = True
+
+    result = engine.request_jump(Position(1, 1))
+
+    assert result.is_accepted is False
+    assert result.reason == "game_over"
 
 
 def test_snapshot_exposes_piece_data_without_returning_the_piece_object():

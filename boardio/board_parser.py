@@ -8,7 +8,9 @@ VALID_KINDS = {"K", "Q", "R", "B", "N", "P"}
 
 
 class BoardParseError(Exception):
-    pass
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
 
 
 def parse(text: str) -> Board:
@@ -21,7 +23,8 @@ def parse(text: str) -> Board:
     for r, row in enumerate(rows):
         if len(row) != width:
             raise BoardParseError(
-                f"inconsistent row length: row {r} has {len(row)} cells, expected {width}"
+                f"inconsistent row length: row {r} has {len(row)} cells, expected {width}",
+                code="ROW_WIDTH_MISMATCH",
             )
 
     board = Board(width=width, height=len(rows))
@@ -37,7 +40,7 @@ def parse(text: str) -> Board:
 
 def _parse_piece(token: str, r: int, c: int) -> Piece:
     if len(token) != 2 or token[0] not in VALID_COLORS or token[1] not in VALID_KINDS:
-        raise BoardParseError(f"illegal piece token '{token}' at row {r}, col {c}")
+        raise BoardParseError(f"illegal piece token '{token}' at row {r}, col {c}", code="UNKNOWN_TOKEN")
 
     color, kind = token[0], token[1]
     return Piece(id=f"{color}{kind}-{r}-{c}", color=color, kind=kind, cell=Position(r, c))
