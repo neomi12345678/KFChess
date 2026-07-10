@@ -1,7 +1,6 @@
+from config import EMPTY_TOKEN
 from model.board import Board
 from model.position import Position
-
-EMPTY_TOKEN = "."
 
 
 def print_board(board: Board) -> str:

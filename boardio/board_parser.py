@@ -1,8 +1,8 @@
+from config import EMPTY_TOKEN
 from model.board import Board
 from model.piece import Piece
 from model.position import Position
 
-EMPTY_TOKEN = "."
 VALID_COLORS = {"w", "b"}
 VALID_KINDS = {"K", "Q", "R", "B", "N", "P"}
 

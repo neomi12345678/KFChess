@@ -17,3 +17,7 @@ def test_position_is_hashable():
     positions = {Position(0, 0), Position(0, 0), Position(1, 0)}
 
     assert positions == {Position(0, 0), Position(1, 0)}
+
+
+def test_position_repr_is_readable():
+    assert repr(Position(2, 3)) == "Position(row=2, col=3)"

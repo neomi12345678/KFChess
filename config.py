@@ -1,0 +1,2 @@
+CELL_SIZE = 100
+EMPTY_TOKEN = "."

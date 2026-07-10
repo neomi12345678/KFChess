@@ -1,4 +1,6 @@
+# Git repo: https://github.com/neomi12345678/KFChess
 import sys
+from typing import IO, Optional
 
 from boardio.board_parser import BoardParseError, parse as parse_board
 from boardio.board_printer import print_board
@@ -62,9 +64,11 @@ def run(text: str) -> str:
     return "\n".join(outputs)
 
 
-def main() -> None:
-    print(run(sys.stdin.read()))
+def main(input_stream: Optional[IO[str]] = None, output_stream: Optional[IO[str]] = None) -> None:
+    input_stream = input_stream if input_stream is not None else sys.stdin
+    output_stream = output_stream if output_stream is not None else sys.stdout
+    output_stream.write(run(input_stream.read()) + "\n")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

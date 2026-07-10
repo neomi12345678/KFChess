@@ -1,12 +1,11 @@
 from dataclasses import dataclass
 from typing import List, Optional
 
+from config import CELL_SIZE
 from model.board import Board
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
-
-CELL_SIZE = 100
 
 
 @dataclass

@@ -1,8 +1,14 @@
-from typing import Iterable, Set, Tuple
+from typing import Iterable, Protocol, Set, Tuple
 
 from model.board import Board
 from model.piece import Piece
 from model.position import Position
+
+
+class PieceRule(Protocol):
+    def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]:
+        ...
+
 
 _ROOK_DIRECTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 _BISHOP_DIRECTIONS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]

@@ -1,4 +1,5 @@
-from engine.game_engine import CELL_SIZE, GameSnapshot
+from config import CELL_SIZE
+from engine.game_engine import GameSnapshot
 
 
 class Renderer:

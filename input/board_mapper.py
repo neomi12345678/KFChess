@@ -1,8 +1,7 @@
 from typing import Optional
 
+from config import CELL_SIZE
 from model.position import Position
-
-CELL_SIZE = 100
 
 
 class BoardMapper:

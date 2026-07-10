@@ -153,6 +153,18 @@ def test_snapshot_includes_the_selected_cell_when_given():
     assert snapshot.selected_cell == Position(0, 0)
 
 
+def test_snapshot_interpolates_pixels_for_a_piece_mid_motion():
+    board, engine, arbiter = make_engine(". . .\n. . .\n. . .\nwR . .")
+    engine.request_move(Position(3, 0), Position(1, 0))
+    arbiter.advance_time(500)
+
+    snapshot = engine.snapshot()
+
+    rook_snapshot = snapshot.pieces[0]
+    assert rook_snapshot.pixel_x == 50
+    assert rook_snapshot.pixel_y == 300
+
+
 def test_snapshot_reflects_game_over_flag():
     board, engine, arbiter = make_engine("wK . .\n. . .\n. . .")
     engine.game_over = True

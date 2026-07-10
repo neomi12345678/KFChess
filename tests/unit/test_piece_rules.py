@@ -247,6 +247,16 @@ def test_pawn_not_on_start_row_cannot_double_step():
     assert Position(0, 1) not in destinations
 
 
+def test_pawn_capture_check_skips_a_diagonal_that_is_off_the_board():
+    board = parse(". bP .\nwP . .\n. . .")
+    pawn = board.get_piece(Position(1, 0))
+
+    destinations = PawnRule().legal_destinations(board, pawn)
+
+    assert Position(0, 0) in destinations
+    assert Position(0, 1) in destinations
+
+
 def test_pawn_cannot_move_diagonally_without_a_capture():
     board = parse(". . .\n. wP .\n. . .")
     pawn = board.get_piece(Position(1, 1))
