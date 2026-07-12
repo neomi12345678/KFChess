@@ -96,6 +96,31 @@ def test_has_route_conflict_is_true_when_paths_share_a_cell():
     assert arbiter.has_route_conflict(Position(0, 3), Position(0, 0)) is True
 
 
+def test_has_route_conflict_is_false_for_paths_that_cross_the_same_cell_at_different_times():
+    board = parse(". . wR . .\n. . . . .\n. . . . .\nbR . . . .")
+    arbiter = RealTimeArbiter(board)
+    rook = board.get_piece(Position(0, 2))
+    arbiter.start_motion(rook, Position(0, 2), Position(2, 2))
+    arbiter.advance_time(1900)
+
+    # The vertical motion is almost done and long past (1, 2); a fresh
+    # horizontal move through (1, 2) wouldn't arrive there for a while - no
+    # real collision, even though the two paths share that grid cell.
+    assert arbiter.has_route_conflict(Position(1, 0), Position(1, 4)) is False
+
+
+def test_has_route_conflict_is_false_for_a_knight_shaped_move_even_when_its_endpoint_crosses_another_path():
+    board = parse("wR . .\n. . .\n. wN .")
+    arbiter = RealTimeArbiter(board)
+    rook = board.get_piece(Position(0, 0))
+    arbiter.start_motion(rook, Position(0, 0), Position(0, 2))
+
+    # (2, 1) -> (0, 0) is an L-shape, not a straight line, so it's exempt
+    # from route-conflict checking even though its endpoint (0, 0) lies on
+    # the rook's active path.
+    assert arbiter.has_route_conflict(Position(2, 1), Position(0, 0)) is False
+
+
 def test_two_pieces_can_move_at_once_on_non_overlapping_routes():
     board = parse("wR . .\n. . .\nbR . .")
     arbiter = RealTimeArbiter(board)

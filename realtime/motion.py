@@ -1,33 +1,24 @@
 from dataclasses import dataclass
-from typing import List
 
 from config import AIRBORNE_DURATION_MS, CELL_DURATION_MS
 from model.piece import Piece
 from model.position import Position
 
-
-def _sign(n: int) -> int:
-    return (n > 0) - (n < 0)
+_EPSILON = 1e-9
 
 
-# The cells a motion actually crosses, used to detect route conflicts
-# between two concurrently moving pieces. Orthogonal/diagonal moves are
-# walked cell-by-cell; anything else (a knight's L-shape) is treated as a
-# jump - only its source and destination count, matching how knights
-# already ignore what's in between.
-def compute_path(source: Position, destination: Position) -> List[Position]:
+# Anything that isn't a straight rank/file/diagonal line is treated as a
+# jump (a knight's L-shape) - it has no continuous path to collide along,
+# matching how knights already ignore what's in between.
+def is_straight_line(source: Position, destination: Position) -> bool:
     row_diff = destination.row - source.row
     col_diff = destination.col - source.col
+    return row_diff == 0 or col_diff == 0 or abs(row_diff) == abs(col_diff)
 
-    is_straight_line = row_diff == 0 or col_diff == 0 or abs(row_diff) == abs(col_diff)
-    if not is_straight_line:
-        return [source, destination]
 
-    row_step = _sign(row_diff)
-    col_step = _sign(col_diff)
-    steps = max(abs(row_diff), abs(col_diff))
-
-    return [Position(source.row + row_step * i, source.col + col_step * i) for i in range(steps + 1)]
+def motion_duration_ms(source: Position, destination: Position) -> int:
+    cells = max(abs(destination.row - source.row), abs(destination.col - source.col))
+    return cells * CELL_DURATION_MS
 
 
 # A piece currently traveling from source to destination.
@@ -40,17 +31,10 @@ class Motion:
 
     @property
     def duration_ms(self) -> int:
-        cells = max(
-            abs(self.destination.row - self.source.row),
-            abs(self.destination.col - self.source.col),
-        )
-        return cells * CELL_DURATION_MS
+        return motion_duration_ms(self.source, self.destination)
 
     def is_complete(self) -> bool:
         return self.elapsed_ms >= self.duration_ms
-
-    def path(self) -> List[Position]:
-        return compute_path(self.source, self.destination)
 
 
 # A piece that jumped and is temporarily immune where it stands - it
@@ -62,3 +46,64 @@ class Airborne:
 
     def is_expired(self) -> bool:
         return self.elapsed_ms >= AIRBORNE_DURATION_MS
+
+
+# A straight-line path through continuous space and time: at `source` when
+# `start_offset_ms` elapses (relative to "now"), at `destination` when
+# `start_offset_ms + duration_ms` elapses. A motion already in flight has
+# a negative start_offset_ms (it started in the past); a newly requested
+# move starts at offset 0.
+@dataclass(frozen=True)
+class Trajectory:
+    source: Position
+    destination: Position
+    duration_ms: int
+    start_offset_ms: int = 0
+
+    @property
+    def end_offset_ms(self) -> int:
+        return self.start_offset_ms + self.duration_ms
+
+
+# True if two straight-line trajectories would occupy the same point at
+# the same instant, somewhere within the time window both are in flight -
+# not just whether their paths cross the same grid cell, but whether
+# they'd actually be there together. Solves position_a(t) == position_b(t)
+# for row and column at once, restricted to their overlapping time window.
+def trajectories_collide(a: Trajectory, b: Trajectory) -> bool:
+    if a.duration_ms == 0 or b.duration_ms == 0:
+        return False
+
+    overlap_start = max(a.start_offset_ms, b.start_offset_ms)
+    overlap_end = min(a.end_offset_ms, b.end_offset_ms)
+    if overlap_start > overlap_end:
+        return False
+
+    row_rate_a = (a.destination.row - a.source.row) / a.duration_ms
+    col_rate_a = (a.destination.col - a.source.col) / a.duration_ms
+    row_rate_b = (b.destination.row - b.source.row) / b.duration_ms
+    col_rate_b = (b.destination.col - b.source.col) / b.duration_ms
+
+    # Equating position_a(t) == position_b(t) per axis reduces to a linear
+    # equation coeff * t == offset; a shared collision time must satisfy
+    # both the row and the column equation at once.
+    row_coeff = row_rate_a - row_rate_b
+    row_offset = (b.source.row - a.source.row) + row_rate_a * a.start_offset_ms - row_rate_b * b.start_offset_ms
+    col_coeff = col_rate_a - col_rate_b
+    col_offset = (b.source.col - a.source.col) + col_rate_a * a.start_offset_ms - col_rate_b * b.start_offset_ms
+
+    collision_time = None
+    if abs(row_coeff) > _EPSILON:
+        candidate = row_offset / row_coeff
+        if abs(col_coeff) > _EPSILON:
+            if abs(col_coeff * candidate - col_offset) < _EPSILON:
+                collision_time = candidate
+        elif abs(col_offset) < _EPSILON:
+            collision_time = candidate
+    elif abs(row_offset) < _EPSILON:
+        if abs(col_coeff) > _EPSILON:
+            collision_time = col_offset / col_coeff
+        elif abs(col_offset) < _EPSILON:
+            collision_time = overlap_start
+
+    return collision_time is not None and overlap_start - _EPSILON <= collision_time <= overlap_end + _EPSILON

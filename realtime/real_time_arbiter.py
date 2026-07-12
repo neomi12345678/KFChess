@@ -4,7 +4,7 @@ from typing import List, Optional
 from model.board import BoardRepresentation
 from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, Piece
 from model.position import Position
-from realtime.motion import Airborne, Motion, compute_path
+from realtime.motion import Airborne, Motion, Trajectory, is_straight_line, motion_duration_ms, trajectories_collide
 from rules.rule_engine import LastRankPromotion, PromotionRule
 
 
@@ -30,12 +30,29 @@ class RealTimeArbiter:
     def get_airborne_pieces(self) -> List[Piece]:
         return [airborne.piece for airborne in self._airborne_states]
 
-    # True if the requested path shares a cell with any motion already in
-    # flight - lets unrelated pieces move concurrently while still
-    # preventing two pieces from crossing paths at the same time.
+    # True if the requested move would put this piece at the same point at
+    # the same instant as an already in-flight motion - a continuous-time
+    # check, not just "do the paths cross the same grid cell": two paths
+    # that cross in space but at different times are not a conflict.
+    # Knight-shaped moves (not a straight line) have no continuous path to
+    # collide along and are exempt on either side, treated purely as a
+    # jump from source straight to destination.
     def has_route_conflict(self, source: Position, destination: Position) -> bool:
-        requested_path = set(compute_path(source, destination))
-        return any(requested_path.intersection(motion.path()) for motion in self._active_motions)
+        if not is_straight_line(source, destination):
+            return False
+
+        requested = Trajectory(source, destination, motion_duration_ms(source, destination))
+
+        for motion in self._active_motions:
+            if not is_straight_line(motion.source, motion.destination):
+                continue
+            in_flight = Trajectory(
+                motion.source, motion.destination, motion.duration_ms, start_offset_ms=-motion.elapsed_ms
+            )
+            if trajectories_collide(in_flight, requested):
+                return True
+
+        return False
 
     def start_motion(self, piece: Piece, source: Position, destination: Position) -> None:
         self._active_motions.append(Motion(piece=piece, source=source, destination=destination))
