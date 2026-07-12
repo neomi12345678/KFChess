@@ -3,12 +3,12 @@ import sys
 from typing import IO, Optional
 
 from boardio.board_parser import BoardParseError, parse as parse_board
-from boardio.board_printer import print_board
 from engine.game_engine import GameEngine
 from input.board_mapper import BoardMapper
 from input.controller import Controller
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
+from texttests.script_runner import run_commands
 
 
 def _split_sections(text: str):
@@ -48,18 +48,7 @@ def run(text: str) -> str:
     controller = Controller(board=board, board_mapper=board_mapper, game_engine=game_engine)
 
     outputs = []
-    for line in command_lines:
-        parts = line.split()
-        command = parts[0]
-
-        if command == "click":
-            controller.click(int(parts[1]), int(parts[2]))
-        elif command == "jump":
-            controller.jump(int(parts[1]), int(parts[2]))
-        elif command == "wait":
-            game_engine.wait(int(parts[1]))
-        elif command == "print" and len(parts) > 1 and parts[1] == "board":
-            outputs.append(print_board(board))
+    run_commands(command_lines, controller, game_engine, board, print_fn=outputs.append)
 
     return "\n".join(outputs)
 

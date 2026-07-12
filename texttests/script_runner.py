@@ -1,58 +1,27 @@
-from engine.game_engine import GameEngine
-from input.board_mapper import BoardMapper
-from input.controller import Controller
-from boardio.board_parser import parse as parse_board
+from typing import Callable, List
+
 from boardio.board_printer import print_board
-from realtime.real_time_arbiter import RealTimeArbiter
-from rules.rule_engine import RuleEngine
-from texttests.script_parser import (
-    AssertPrintBoardInstruction,
-    ClickInstruction,
-    JumpInstruction,
-    SetBoardInstruction,
-    WaitInstruction,
-    parse,
-)
+from model.board import Board
+from texttests.script_parser import parse_line
 
 
-class ScriptAssertionError(Exception):
-    pass
+def run_commands(
+    lines: List[str],
+    controller,
+    game_engine,
+    board: Board,
+    print_fn: Callable[[str], None] = print,
+) -> None:
+    for line in lines:
+        command = parse_line(line)
+        if command is None:
+            continue
 
-
-class ScriptRunner:
-    def __init__(self):
-        self.board = None
-        self.controller = None
-        self.game_engine = None
-
-    def run(self, text: str) -> None:
-        for instruction in parse(text):
-            self._execute(instruction)
-
-    def _execute(self, instruction) -> None:
-        if isinstance(instruction, SetBoardInstruction):
-            self._set_board("\n".join(instruction.rows))
-        elif isinstance(instruction, ClickInstruction):
-            self.controller.click(instruction.x, instruction.y)
-        elif isinstance(instruction, JumpInstruction):
-            self.controller.jump(instruction.x, instruction.y)
-        elif isinstance(instruction, WaitInstruction):
-            self.game_engine.wait(instruction.ms)
-        elif isinstance(instruction, AssertPrintBoardInstruction):
-            actual = print_board(self.board)
-            expected = "\n".join(instruction.expected_rows)
-            if actual != expected:
-                raise ScriptAssertionError(
-                    f"print board mismatch:\nexpected:\n{expected}\nactual:\n{actual}"
-                )
-
-    def _set_board(self, text: str) -> None:
-        self.board = parse_board(text)
-        real_time_arbiter = RealTimeArbiter(self.board)
-        self.game_engine = GameEngine(
-            board=self.board, rule_engine=RuleEngine(), real_time_arbiter=real_time_arbiter
-        )
-        board_mapper = BoardMapper(width=self.board.width, height=self.board.height)
-        self.controller = Controller(
-            board=self.board, board_mapper=board_mapper, game_engine=self.game_engine
-        )
+        if command.name == "click":
+            controller.click(int(command.args[0]), int(command.args[1]))
+        elif command.name == "jump":
+            controller.jump(int(command.args[0]), int(command.args[1]))
+        elif command.name == "wait":
+            game_engine.wait(int(command.args[0]))
+        elif command.name == "print" and command.args[:1] == ["board"]:
+            print_fn(print_board(board))
