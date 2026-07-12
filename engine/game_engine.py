@@ -3,7 +3,7 @@ from typing import List, Optional
 
 from config import CELL_SIZE
 from model.board import Board
-from model.piece import KING, MOVING
+from model.piece import AIRBORNE, KING, MOVING
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
@@ -54,6 +54,9 @@ class GameEngine:
         piece = self._board.get_piece(source)
         if piece is not None and piece.state == MOVING:
             return MoveResult(is_accepted=False, reason="motion_in_progress")
+
+        if piece is not None and piece.state == AIRBORNE:
+            return MoveResult(is_accepted=False, reason="piece_is_airborne")
 
         if self._real_time_arbiter.has_route_conflict(source, destination):
             return MoveResult(is_accepted=False, reason="route_conflict")

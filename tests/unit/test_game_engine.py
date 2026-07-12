@@ -63,6 +63,17 @@ def test_request_move_rejects_a_second_move_while_a_motion_is_active():
     assert result.reason == "motion_in_progress"
 
 
+def test_request_move_rejects_a_piece_that_is_currently_airborne():
+    board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
+    engine.request_jump(Position(1, 1))
+
+    result = engine.request_move(Position(1, 1), Position(0, 1))
+
+    assert result.is_accepted is False
+    assert result.reason == "piece_is_airborne"
+    assert arbiter.has_active_motion() is False
+
+
 def test_request_move_allows_two_pieces_to_move_concurrently_on_non_overlapping_routes():
     board, engine, arbiter = make_engine("wR . .\n. . .\nbR . .")
 
