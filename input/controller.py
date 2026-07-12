@@ -3,6 +3,7 @@ from typing import Optional
 
 from input.board_mapper import BoardMapper
 from model.board import Board
+from model.piece import MOVING
 from model.position import Position
 
 
@@ -34,7 +35,8 @@ class Controller:
         clicked_piece = self._board.get_piece(cell)
         selected_piece = self._board.get_piece(self.selected)
         if clicked_piece is not None and selected_piece is not None and clicked_piece.color == selected_piece.color:
-            self.selected = cell
+            if clicked_piece.state != MOVING:
+                self.selected = cell
             return ControllerResult(selected=self.selected, move_requested=False)
 
         source = self.selected

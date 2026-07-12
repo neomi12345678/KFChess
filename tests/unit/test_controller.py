@@ -104,6 +104,22 @@ def test_clicking_another_own_piece_switches_selection_instead_of_requesting_a_m
     assert engine.requested_moves == []
 
 
+def test_clicking_a_friendly_piece_that_is_moving_does_not_switch_selection():
+    board = parse("wR . wK\n. . .")
+    mapper = BoardMapper(width=board.width, height=board.height)
+    engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=RealTimeArbiter(board))
+    controller = Controller(board=board, board_mapper=mapper, game_engine=engine)
+    controller.click(50, 50)
+    controller.click(50, 150)
+    controller.click(250, 50)
+
+    result = controller.click(50, 50)
+
+    assert controller.selected == Position(0, 2)
+    assert result.selected == Position(0, 2)
+    assert result.move_requested is False
+
+
 def test_clicking_an_enemy_piece_still_requests_a_move():
     controller, engine = make_controller("wK . bR\n. . .\n. . .")
     controller.click(50, 50)
