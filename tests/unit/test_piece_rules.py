@@ -209,37 +209,37 @@ def test_pawn_has_no_initial_two_step_move():
 
 
 def test_white_pawn_on_start_row_can_move_two_squares():
-    board = parse(". . .\n. . .\n. . .\n. wP .")
-    pawn = board.get_piece(Position(3, 1))
+    board = parse(". . .\n. . .\n. wP .\n. . .")
+    pawn = board.get_piece(Position(2, 1))
 
     destinations = PawnRule().legal_destinations(board, pawn)
 
     assert Position(1, 1) in destinations
-    assert Position(2, 1) in destinations
+    assert Position(0, 1) in destinations
 
 
 def test_black_pawn_on_start_row_can_move_two_squares():
-    board = parse(". bP .\n. . .\n. . .\n. . .")
-    pawn = board.get_piece(Position(0, 1))
+    board = parse(". . .\n. bP .\n. . .\n. . .")
+    pawn = board.get_piece(Position(1, 1))
 
     destinations = PawnRule().legal_destinations(board, pawn)
 
     assert Position(2, 1) in destinations
-    assert Position(1, 1) in destinations
+    assert Position(3, 1) in destinations
 
 
 def test_pawn_on_start_row_cannot_double_step_through_a_blocker():
-    board = parse(". . .\n. . .\n. bR .\n. wP .")
-    pawn = board.get_piece(Position(3, 1))
+    board = parse(". . .\n. bR .\n. wP .\n. . .")
+    pawn = board.get_piece(Position(2, 1))
 
     destinations = PawnRule().legal_destinations(board, pawn)
 
-    assert Position(2, 1) not in destinations
     assert Position(1, 1) not in destinations
+    assert Position(0, 1) not in destinations
 
 
 def test_pawn_not_on_start_row_cannot_double_step():
-    board = parse(". . .\n. . .\n. wP .\n. . .")
+    board = parse(". . .\n. . .\n. wP .\n. . .\n. . .")
     pawn = board.get_piece(Position(2, 1))
 
     destinations = PawnRule().legal_destinations(board, pawn)

@@ -93,9 +93,9 @@ class PawnRule:
         destinations = set()
         # White advances toward row 0, black toward the last row.
         forward = -1 if piece.color == WHITE else 1
-        # A board has no fixed "rank 2" - a color's start row is whichever
-        # edge it moves away from.
-        start_row = board.height - 1 if piece.color == WHITE else 0
+        # Pawns start one row in from their own back edge - the edge row
+        # itself is the back rank (king, rooks, ...), not a pawn square.
+        start_row = board.height - 2 if piece.color == WHITE else 1
         row = piece.cell.row + forward
 
         forward_position = Position(row, piece.cell.col)
