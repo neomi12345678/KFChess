@@ -1,5 +1,5 @@
 from boardio.board_parser import parse
-from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING
+from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, PAWN, QUEEN
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 
@@ -136,7 +136,7 @@ def test_white_pawn_promotes_to_queen_on_arrival_at_row_zero():
     arbiter.start_motion(pawn, Position(1, 1), Position(0, 1))
     arbiter.advance_time(1000)
 
-    assert board.get_piece(Position(0, 1)).kind == "Q"
+    assert board.get_piece(Position(0, 1)).kind == QUEEN
 
 
 def test_black_pawn_promotes_to_queen_on_arrival_at_last_row():
@@ -147,7 +147,7 @@ def test_black_pawn_promotes_to_queen_on_arrival_at_last_row():
     arbiter.start_motion(pawn, Position(0, 1), Position(1, 1))
     arbiter.advance_time(1000)
 
-    assert board.get_piece(Position(1, 1)).kind == "Q"
+    assert board.get_piece(Position(1, 1)).kind == QUEEN
 
 
 def test_pawn_does_not_promote_before_reaching_the_last_row():
@@ -158,7 +158,7 @@ def test_pawn_does_not_promote_before_reaching_the_last_row():
     arbiter.start_motion(pawn, Position(2, 1), Position(1, 1))
     arbiter.advance_time(1000)
 
-    assert board.get_piece(Position(1, 1)).kind == "P"
+    assert board.get_piece(Position(1, 1)).kind == PAWN
 
 
 def test_start_jump_marks_the_piece_airborne():

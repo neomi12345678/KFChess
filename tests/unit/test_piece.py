@@ -1,17 +1,17 @@
 import dataclasses
 
-from model.piece import CAPTURED, IDLE, MOVING, Piece
+from model.piece import CAPTURED, IDLE, MOVING, PAWN, Piece, WHITE
 from model.position import Position
 
 
 def test_piece_defaults_to_idle_state():
-    piece = Piece(id="w-p-1", color="w", kind="P", cell=Position(0, 0))
+    piece = Piece(id="w-p-1", color=WHITE, kind=PAWN, cell=Position(0, 0))
 
     assert piece.state == IDLE
 
 
 def test_piece_state_can_become_moving_or_captured():
-    piece = Piece(id="w-p-1", color="w", kind="P", cell=Position(0, 0))
+    piece = Piece(id="w-p-1", color=WHITE, kind=PAWN, cell=Position(0, 0))
 
     piece.state = MOVING
     assert piece.state == MOVING

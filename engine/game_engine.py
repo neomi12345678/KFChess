@@ -3,7 +3,7 @@ from typing import List, Optional
 
 from config import CELL_SIZE
 from model.board import Board
-from model.piece import MOVING
+from model.piece import KING, MOVING
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
@@ -82,7 +82,7 @@ class GameEngine:
     def wait(self, ms: int) -> None:
         events = self._real_time_arbiter.advance_time(ms)
         for event in events:
-            if event.captured_piece is not None and event.captured_piece.kind == "K":
+            if event.captured_piece is not None and event.captured_piece.kind == KING:
                 self.game_over = True
 
     def snapshot(self, selected: Optional[Position] = None) -> GameSnapshot:

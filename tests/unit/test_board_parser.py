@@ -1,6 +1,7 @@
 import pytest
 
 from boardio.board_parser import BoardParseError, parse
+from model.piece import KING, ROOK, WHITE
 from model.position import Position
 
 
@@ -15,12 +16,12 @@ def test_parse_places_pieces_at_the_correct_cells():
     board = parse("wK . .\n. wR .\n. . bK")
 
     king = board.get_piece(Position(0, 0))
-    assert king.color == "w"
-    assert king.kind == "K"
+    assert king.color == WHITE
+    assert king.kind == KING
 
     rook = board.get_piece(Position(1, 1))
-    assert rook.color == "w"
-    assert rook.kind == "R"
+    assert rook.color == WHITE
+    assert rook.kind == ROOK
 
     assert board.get_piece(Position(0, 1)) is None
 

@@ -1,10 +1,15 @@
 from config import EMPTY_TOKEN
 from model.board import Board
-from model.piece import Piece
+from model.piece import BISHOP, BLACK, KING, KNIGHT, PAWN, Piece, QUEEN, ROOK, WHITE
 from model.position import Position
 
-VALID_COLORS = {"w", "b"}
-VALID_KINDS = {"K", "Q", "R", "B", "N", "P"}
+_COLOR_BY_LETTER = {"w": WHITE, "b": BLACK}
+_KIND_BY_LETTER = {"K": KING, "Q": QUEEN, "R": ROOK, "B": BISHOP, "N": KNIGHT, "P": PAWN}
+_LETTER_BY_COLOR = {color: letter for letter, color in _COLOR_BY_LETTER.items()}
+_LETTER_BY_KIND = {kind: letter for letter, kind in _KIND_BY_LETTER.items()}
+
+VALID_COLORS = set(_COLOR_BY_LETTER)
+VALID_KINDS = set(_KIND_BY_LETTER)
 
 
 class BoardParseError(Exception):
@@ -42,5 +47,14 @@ def _parse_piece(token: str, r: int, c: int) -> Piece:
     if len(token) != 2 or token[0] not in VALID_COLORS or token[1] not in VALID_KINDS:
         raise BoardParseError(f"illegal piece token '{token}' at row {r}, col {c}", code="UNKNOWN_TOKEN")
 
-    color, kind = token[0], token[1]
-    return Piece(id=f"{color}{kind}-{r}-{c}", color=color, kind=kind, cell=Position(r, c))
+    color_letter, kind_letter = token[0], token[1]
+    return Piece(
+        id=f"{token}-{r}-{c}",
+        color=_COLOR_BY_LETTER[color_letter],
+        kind=_KIND_BY_LETTER[kind_letter],
+        cell=Position(r, c),
+    )
+
+
+def piece_to_token(piece: Piece) -> str:
+    return f"{_LETTER_BY_COLOR[piece.color]}{_LETTER_BY_KIND[piece.kind]}"

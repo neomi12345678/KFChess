@@ -1,7 +1,7 @@
 from typing import Iterable, Protocol, Set, Tuple
 
 from model.board import Board
-from model.piece import Piece
+from model.piece import Piece, WHITE
 from model.position import Position
 
 
@@ -84,8 +84,8 @@ class KingRule:
 class PawnRule:
     def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]:
         destinations = set()
-        forward = -1 if piece.color == "w" else 1
-        start_row = board.height - 1 if piece.color == "w" else 0
+        forward = -1 if piece.color == WHITE else 1
+        start_row = board.height - 1 if piece.color == WHITE else 0
         row = piece.cell.row + forward
 
         forward_position = Position(row, piece.cell.col)

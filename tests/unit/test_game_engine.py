@@ -1,6 +1,6 @@
 from engine.game_engine import GameEngine
 from boardio.board_parser import parse
-from model.piece import AIRBORNE, MOVING
+from model.piece import AIRBORNE, BLACK, KING, MOVING, WHITE
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
@@ -184,8 +184,8 @@ def test_snapshot_exposes_piece_data_without_returning_the_piece_object():
     assert snapshot.board_height == 3
     assert len(snapshot.pieces) == 1
     piece_snapshot = snapshot.pieces[0]
-    assert piece_snapshot.color == "w"
-    assert piece_snapshot.kind == "K"
+    assert piece_snapshot.color == WHITE
+    assert piece_snapshot.kind == KING
     assert not hasattr(piece_snapshot, "cell")
 
 
@@ -218,10 +218,10 @@ def test_snapshot_interpolates_pixels_independently_for_two_concurrent_motions()
     snapshot = engine.snapshot()
     pieces_by_color = {piece.color: piece for piece in snapshot.pieces}
 
-    assert pieces_by_color["w"].pixel_x == 100
-    assert pieces_by_color["w"].pixel_y == 50
-    assert pieces_by_color["b"].pixel_x == 100
-    assert pieces_by_color["b"].pixel_y == 250
+    assert pieces_by_color[WHITE].pixel_x == 100
+    assert pieces_by_color[WHITE].pixel_y == 50
+    assert pieces_by_color[BLACK].pixel_x == 100
+    assert pieces_by_color[BLACK].pixel_y == 250
 
 
 def test_snapshot_reflects_game_over_flag():

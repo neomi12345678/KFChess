@@ -2,16 +2,17 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from model.board import Board
+from model.piece import BISHOP, KING, KNIGHT, PAWN, QUEEN, ROOK
 from model.position import Position
 from rules.piece_rules import BishopRule, KingRule, KnightRule, PawnRule, PieceRule, QueenRule, RookRule
 
 STANDARD_PIECE_RULES: Dict[str, PieceRule] = {
-    "R": RookRule(),
-    "B": BishopRule(),
-    "Q": QueenRule(),
-    "N": KnightRule(),
-    "K": KingRule(),
-    "P": PawnRule(),
+    ROOK: RookRule(),
+    BISHOP: BishopRule(),
+    QUEEN: QueenRule(),
+    KNIGHT: KnightRule(),
+    KING: KingRule(),
+    PAWN: PawnRule(),
 }
 
 

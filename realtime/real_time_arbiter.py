@@ -2,11 +2,11 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from model.board import Board
-from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, Piece
+from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, PAWN, Piece, QUEEN, WHITE
 from model.position import Position
 from realtime.motion import Airborne, Motion, compute_path
 
-PROMOTION_KIND = "Q"
+PROMOTION_KIND = QUEEN
 
 
 @dataclass
@@ -101,9 +101,9 @@ class RealTimeArbiter:
         return ArrivalEvent(piece=motion.piece, captured_piece=captured_piece)
 
     def _maybe_promote(self, piece: Piece) -> None:
-        if piece.kind != "P":
+        if piece.kind != PAWN:
             return
 
-        last_rank = 0 if piece.color == "w" else self._board.height - 1
+        last_rank = 0 if piece.color == WHITE else self._board.height - 1
         if piece.cell.row == last_rank:
             piece.kind = PROMOTION_KIND

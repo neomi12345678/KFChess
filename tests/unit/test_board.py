@@ -1,7 +1,7 @@
 import pytest
 
 from model.board import Board, DuplicatePieceIdError, OccupiedCellError
-from model.piece import Piece
+from model.piece import BLACK, PAWN, Piece, ROOK, WHITE
 from model.position import Position
 
 
@@ -39,7 +39,7 @@ def test_get_piece_returns_none_for_empty_cell():
 
 def test_add_piece_then_get_piece_returns_it():
     board = Board(width=3, height=3)
-    piece = make_piece("w-r-1", "w", "R", Position(0, 0))
+    piece = make_piece("w-r-1", WHITE, ROOK, Position(0, 0))
 
     board.add_piece(Position(0, 0), piece)
 
@@ -48,7 +48,7 @@ def test_add_piece_then_get_piece_returns_it():
 
 def test_add_piece_sets_the_piece_cell():
     board = Board(width=3, height=3)
-    piece = make_piece("w-r-1", "w", "R", cell=None)
+    piece = make_piece("w-r-1", WHITE, ROOK, cell=None)
 
     board.add_piece(Position(0, 0), piece)
 
@@ -57,23 +57,23 @@ def test_add_piece_sets_the_piece_cell():
 
 def test_add_piece_rejects_duplicate_occupancy():
     board = Board(width=3, height=3)
-    board.add_piece(Position(0, 0), make_piece("w-r-1", "w", "R", Position(0, 0)))
+    board.add_piece(Position(0, 0), make_piece("w-r-1", WHITE, ROOK, Position(0, 0)))
 
     with pytest.raises(OccupiedCellError):
-        board.add_piece(Position(0, 0), make_piece("b-p-1", "b", "P", Position(0, 0)))
+        board.add_piece(Position(0, 0), make_piece("b-p-1", BLACK, PAWN, Position(0, 0)))
 
 
 def test_add_piece_rejects_duplicate_piece_id():
     board = Board(width=3, height=3)
-    board.add_piece(Position(0, 0), make_piece("w-r-1", "w", "R", Position(0, 0)))
+    board.add_piece(Position(0, 0), make_piece("w-r-1", WHITE, ROOK, Position(0, 0)))
 
     with pytest.raises(DuplicatePieceIdError):
-        board.add_piece(Position(0, 1), make_piece("w-r-1", "w", "P", Position(0, 1)))
+        board.add_piece(Position(0, 1), make_piece("w-r-1", WHITE, PAWN, Position(0, 1)))
 
 
 def test_remove_piece_clears_the_cell():
     board = Board(width=3, height=3)
-    board.add_piece(Position(0, 0), make_piece("w-r-1", "w", "R", Position(0, 0)))
+    board.add_piece(Position(0, 0), make_piece("w-r-1", WHITE, ROOK, Position(0, 0)))
 
     board.remove_piece(Position(0, 0))
 
@@ -82,17 +82,17 @@ def test_remove_piece_clears_the_cell():
 
 def test_remove_piece_frees_its_id_for_reuse():
     board = Board(width=3, height=3)
-    board.add_piece(Position(0, 0), make_piece("w-r-1", "w", "R", Position(0, 0)))
+    board.add_piece(Position(0, 0), make_piece("w-r-1", WHITE, ROOK, Position(0, 0)))
     board.remove_piece(Position(0, 0))
 
-    board.add_piece(Position(1, 1), make_piece("w-r-1", "w", "R", Position(1, 1)))
+    board.add_piece(Position(1, 1), make_piece("w-r-1", WHITE, ROOK, Position(1, 1)))
 
     assert board.get_piece(Position(1, 1)).id == "w-r-1"
 
 
 def test_move_piece_relocates_it_to_the_destination():
     board = Board(width=3, height=3)
-    piece = make_piece("w-r-1", "w", "R", Position(0, 0))
+    piece = make_piece("w-r-1", WHITE, ROOK, Position(0, 0))
     board.add_piece(Position(0, 0), piece)
 
     board.move_piece(Position(0, 0), Position(0, 1))
@@ -103,7 +103,7 @@ def test_move_piece_relocates_it_to_the_destination():
 
 def test_move_piece_updates_the_piece_cell():
     board = Board(width=3, height=3)
-    piece = make_piece("w-r-1", "w", "R", Position(0, 0))
+    piece = make_piece("w-r-1", WHITE, ROOK, Position(0, 0))
     board.add_piece(Position(0, 0), piece)
 
     board.move_piece(Position(0, 0), Position(0, 1))
@@ -113,8 +113,8 @@ def test_move_piece_updates_the_piece_cell():
 
 def test_move_piece_rejects_duplicate_occupancy_at_destination():
     board = Board(width=3, height=3)
-    board.add_piece(Position(0, 0), make_piece("w-r-1", "w", "R", Position(0, 0)))
-    board.add_piece(Position(0, 1), make_piece("b-p-1", "b", "P", Position(0, 1)))
+    board.add_piece(Position(0, 0), make_piece("w-r-1", WHITE, ROOK, Position(0, 0)))
+    board.add_piece(Position(0, 1), make_piece("b-p-1", BLACK, PAWN, Position(0, 1)))
 
     with pytest.raises(OccupiedCellError):
         board.move_piece(Position(0, 0), Position(0, 1))
