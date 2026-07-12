@@ -4,6 +4,7 @@ from typing import Dict, Optional, Protocol
 from model.board import BoardRepresentation
 from model.piece import BISHOP, KING, KNIGHT, PAWN, Piece, QUEEN, ROOK, WHITE
 from model.position import Position
+from rules.board_rules import BoardRules
 from rules.piece_rules import BishopRule, KingRule, KnightRule, PawnRule, PieceRule, QueenRule, RookRule
 
 # The default chess piece set. A custom game passes its own dict to
@@ -25,24 +26,25 @@ class MoveValidation:
 
 
 class RuleEngine:
-    # Injectable rule set: pass a custom dict to support non-standard
-    # piece kinds without changing this class at all.
-    def __init__(self, piece_rules: Optional[Dict[str, PieceRule]] = None):
+    # Injectable rule sets: pass a custom piece_rules dict to support
+    # non-standard piece kinds, or a custom board_rules to change bounds/
+    # occupancy policy, without changing this class at all.
+    def __init__(
+        self,
+        piece_rules: Optional[Dict[str, PieceRule]] = None,
+        board_rules: Optional[BoardRules] = None,
+    ):
         self._piece_rules = piece_rules if piece_rules is not None else STANDARD_PIECE_RULES
+        self._board_rules = board_rules if board_rules is not None else BoardRules()
 
     def validate_move(self, board: BoardRepresentation, source: Position, destination: Position) -> MoveValidation:
-        if not board.is_in_bounds(source) or not board.is_in_bounds(destination):
-            return MoveValidation(is_valid=False, reason="outside_board")
+        # Board-level legality (bounds, occupancy) first, then the piece's
+        # own movement shape - two independent concerns, checked in order.
+        board_check = self._board_rules.check(board, source, destination)
+        if not board_check.is_valid:
+            return MoveValidation(is_valid=False, reason=board_check.reason)
 
         piece = board.get_piece(source)
-        if piece is None:
-            return MoveValidation(is_valid=False, reason="empty_source")
-
-        target = board.get_piece(destination)
-        if target is not None and target.color == piece.color:
-            return MoveValidation(is_valid=False, reason="friendly_destination")
-
-        # Delegate the actual shape/blocking check to the piece's own rule.
         rule = self._piece_rules.get(piece.kind)
         if rule is None or destination not in rule.legal_destinations(board, piece):
             return MoveValidation(is_valid=False, reason="illegal_piece_move")
