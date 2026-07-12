@@ -6,6 +6,8 @@ from model.piece import BISHOP, KING, KNIGHT, PAWN, Piece, QUEEN, ROOK, WHITE
 from model.position import Position
 from rules.piece_rules import BishopRule, KingRule, KnightRule, PawnRule, PieceRule, QueenRule, RookRule
 
+# The default chess piece set. A custom game passes its own dict to
+# RuleEngine instead of editing this one.
 STANDARD_PIECE_RULES: Dict[str, PieceRule] = {
     ROOK: RookRule(),
     BISHOP: BishopRule(),
@@ -23,6 +25,8 @@ class MoveValidation:
 
 
 class RuleEngine:
+    # Injectable rule set: pass a custom dict to support non-standard
+    # piece kinds without changing this class at all.
     def __init__(self, piece_rules: Optional[Dict[str, PieceRule]] = None):
         self._piece_rules = piece_rules if piece_rules is not None else STANDARD_PIECE_RULES
 
@@ -38,6 +42,7 @@ class RuleEngine:
         if target is not None and target.color == piece.color:
             return MoveValidation(is_valid=False, reason="friendly_destination")
 
+        # Delegate the actual shape/blocking check to the piece's own rule.
         rule = self._piece_rules.get(piece.kind)
         if rule is None or destination not in rule.legal_destinations(board, piece):
             return MoveValidation(is_valid=False, reason="illegal_piece_move")
@@ -82,6 +87,8 @@ class LastRankPromotion:
         if piece.kind != self._promotable_kind:
             return
 
+        # Mirrors PawnRule's own start-row logic: "last rank" is whichever
+        # edge this color is advancing toward.
         last_rank = 0 if piece.color == WHITE else board_height - 1
         if piece.cell.row == last_rank:
             piece.kind = self._promote_to

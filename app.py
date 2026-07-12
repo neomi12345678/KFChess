@@ -1,3 +1,5 @@
+# Wires the interactive (non-CLI) surface together: clicks go to the
+# controller, rendering reads back whatever state that produced.
 class App:
     def __init__(self, controller, game_engine, renderer):
         self._controller = controller

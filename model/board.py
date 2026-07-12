@@ -55,6 +55,8 @@ class Board:
         return self._cells.get(position)
 
     def add_piece(self, position: Position, piece: Piece) -> None:
+        # Fail loudly on an unexpected occupant instead of silently
+        # overwriting it - callers must resolve captures themselves first.
         if position in self._cells:
             raise OccupiedCellError(position)
         if piece.id in self._piece_ids:
@@ -68,6 +70,8 @@ class Board:
         self._piece_ids.discard(piece.id)
 
     def move_piece(self, src: Position, dst: Position) -> None:
+        # Same fail-loud guarantee as add_piece: relocating onto an
+        # occupied cell is a bug at the call site, not something to hide.
         if dst in self._cells:
             raise OccupiedCellError(dst)
         piece = self._cells.pop(src)

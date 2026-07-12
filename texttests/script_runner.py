@@ -5,6 +5,8 @@ from model.board import Board
 from texttests.script_parser import parse_line
 
 
+# Shared by main.py (the real CLI) and the .kfc integration tests - the
+# only place that knows what each command word actually does.
 def run_commands(
     lines: List[str],
     controller,

@@ -9,6 +9,8 @@ class BoardMapper:
         self.width = width
         self.height = height
 
+    # Returns None for clicks outside the board, letting the caller treat
+    # them as "no cell" rather than special-casing bounds everywhere.
     def pixel_to_cell(self, x: int, y: int) -> Optional[Position]:
         if x < 0 or y < 0:
             return None

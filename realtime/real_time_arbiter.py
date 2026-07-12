@@ -30,6 +30,9 @@ class RealTimeArbiter:
     def get_airborne_pieces(self) -> List[Piece]:
         return [airborne.piece for airborne in self._airborne_states]
 
+    # True if the requested path shares a cell with any motion already in
+    # flight - lets unrelated pieces move concurrently while still
+    # preventing two pieces from crossing paths at the same time.
     def has_route_conflict(self, source: Position, destination: Position) -> bool:
         requested_path = set(compute_path(source, destination))
         return any(requested_path.intersection(motion.path()) for motion in self._active_motions)
@@ -55,6 +58,8 @@ class RealTimeArbiter:
             if motion.is_complete():
                 completed_motions.append(motion)
 
+        # Resolve arrivals before expiring airborne protection below, so a
+        # piece landing exactly as its jump window ends is still defended.
         for motion in completed_motions:
             self._active_motions.remove(motion)
             events.append(self._resolve_arrival(motion))
@@ -67,6 +72,8 @@ class RealTimeArbiter:
 
         for airborne in expired_airborne_states:
             self._airborne_states.remove(airborne)
+            # A successful defense already reset this piece to IDLE and
+            # dropped it from the list, so it won't be expired twice.
             if airborne.piece.state == AIRBORNE:
                 airborne.piece.state = IDLE
 
@@ -80,6 +87,8 @@ class RealTimeArbiter:
     def _resolve_arrival(self, motion: Motion) -> ArrivalEvent:
         defender = self._board.get_piece(motion.destination)
 
+        # Reversed capture: an airborne defender survives and captures the
+        # arriving piece instead of being captured itself.
         if defender is not None and defender.state == AIRBORNE:
             self._board.remove_piece(motion.source)
             motion.piece.state = CAPTURED

@@ -2,6 +2,8 @@ from dataclasses import dataclass
 
 from model.position import Position
 
+# Semantic values, not board-notation letters - keeps rules/engine/arbiter
+# code free of the "w"/"K" text tokens used only for parsing and printing.
 WHITE = "white"
 BLACK = "black"
 
@@ -12,6 +14,7 @@ BISHOP = "bishop"
 KNIGHT = "knight"
 PAWN = "pawn"
 
+# A piece's real-time lifecycle state, independent of its board position.
 IDLE = "idle"
 MOVING = "moving"
 CAPTURED = "captured"

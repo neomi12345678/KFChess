@@ -4,6 +4,8 @@ from model.board import BoardRepresentation
 from model.position import Position
 
 
+# Pure formatting: returns text instead of printing it, so callers decide
+# whether to display it, assert on it, or write it to a stream.
 def print_board(board: BoardRepresentation) -> str:
     lines = []
     for r in range(board.height):

@@ -8,6 +8,9 @@ class Command:
     args: List[str]
 
 
+# Generic tokenizer only - it has no idea "click"/"wait"/"jump" exist.
+# Adding a new command never requires touching this file, only the
+# dispatcher that interprets Command.name.
 def parse_line(line: str) -> Optional[Command]:
     parts = line.strip().split()
     if not parts:

@@ -27,11 +27,15 @@ class Controller:
             self.selected = None
             return ControllerResult(selected=None, move_requested=False)
 
+        # First click with nothing selected: select the piece here, if any.
         if self.selected is None:
             if self._board.get_piece(cell) is not None:
                 self.selected = cell
             return ControllerResult(selected=self.selected, move_requested=False)
 
+        # Second click on another piece of the same color: switch the
+        # selection to it instead of attempting an (always-illegal) move -
+        # unless that piece is itself mid-motion and can't be selected yet.
         clicked_piece = self._board.get_piece(cell)
         selected_piece = self._board.get_piece(self.selected)
         if clicked_piece is not None and selected_piece is not None and clicked_piece.color == selected_piece.color:
@@ -39,6 +43,8 @@ class Controller:
                 self.selected = cell
             return ControllerResult(selected=self.selected, move_requested=False)
 
+        # Otherwise treat the second click as a move request, accepted or
+        # not - the selection always clears either way.
         source = self.selected
         self.selected = None
         self._game_engine.request_move(source, cell)

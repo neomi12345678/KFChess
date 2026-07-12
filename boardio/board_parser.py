@@ -22,6 +22,8 @@ def parse(text: str) -> Board:
     if not rows:
         return Board(width=0, height=0)
 
+    # All rows must share the first row's width before any piece is placed,
+    # so a malformed board never gets partially built.
     width = len(rows[0])
     for r, row in enumerate(rows):
         if len(row) != width:
@@ -45,6 +47,8 @@ def _parse_piece(token: str, r: int, c: int) -> Piece:
     if len(token) != 2 or token[0] not in VALID_COLORS or token[1] not in VALID_KINDS:
         raise BoardParseError(f"illegal piece token '{token}' at row {r}, col {c}", code="UNKNOWN_TOKEN")
 
+    # Translate notation letters to the domain's semantic values here -
+    # this is the only place that needs to know both vocabularies.
     color_letter, kind_letter = token[0], token[1]
     return Piece(
         id=f"{token}-{r}-{c}",
@@ -54,5 +58,6 @@ def _parse_piece(token: str, r: int, c: int) -> Piece:
     )
 
 
+# The inverse of _parse_piece: semantic Piece back to a two-letter token.
 def piece_to_token(piece: Piece) -> str:
     return f"{_LETTER_BY_COLOR[piece.color]}{_LETTER_BY_KIND[piece.kind]}"

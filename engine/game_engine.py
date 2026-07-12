@@ -58,6 +58,8 @@ class GameEngine:
         if self.game_over:
             return MoveResult(is_accepted=False, reason="game_over")
 
+        # A piece already committed to a motion or jump can't be
+        # redirected until that action finishes.
         piece = self._board.get_piece(source)
         if piece is not None and piece.state == MOVING:
             return MoveResult(is_accepted=False, reason="motion_in_progress")
@@ -65,6 +67,8 @@ class GameEngine:
         if piece is not None and piece.state == AIRBORNE:
             return MoveResult(is_accepted=False, reason="piece_is_airborne")
 
+        # Concurrency gate: reject only if this path crosses another
+        # in-flight motion, so unrelated pieces can still move at once.
         if self._real_time_arbiter.has_route_conflict(source, destination):
             return MoveResult(is_accepted=False, reason="route_conflict")
 
@@ -90,6 +94,8 @@ class GameEngine:
         return JumpResult(is_accepted=True, reason="ok")
 
     def wait(self, ms: int) -> None:
+        # advance_time may resolve several arrivals in one call (concurrent
+        # motions can complete on the same tick) - check every one of them.
         events = self._real_time_arbiter.advance_time(ms)
         for event in events:
             if self._win_condition.is_game_over(event.captured_piece):
@@ -107,6 +113,9 @@ class GameEngine:
                 if piece is None:
                     continue
 
+                # Pieces mid-flight are still stored at their source cell
+                # on the board, so their on-screen position has to be
+                # interpolated rather than read straight off the grid.
                 pixel_x, pixel_y = _cell_center(row, col)
                 motion = motion_by_piece_id.get(piece.id)
                 if motion is not None:
@@ -136,6 +145,8 @@ def _cell_center(row: int, col: int) -> tuple:
     return col * CELL_SIZE + CELL_SIZE // 2, row * CELL_SIZE + CELL_SIZE // 2
 
 
+# Linear interpolation between source and destination based on how much of
+# the motion's total duration has elapsed.
 def _interpolated_pixels(motion) -> tuple:
     progress = min(1.0, motion.elapsed_ms / motion.duration_ms) if motion.duration_ms else 1.0
     row = motion.source.row + (motion.destination.row - motion.source.row) * progress

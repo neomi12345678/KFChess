@@ -18,6 +18,8 @@ class Renderer:
             for col in range(snapshot.board_width):
                 self._canvas.draw_rect(x=col * CELL_SIZE, y=row * CELL_SIZE, width=CELL_SIZE, height=CELL_SIZE)
 
+    # pixel_x/pixel_y already account for in-flight interpolation - the
+    # renderer never needs to know whether a piece is moving.
     def _draw_pieces(self, snapshot: GameSnapshot) -> None:
         for piece in snapshot.pieces:
             self._canvas.draw_image(f"{piece.color}{piece.kind}", x=piece.pixel_x, y=piece.pixel_y)
