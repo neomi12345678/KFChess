@@ -8,36 +8,12 @@ from input.board_mapper import BoardMapper
 from input.controller import Controller
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
+from texttests.script_parser import split_sections
 from texttests.script_runner import run_commands
 
 
-# Splits the VPL-style "Board:" / "Commands:" protocol into its two raw
-# sections; parsing each section's contents happens elsewhere.
-def _split_sections(text: str):
-    board_lines = []
-    command_lines = []
-    section = None
-
-    for line in text.splitlines():
-        stripped = line.strip()
-
-        if stripped == "Board:":
-            section = "board"
-            continue
-        if stripped == "Commands:":
-            section = "commands"
-            continue
-
-        if section == "board":
-            board_lines.append(stripped)
-        elif section == "commands" and stripped:
-            command_lines.append(stripped)
-
-    return board_lines, command_lines
-
-
 def run(text: str) -> str:
-    board_lines, command_lines = _split_sections(text)
+    board_lines, command_lines = split_sections(text)
 
     # A malformed board short-circuits the whole run - no commands execute.
     try:

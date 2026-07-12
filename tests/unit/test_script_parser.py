@@ -1,4 +1,4 @@
-from texttests.script_parser import Command, parse_line
+from texttests.script_parser import Command, parse_line, split_sections
 
 
 def test_parse_line_splits_the_command_name_from_its_arguments():
@@ -30,3 +30,31 @@ def test_parse_line_has_no_knowledge_of_any_specific_command():
     command = parse_line("teleport 50 50")
 
     assert command == Command(name="teleport", args=["50", "50"])
+
+
+def test_split_sections_separates_board_lines_from_command_lines():
+    board_lines, command_lines = split_sections("Board:\nwK . .\n. . .\nCommands:\nclick 50 50\nwait 1000\n")
+
+    assert board_lines == ["wK . .", ". . ."]
+    assert command_lines == ["click 50 50", "wait 1000"]
+
+
+def test_split_sections_ignores_a_leading_or_trailing_space_around_the_markers():
+    board_lines, command_lines = split_sections(" Board:\nwK . .\n Commands: \nprint board\n")
+
+    assert board_lines == ["wK . ."]
+    assert command_lines == ["print board"]
+
+
+def test_split_sections_drops_blank_command_lines_but_keeps_blank_board_lines():
+    board_lines, command_lines = split_sections("Board:\nwK . .\n\n. . .\nCommands:\n\nprint board\n\n")
+
+    assert board_lines == ["wK . .", "", ". . ."]
+    assert command_lines == ["print board"]
+
+
+def test_split_sections_returns_empty_lists_when_no_markers_are_present():
+    board_lines, command_lines = split_sections("just some text\n")
+
+    assert board_lines == []
+    assert command_lines == []
