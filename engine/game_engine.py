@@ -3,6 +3,7 @@ from typing import List, Optional
 
 from config import CELL_SIZE
 from model.board import Board
+from model.piece import MOVING
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
@@ -50,14 +51,17 @@ class GameEngine:
         if self.game_over:
             return MoveResult(is_accepted=False, reason="game_over")
 
-        if self._real_time_arbiter.has_active_motion():
+        piece = self._board.get_piece(source)
+        if piece is not None and piece.state == MOVING:
             return MoveResult(is_accepted=False, reason="motion_in_progress")
+
+        if self._real_time_arbiter.has_route_conflict(source, destination):
+            return MoveResult(is_accepted=False, reason="route_conflict")
 
         validation = self._rule_engine.validate_move(self._board, source, destination)
         if not validation.is_valid:
             return MoveResult(is_accepted=False, reason=validation.reason)
 
-        piece = self._board.get_piece(source)
         self._real_time_arbiter.start_motion(piece, source, destination)
 
         return MoveResult(is_accepted=True, reason="ok")
@@ -82,7 +86,9 @@ class GameEngine:
                 self.game_over = True
 
     def snapshot(self, selected: Optional[Position] = None) -> GameSnapshot:
-        active_motion = self._real_time_arbiter.get_active_motion()
+        motion_by_piece_id = {
+            motion.piece.id: motion for motion in self._real_time_arbiter.get_active_motions()
+        }
         pieces = []
 
         for row in range(self._board.height):
@@ -92,8 +98,9 @@ class GameEngine:
                     continue
 
                 pixel_x, pixel_y = _cell_center(row, col)
-                if active_motion is not None and active_motion.piece is piece:
-                    pixel_x, pixel_y = _interpolated_pixels(active_motion)
+                motion = motion_by_piece_id.get(piece.id)
+                if motion is not None:
+                    pixel_x, pixel_y = _interpolated_pixels(motion)
 
                 pieces.append(
                     PieceSnapshot(

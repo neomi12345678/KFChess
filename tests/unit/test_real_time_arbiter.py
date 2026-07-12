@@ -78,6 +78,42 @@ def test_multiple_waits_accumulate_correctly_for_a_two_cell_move():
     assert board.get_piece(Position(2, 1)) is piece
 
 
+def test_has_route_conflict_is_false_for_non_overlapping_paths():
+    board = parse("wR . .\n. . .\nbR . .")
+    arbiter = RealTimeArbiter(board)
+    rook = board.get_piece(Position(0, 0))
+    arbiter.start_motion(rook, Position(0, 0), Position(0, 2))
+
+    assert arbiter.has_route_conflict(Position(2, 0), Position(2, 2)) is False
+
+
+def test_has_route_conflict_is_true_when_paths_share_a_cell():
+    board = parse("wR . . bR")
+    arbiter = RealTimeArbiter(board)
+    rook = board.get_piece(Position(0, 0))
+    arbiter.start_motion(rook, Position(0, 0), Position(0, 3))
+
+    assert arbiter.has_route_conflict(Position(0, 3), Position(0, 0)) is True
+
+
+def test_two_pieces_can_move_at_once_on_non_overlapping_routes():
+    board = parse("wR . .\n. . .\nbR . .")
+    arbiter = RealTimeArbiter(board)
+    white_rook = board.get_piece(Position(0, 0))
+    black_rook = board.get_piece(Position(2, 0))
+
+    arbiter.start_motion(white_rook, Position(0, 0), Position(0, 2))
+    arbiter.start_motion(black_rook, Position(2, 0), Position(2, 2))
+
+    assert len(arbiter.get_active_motions()) == 2
+
+    events = arbiter.advance_time(2000)
+
+    assert len(events) == 2
+    assert board.get_piece(Position(0, 2)) is white_rook
+    assert board.get_piece(Position(2, 2)) is black_rook
+
+
 def test_capturing_a_piece_removes_it_and_marks_it_captured():
     board = parse(". bP .\n. wR .\n. . .")
     arbiter = RealTimeArbiter(board)

@@ -4,7 +4,7 @@ from typing import List, Optional
 from model.board import Board
 from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, Piece
 from model.position import Position
-from realtime.motion import Airborne, Motion
+from realtime.motion import Airborne, Motion, compute_path
 
 PROMOTION_KIND = "Q"
 
@@ -18,17 +18,21 @@ class ArrivalEvent:
 class RealTimeArbiter:
     def __init__(self, board: Board):
         self._board = board
-        self._active_motion: Optional[Motion] = None
+        self._active_motions: List[Motion] = []
         self._airborne: Optional[Airborne] = None
 
     def has_active_motion(self) -> bool:
-        return self._active_motion is not None
+        return len(self._active_motions) > 0
 
-    def get_active_motion(self) -> Optional[Motion]:
-        return self._active_motion
+    def get_active_motions(self) -> List[Motion]:
+        return list(self._active_motions)
+
+    def has_route_conflict(self, source: Position, destination: Position) -> bool:
+        requested_path = set(compute_path(source, destination))
+        return any(requested_path.intersection(motion.path()) for motion in self._active_motions)
 
     def start_motion(self, piece: Piece, source: Position, destination: Position) -> None:
-        self._active_motion = Motion(piece=piece, source=source, destination=destination)
+        self._active_motions.append(Motion(piece=piece, source=source, destination=destination))
         piece.state = MOVING
 
     def start_jump(self, piece: Piece) -> bool:
@@ -41,14 +45,16 @@ class RealTimeArbiter:
 
     def advance_time(self, ms: int) -> List[ArrivalEvent]:
         events: List[ArrivalEvent] = []
+        completed_motions: List[Motion] = []
 
-        if self._active_motion is not None:
-            self._active_motion.elapsed_ms += ms
+        for motion in self._active_motions:
+            motion.elapsed_ms += ms
+            if motion.is_complete():
+                completed_motions.append(motion)
 
-            if self._active_motion.is_complete():
-                motion = self._active_motion
-                self._active_motion = None
-                events.append(self._resolve_arrival(motion))
+        for motion in completed_motions:
+            self._active_motions.remove(motion)
+            events.append(self._resolve_arrival(motion))
 
         if self._airborne is not None:
             self._airborne.elapsed_ms += ms

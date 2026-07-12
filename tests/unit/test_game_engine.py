@@ -63,6 +63,38 @@ def test_request_move_rejects_a_second_move_while_a_motion_is_active():
     assert result.reason == "motion_in_progress"
 
 
+def test_request_move_allows_two_pieces_to_move_concurrently_on_non_overlapping_routes():
+    board, engine, arbiter = make_engine("wR . .\n. . .\nbR . .")
+
+    white_result = engine.request_move(Position(0, 0), Position(0, 2))
+    black_result = engine.request_move(Position(2, 0), Position(2, 2))
+
+    assert white_result.is_accepted is True
+    assert black_result.is_accepted is True
+    assert len(arbiter.get_active_motions()) == 2
+
+    engine.wait(2000)
+
+    assert board.get_piece(Position(0, 2)) is not None
+    assert board.get_piece(Position(2, 2)) is not None
+
+
+def test_request_move_rejects_a_move_whose_route_conflicts_with_another_active_motion():
+    board, engine, arbiter = make_engine("wR . . bR")
+
+    first = engine.request_move(Position(0, 0), Position(0, 3))
+    second = engine.request_move(Position(0, 3), Position(0, 0))
+
+    assert first.is_accepted is True
+    assert second.is_accepted is False
+    assert second.reason == "route_conflict"
+
+    engine.wait(3000)
+
+    assert board.get_piece(Position(0, 3)) is not None
+    assert board.get_piece(Position(0, 0)) is None
+
+
 def test_wait_delegates_to_real_time_arbiter():
     board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
     engine.request_move(Position(1, 1), Position(0, 1))
@@ -163,6 +195,21 @@ def test_snapshot_interpolates_pixels_for_a_piece_mid_motion():
     rook_snapshot = snapshot.pieces[0]
     assert rook_snapshot.pixel_x == 50
     assert rook_snapshot.pixel_y == 300
+
+
+def test_snapshot_interpolates_pixels_independently_for_two_concurrent_motions():
+    board, engine, arbiter = make_engine("wR . .\n. . .\nbR . .")
+    engine.request_move(Position(0, 0), Position(0, 2))
+    engine.request_move(Position(2, 0), Position(2, 2))
+    arbiter.advance_time(500)
+
+    snapshot = engine.snapshot()
+    pieces_by_color = {piece.color: piece for piece in snapshot.pieces}
+
+    assert pieces_by_color["w"].pixel_x == 100
+    assert pieces_by_color["w"].pixel_y == 50
+    assert pieces_by_color["b"].pixel_x == 100
+    assert pieces_by_color["b"].pixel_y == 250
 
 
 def test_snapshot_reflects_game_over_flag():
