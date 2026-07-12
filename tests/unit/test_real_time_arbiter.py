@@ -184,6 +184,70 @@ def test_start_jump_rejects_a_piece_that_is_currently_moving():
     assert rook.state == MOVING
 
 
+def test_start_jump_rejects_a_piece_that_is_already_airborne():
+    board = parse(". . .\n. wK .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    king = board.get_piece(Position(1, 1))
+    arbiter.start_jump(king)
+
+    accepted_again = arbiter.start_jump(king)
+
+    assert accepted_again is False
+
+
+def test_two_pieces_can_be_airborne_at_the_same_time():
+    board = parse("wK . bK")
+    arbiter = RealTimeArbiter(board)
+    white_king = board.get_piece(Position(0, 0))
+    black_king = board.get_piece(Position(0, 2))
+
+    white_accepted = arbiter.start_jump(white_king)
+    black_accepted = arbiter.start_jump(black_king)
+
+    assert white_accepted is True
+    assert black_accepted is True
+    airborne_pieces = arbiter.get_airborne_pieces()
+    assert white_king in airborne_pieces
+    assert black_king in airborne_pieces
+    assert len(airborne_pieces) == 2
+    assert white_king.state == AIRBORNE
+    assert black_king.state == AIRBORNE
+
+
+def test_each_airborne_piece_lands_independently_when_its_own_duration_elapses():
+    board = parse("wK . bK")
+    arbiter = RealTimeArbiter(board)
+    white_king = board.get_piece(Position(0, 0))
+    black_king = board.get_piece(Position(0, 2))
+    arbiter.start_jump(white_king)
+
+    arbiter.advance_time(600)
+    arbiter.start_jump(black_king)
+    arbiter.advance_time(400)
+
+    assert white_king.state == IDLE
+    assert black_king.state == AIRBORNE
+    assert arbiter.get_airborne_pieces() == [black_king]
+
+
+def test_one_airborne_pieces_defense_does_not_affect_another_airborne_piece():
+    board = parse("wK . bR\n. . .\nbK . .")
+    arbiter = RealTimeArbiter(board)
+    white_king = board.get_piece(Position(0, 0))
+    black_king = board.get_piece(Position(2, 0))
+    rook = board.get_piece(Position(0, 2))
+    arbiter.start_jump(white_king)
+    arbiter.start_jump(black_king)
+
+    arbiter.start_motion(rook, Position(0, 2), Position(0, 0))
+    arbiter.advance_time(2000)
+
+    assert board.get_piece(Position(0, 0)) is white_king
+    assert rook.state == CAPTURED
+    assert black_king.state == IDLE
+    assert arbiter.get_airborne_pieces() == []
+
+
 def test_airborne_piece_lands_back_in_place_once_its_duration_elapses():
     board = parse(". . .\n. wK .\n. . .")
     arbiter = RealTimeArbiter(board)

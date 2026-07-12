@@ -114,6 +114,18 @@ def test_king_capture_sets_game_over_flag():
     assert engine.game_over is True
 
 
+def test_king_capture_sets_game_over_even_while_another_motion_is_concurrently_active():
+    board, engine, arbiter = make_engine("wR . bK\n. . .\nwR . .")
+
+    engine.request_move(Position(0, 0), Position(0, 2))
+    engine.request_move(Position(2, 0), Position(2, 2))
+    engine.wait(2000)
+
+    assert engine.game_over is True
+    assert board.get_piece(Position(0, 2)) is not None
+    assert board.get_piece(Position(2, 2)) is not None
+
+
 def test_non_king_capture_does_not_set_game_over_flag():
     board, engine, arbiter = make_engine("wR . bP\n. . .\n. . .")
 

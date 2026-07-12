@@ -19,13 +19,16 @@ class RealTimeArbiter:
     def __init__(self, board: Board):
         self._board = board
         self._active_motions: List[Motion] = []
-        self._airborne: Optional[Airborne] = None
+        self._airborne_states: List[Airborne] = []
 
     def has_active_motion(self) -> bool:
         return len(self._active_motions) > 0
 
     def get_active_motions(self) -> List[Motion]:
         return list(self._active_motions)
+
+    def get_airborne_pieces(self) -> List[Piece]:
+        return [airborne.piece for airborne in self._airborne_states]
 
     def has_route_conflict(self, source: Position, destination: Position) -> bool:
         requested_path = set(compute_path(source, destination))
@@ -36,10 +39,10 @@ class RealTimeArbiter:
         piece.state = MOVING
 
     def start_jump(self, piece: Piece) -> bool:
-        if piece.state == MOVING:
+        if piece.state != IDLE:
             return False
 
-        self._airborne = Airborne(piece=piece)
+        self._airborne_states.append(Airborne(piece=piece))
         piece.state = AIRBORNE
         return True
 
@@ -56,15 +59,23 @@ class RealTimeArbiter:
             self._active_motions.remove(motion)
             events.append(self._resolve_arrival(motion))
 
-        if self._airborne is not None:
-            self._airborne.elapsed_ms += ms
+        expired_airborne_states = []
+        for airborne in self._airborne_states:
+            airborne.elapsed_ms += ms
+            if airborne.is_expired():
+                expired_airborne_states.append(airborne)
 
-            if self._airborne.is_expired():
-                if self._airborne.piece.state == AIRBORNE:
-                    self._airborne.piece.state = IDLE
-                self._airborne = None
+        for airborne in expired_airborne_states:
+            self._airborne_states.remove(airborne)
+            if airborne.piece.state == AIRBORNE:
+                airborne.piece.state = IDLE
 
         return events
+
+    def _land_airborne_piece(self, piece: Piece) -> None:
+        self._airborne_states = [
+            airborne for airborne in self._airborne_states if airborne.piece is not piece
+        ]
 
     def _resolve_arrival(self, motion: Motion) -> ArrivalEvent:
         defender = self._board.get_piece(motion.destination)
@@ -73,7 +84,7 @@ class RealTimeArbiter:
             self._board.remove_piece(motion.source)
             motion.piece.state = CAPTURED
             defender.state = IDLE
-            self._airborne = None
+            self._land_airborne_piece(defender)
             return ArrivalEvent(piece=defender, captured_piece=motion.piece)
 
         captured_piece = defender
