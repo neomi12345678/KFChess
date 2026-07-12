@@ -5,7 +5,7 @@ from model.board import BoardRepresentation
 from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, Piece
 from model.position import Position
 from realtime.motion import Airborne, Motion, compute_path
-from rules.promotion_rule import LastRankPromotion, PromotionRule
+from rules.rule_engine import LastRankPromotion, PromotionRule
 
 
 @dataclass

@@ -6,8 +6,7 @@ from model.board import BoardRepresentation
 from model.piece import AIRBORNE, MOVING
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
-from rules.rule_engine import RuleEngine
-from rules.win_condition import KingCaptureWinCondition, WinCondition
+from rules.rule_engine import KingCaptureWinCondition, RuleEngine, WinCondition
 
 
 @dataclass
