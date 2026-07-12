@@ -1,10 +1,10 @@
 from boardio.board_parser import piece_to_token
 from config import EMPTY_TOKEN
-from model.board import Board
+from model.board import BoardRepresentation
 from model.position import Position
 
 
-def print_board(board: Board) -> str:
+def print_board(board: BoardRepresentation) -> str:
     lines = []
     for r in range(board.height):
         cells = []

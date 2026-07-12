@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Protocol, Set
 
 from model.piece import Piece
 from model.position import Position
@@ -16,7 +16,32 @@ class DuplicatePieceIdError(Exception):
         self.piece_id = piece_id
 
 
+class BoardRepresentation(Protocol):
+    """The storage contract every board implementation must satisfy.
+
+    Rules, the engine, and the arbiter depend only on this interface, never
+    on a concrete storage format - so a future binary/bitboard
+    representation can be dropped in, implementing just these members,
+    without touching a single line of game logic.
+    """
+
+    width: int
+    height: int
+
+    def is_in_bounds(self, position: Position) -> bool: ...
+
+    def get_piece(self, position: Position) -> Optional[Piece]: ...
+
+    def add_piece(self, position: Position, piece: Piece) -> None: ...
+
+    def remove_piece(self, position: Position) -> None: ...
+
+    def move_piece(self, src: Position, dst: Position) -> None: ...
+
+
 class Board:
+    """The standard in-memory BoardRepresentation: cells kept in a dict."""
+
     def __init__(self, width: int, height: int):
         self.width = width
         self.height = height

@@ -1,12 +1,11 @@
 from dataclasses import dataclass
 from typing import List, Optional
 
-from model.board import Board
-from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, PAWN, Piece, QUEEN, WHITE
+from model.board import BoardRepresentation
+from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, Piece
 from model.position import Position
 from realtime.motion import Airborne, Motion, compute_path
-
-PROMOTION_KIND = QUEEN
+from rules.promotion_rule import LastRankPromotion, PromotionRule
 
 
 @dataclass
@@ -16,8 +15,9 @@ class ArrivalEvent:
 
 
 class RealTimeArbiter:
-    def __init__(self, board: Board):
+    def __init__(self, board: BoardRepresentation, promotion_rule: Optional[PromotionRule] = None):
         self._board = board
+        self._promotion_rule = promotion_rule if promotion_rule is not None else LastRankPromotion()
         self._active_motions: List[Motion] = []
         self._airborne_states: List[Airborne] = []
 
@@ -96,14 +96,6 @@ class RealTimeArbiter:
 
         self._board.add_piece(motion.destination, motion.piece)
         motion.piece.state = IDLE
-        self._maybe_promote(motion.piece)
+        self._promotion_rule.promote(motion.piece, self._board.height)
 
         return ArrivalEvent(piece=motion.piece, captured_piece=captured_piece)
-
-    def _maybe_promote(self, piece: Piece) -> None:
-        if piece.kind != PAWN:
-            return
-
-        last_rank = 0 if piece.color == WHITE else self._board.height - 1
-        if piece.cell.row == last_rank:
-            piece.kind = PROMOTION_KIND

@@ -2,11 +2,12 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from config import CELL_SIZE
-from model.board import Board
-from model.piece import AIRBORNE, KING, MOVING
+from model.board import BoardRepresentation
+from model.piece import AIRBORNE, MOVING
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
+from rules.win_condition import KingCaptureWinCondition, WinCondition
 
 
 @dataclass
@@ -41,10 +42,17 @@ class GameSnapshot:
 
 
 class GameEngine:
-    def __init__(self, board: Board, rule_engine: RuleEngine, real_time_arbiter: RealTimeArbiter):
+    def __init__(
+        self,
+        board: BoardRepresentation,
+        rule_engine: RuleEngine,
+        real_time_arbiter: RealTimeArbiter,
+        win_condition: Optional[WinCondition] = None,
+    ):
         self._board = board
         self._rule_engine = rule_engine
         self._real_time_arbiter = real_time_arbiter
+        self._win_condition = win_condition if win_condition is not None else KingCaptureWinCondition()
         self.game_over = False
 
     def request_move(self, source: Position, destination: Position) -> MoveResult:
@@ -85,7 +93,7 @@ class GameEngine:
     def wait(self, ms: int) -> None:
         events = self._real_time_arbiter.advance_time(ms)
         for event in events:
-            if event.captured_piece is not None and event.captured_piece.kind == KING:
+            if self._win_condition.is_game_over(event.captured_piece):
                 self.game_over = True
 
     def snapshot(self, selected: Optional[Position] = None) -> GameSnapshot:

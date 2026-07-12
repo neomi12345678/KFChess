@@ -1,11 +1,9 @@
 from dataclasses import dataclass
 from typing import List
 
+from config import AIRBORNE_DURATION_MS, CELL_DURATION_MS
 from model.piece import Piece
 from model.position import Position
-
-CELL_DURATION_MS = 1000
-AIRBORNE_DURATION_MS = CELL_DURATION_MS
 
 
 def _sign(n: int) -> int:

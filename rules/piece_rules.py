@@ -1,12 +1,12 @@
 from typing import Iterable, Protocol, Set, Tuple
 
-from model.board import Board
+from model.board import BoardRepresentation
 from model.piece import Piece, WHITE
 from model.position import Position
 
 
 class PieceRule(Protocol):
-    def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
         ...
 
 
@@ -17,7 +17,7 @@ _KNIGHT_OFFSETS = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1
 _KING_OFFSETS = _QUEEN_DIRECTIONS
 
 
-def _slide(board: Board, piece: Piece, directions: Iterable[Tuple[int, int]]) -> Set[Position]:
+def _slide(board: BoardRepresentation, piece: Piece, directions: Iterable[Tuple[int, int]]) -> Set[Position]:
     destinations = set()
 
     for dr, dc in directions:
@@ -41,7 +41,7 @@ def _slide(board: Board, piece: Piece, directions: Iterable[Tuple[int, int]]) ->
     return destinations
 
 
-def _single_step(board: Board, piece: Piece, offsets: Iterable[Tuple[int, int]]) -> Set[Position]:
+def _single_step(board: BoardRepresentation, piece: Piece, offsets: Iterable[Tuple[int, int]]) -> Set[Position]:
     destinations = set()
 
     for dr, dc in offsets:
@@ -57,32 +57,32 @@ def _single_step(board: Board, piece: Piece, offsets: Iterable[Tuple[int, int]])
 
 
 class RookRule:
-    def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
         return _slide(board, piece, _ROOK_DIRECTIONS)
 
 
 class BishopRule:
-    def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
         return _slide(board, piece, _BISHOP_DIRECTIONS)
 
 
 class QueenRule:
-    def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
         return _slide(board, piece, _QUEEN_DIRECTIONS)
 
 
 class KnightRule:
-    def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
         return _single_step(board, piece, _KNIGHT_OFFSETS)
 
 
 class KingRule:
-    def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
         return _single_step(board, piece, _KING_OFFSETS)
 
 
 class PawnRule:
-    def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
         destinations = set()
         forward = -1 if piece.color == WHITE else 1
         start_row = board.height - 1 if piece.color == WHITE else 0

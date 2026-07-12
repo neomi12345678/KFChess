@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from input.board_mapper import BoardMapper
-from model.board import Board
+from model.board import BoardRepresentation
 from model.piece import MOVING
 from model.position import Position
 
@@ -14,7 +14,7 @@ class ControllerResult:
 
 
 class Controller:
-    def __init__(self, board: Board, board_mapper: BoardMapper, game_engine):
+    def __init__(self, board: BoardRepresentation, board_mapper: BoardMapper, game_engine):
         self._board = board
         self._board_mapper = board_mapper
         self._game_engine = game_engine

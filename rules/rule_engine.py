@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from model.board import Board
+from model.board import BoardRepresentation
 from model.piece import BISHOP, KING, KNIGHT, PAWN, QUEEN, ROOK
 from model.position import Position
 from rules.piece_rules import BishopRule, KingRule, KnightRule, PawnRule, PieceRule, QueenRule, RookRule
@@ -26,7 +26,7 @@ class RuleEngine:
     def __init__(self, piece_rules: Optional[Dict[str, PieceRule]] = None):
         self._piece_rules = piece_rules if piece_rules is not None else STANDARD_PIECE_RULES
 
-    def validate_move(self, board: Board, source: Position, destination: Position) -> MoveValidation:
+    def validate_move(self, board: BoardRepresentation, source: Position, destination: Position) -> MoveValidation:
         if not board.is_in_bounds(source) or not board.is_in_bounds(destination):
             return MoveValidation(is_valid=False, reason="outside_board")
 
