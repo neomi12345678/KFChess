@@ -90,7 +90,7 @@ def test_request_move_allows_two_pieces_to_move_concurrently_on_non_overlapping_
     assert board.get_piece(Position(2, 2)) is not None
 
 
-def test_request_move_captures_an_opposing_piece_that_meets_it_head_on():
+def test_request_move_is_rejected_when_it_would_cross_an_active_opposing_motion():
     board, engine, arbiter = make_engine("wR . . bR")
     white_rook = board.get_piece(Position(0, 0))
     black_rook = board.get_piece(Position(0, 3))
@@ -99,16 +99,16 @@ def test_request_move_captures_an_opposing_piece_that_meets_it_head_on():
     second = engine.request_move(Position(0, 3), Position(0, 0))
 
     assert first.is_accepted is True
-    assert second.is_accepted is True
+    assert second.is_accepted is False
+    assert second.reason == "route_conflict"
 
-    engine.wait(1000)
+    engine.wait(3000)
 
-    # They'd truly meet at column 1.5 after 1500ms - black only completes 1
-    # full cell before that instant, and captures white there.
-    assert board.get_piece(Position(0, 2)) is black_rook
+    # White's motion is untouched by the rejected request and captures
+    # black normally on arrival - black never left its square.
+    assert board.get_piece(Position(0, 3)) is white_rook
     assert board.get_piece(Position(0, 0)) is None
-    assert board.get_piece(Position(0, 3)) is None
-    assert white_rook.state == CAPTURED
+    assert black_rook.state == CAPTURED
 
 
 def test_request_move_stops_a_same_color_piece_one_cell_short_of_a_crossing_path():
@@ -220,12 +220,22 @@ def test_request_jump_rejects_a_piece_that_is_already_moving():
     assert board.get_piece(Position(1, 1)).state == MOVING
 
 
-def test_request_move_rejects_a_piece_still_in_cooldown_after_finishing_a_motion():
+def test_request_move_succeeds_immediately_after_finishing_a_motion_without_cooldown():
     board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
     engine.request_move(Position(1, 1), Position(0, 1))
     engine.wait(1000)
 
     result = engine.request_move(Position(0, 1), Position(0, 0))
+
+    assert result.is_accepted is True
+
+
+def test_request_move_rejects_a_piece_still_in_cooldown_after_landing_from_a_jump():
+    board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
+    engine.request_jump(Position(1, 1))
+    engine.wait(1000)
+
+    result = engine.request_move(Position(1, 1), Position(0, 1))
 
     assert result.is_accepted is False
     assert result.reason == "piece_in_cooldown"

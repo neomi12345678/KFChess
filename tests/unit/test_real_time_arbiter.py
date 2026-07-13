@@ -167,49 +167,27 @@ def test_a_knight_that_arrives_to_find_a_teammate_already_there_stays_at_its_sou
     assert events == [ArrivalEvent(piece=knight, captured_piece=None)]
 
 
-def test_mid_flight_capture_wins_when_the_victim_would_also_complete_its_own_motion_this_same_tick():
-    board = parse("wR . . . bR")
-    arbiter = RealTimeArbiter(board)
-    white_rook = board.get_piece(Position(0, 0))
-    black_rook = board.get_piece(Position(0, 4))
-    arbiter.start_motion(white_rook, Position(0, 0), Position(0, 3))
-    arbiter.advance_time(2000)  # white has exactly 1000ms (1 cell) left
-
-    # Black closes the final cell into white's own destination - the
-    # collision lands exactly where, and exactly when, white would arrive
-    # under its own steam. Both motions become "complete" in the very same
-    # tick; the capture must still win instead of white landing safely a
-    # moment before black's resolution tries to occupy the same cell.
-    accepted = arbiter.start_motion(black_rook, Position(0, 4), Position(0, 3))
-    assert accepted is True
-
-    events = arbiter.advance_time(1000)
-
-    assert board.get_piece(Position(0, 3)) is black_rook
-    assert black_rook.state == IDLE
-    assert white_rook.state == CAPTURED
-    assert events == [ArrivalEvent(piece=black_rook, captured_piece=white_rook)]
-
-
-def test_start_motion_captures_an_opposing_piece_that_meets_it_head_on():
+def test_start_motion_is_rejected_when_it_would_cross_an_active_opposing_motion():
     board = parse("wR . . bR")
     arbiter = RealTimeArbiter(board)
     white_rook = board.get_piece(Position(0, 0))
     black_rook = board.get_piece(Position(0, 3))
 
     arbiter.start_motion(white_rook, Position(0, 0), Position(0, 3))
-    # Closing head-on, they'd meet at column 1.5 after 1500ms - black stops
-    # after 1 full cell (column 2), where the capture lands.
-    arbiter.start_motion(black_rook, Position(0, 3), Position(0, 0))
-
-    events = arbiter.advance_time(1000)
-
-    assert board.get_piece(Position(0, 2)) is black_rook
-    assert board.get_piece(Position(0, 0)) is None
-    assert board.get_piece(Position(0, 3)) is None
+    # Whoever is already moving has right of way - black's head-on attempt
+    # is rejected outright, not truncated into a mid-flight capture.
+    accepted = arbiter.start_motion(black_rook, Position(0, 3), Position(0, 0))
+    assert accepted is False
     assert black_rook.state == IDLE
-    assert white_rook.state == CAPTURED
-    assert events == [ArrivalEvent(piece=black_rook, captured_piece=white_rook)]
+
+    events = arbiter.advance_time(3000)
+
+    # White's motion is entirely unaffected by the rejected request, and
+    # captures black normally on arrival - black never left its square.
+    assert board.get_piece(Position(0, 3)) is white_rook
+    assert board.get_piece(Position(0, 0)) is None
+    assert black_rook.state == CAPTURED
+    assert events == [ArrivalEvent(piece=white_rook, captured_piece=black_rook)]
     assert arbiter.has_active_motion() is False
 
 
@@ -261,10 +239,9 @@ def test_start_motion_rejects_a_move_that_would_collide_with_an_enemy_before_rea
     arbiter.start_motion(black_rook, Position(0, 4), Position(0, 0))
     arbiter.advance_time(3900)
 
-    # Black is almost home; white closing from the other end would meet it
-    # only 50ms into its own travel - far short of the 1000ms needed to
-    # reach even one cell, so there's no safe cell to truncate to and the
-    # move must be rejected outright instead of "capturing after 0 cells."
+    # Black is almost home, closing to a collision with white's requested
+    # path only 50ms in - even this near-miss is rejected outright, same
+    # as any other different-color route conflict.
     accepted = arbiter.start_motion(white_rook, Position(0, 0), Position(0, 4))
 
     assert accepted is False
@@ -494,28 +471,13 @@ def test_airborne_protection_no_longer_applies_once_it_has_expired():
     assert events[0].captured_piece is king
 
 
-def test_start_motion_rejects_a_piece_still_in_cooldown_right_after_it_finishes_moving():
+def test_start_motion_succeeds_immediately_after_finishing_a_motion_without_cooldown():
+    # Only jumping incurs a cooldown - an ordinary motion's arrival leaves
+    # the piece immediately ready to move again.
     board = parse(". . .\n. wR .\n. . .")
     arbiter = RealTimeArbiter(board)
     rook = board.get_piece(Position(1, 1))
     arbiter.start_motion(rook, Position(1, 1), Position(0, 1))
-    arbiter.advance_time(1000)
-
-    assert arbiter.is_in_cooldown(rook) is True
-    accepted = arbiter.start_motion(rook, Position(0, 1), Position(0, 0))
-
-    assert accepted is False
-    assert rook.state == IDLE
-    assert board.get_piece(Position(0, 1)) is rook
-
-
-def test_start_motion_succeeds_again_once_the_cooldown_expires():
-    board = parse(". . .\n. wR .\n. . .")
-    arbiter = RealTimeArbiter(board)
-    rook = board.get_piece(Position(1, 1))
-    arbiter.start_motion(rook, Position(1, 1), Position(0, 1))
-    arbiter.advance_time(1000)
-
     arbiter.advance_time(1000)
 
     assert arbiter.is_in_cooldown(rook) is False
@@ -554,14 +516,14 @@ def test_start_jump_succeeds_again_once_the_cooldown_from_a_previous_jump_expire
 
 
 def test_cooldown_does_not_block_a_different_piece_from_acting():
-    board = parse("wR . .\n. . .\nbR . .")
+    board = parse("wK . .\n. . .\nbR . .")
     arbiter = RealTimeArbiter(board)
-    white_rook = board.get_piece(Position(0, 0))
+    white_king = board.get_piece(Position(0, 0))
     black_rook = board.get_piece(Position(2, 0))
-    arbiter.start_motion(white_rook, Position(0, 0), Position(0, 1))
+    arbiter.start_jump(white_king)
     arbiter.advance_time(1000)
 
-    assert arbiter.is_in_cooldown(white_rook) is True
+    assert arbiter.is_in_cooldown(white_king) is True
     accepted = arbiter.start_motion(black_rook, Position(2, 0), Position(2, 1))
 
     assert accepted is True

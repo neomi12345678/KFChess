@@ -29,9 +29,6 @@ class Motion:
     source: Position
     destination: Position
     elapsed_ms: int = 0
-    # Set when truncated to meet an opposing piece head-on - its arrival
-    # must also cancel and capture that piece.
-    capture_target: Optional[Piece] = None
 
     @property
     def duration_ms(self) -> int:
