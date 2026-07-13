@@ -1,19 +1,13 @@
-from dataclasses import dataclass
 from typing import List, Optional
 
 from model.board import BoardRepresentation
+from model.game_state import ArrivalEvent
 from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, Piece
 from model.position import Position
 from realtime import route_planner
 from realtime.motion import Airborne, Cooldown, Motion
 from realtime.route_planner import RoutePlan
 from rules.rule_engine import LastRankPromotion, PromotionRule
-
-
-@dataclass
-class ArrivalEvent:
-    piece: Piece
-    captured_piece: Optional[Piece]
 
 
 class RealTimeArbiter:

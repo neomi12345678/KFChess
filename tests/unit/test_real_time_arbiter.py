@@ -1,7 +1,8 @@
 from boardio.board_parser import parse
+from model.game_state import ArrivalEvent
 from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, PAWN, QUEEN
 from model.position import Position
-from realtime.real_time_arbiter import ArrivalEvent, RealTimeArbiter
+from realtime.real_time_arbiter import RealTimeArbiter
 
 
 def test_has_active_motion_false_when_nothing_moving():

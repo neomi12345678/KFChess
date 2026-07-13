@@ -1,43 +1,12 @@
-from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
 from config import CELL_SIZE
 from model.board import BoardRepresentation
+from model.game_state import GameSnapshot, JumpResult, MoveResult, PieceSnapshot
 from model.piece import AIRBORNE, MOVING
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import KingCaptureWinCondition, RuleEngine, WinCondition
-
-
-@dataclass
-class MoveResult:
-    is_accepted: bool
-    reason: str
-
-
-@dataclass
-class JumpResult:
-    is_accepted: bool
-    reason: str
-
-
-@dataclass
-class PieceSnapshot:
-    id: str
-    kind: str
-    color: str
-    pixel_x: int
-    pixel_y: int
-    state: str
-
-
-@dataclass
-class GameSnapshot:
-    board_width: int
-    board_height: int
-    pieces: List[PieceSnapshot]
-    selected_cell: Optional[Position]
-    game_over: bool
 
 
 class GameEngine:
