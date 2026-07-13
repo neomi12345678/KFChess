@@ -85,6 +85,11 @@ class RealTimeArbiter:
 
         # Resolve arrivals before expiring airborne protection below, so a
         # piece landing exactly as its jump window ends is still defended.
+        # Captures go first: if a mid-flight capture's victim also happens
+        # to complete its own full motion this same tick, the victim must
+        # be cancelled before its "arrival" is processed - otherwise it
+        # lands safely first and the capture then collides with it.
+        completed_motions.sort(key=lambda motion: motion.capture_target is None)
         for motion in completed_motions:
             # A mid-flight capture resolved earlier this batch may have
             # already cancelled this motion (it was the victim).

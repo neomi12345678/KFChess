@@ -54,8 +54,47 @@ def test_trajectories_collide_true_when_paths_cross_the_same_cell_at_the_same_ti
     assert trajectories_collide(a, b) is True
 
 
+def test_trajectories_collide_true_for_two_pieces_closing_in_along_the_same_file():
+    # Both move vertically in column 2 toward each other - same column rate
+    # (0) and the same column throughout, so only the row equation decides
+    # when they meet. This is the parallel-trajectory branch the head-on
+    # test above doesn't reach (that one varies by column, not row).
+    a = Trajectory(Position(0, 2), Position(4, 2), duration_ms=4000)
+    b = Trajectory(Position(6, 2), Position(2, 2), duration_ms=4000)
+
+    assert trajectories_collide(a, b) is True
+
+
+def test_trajectories_collide_false_for_two_pieces_in_the_same_file_that_never_meet_in_time():
+    # Same column-aligned setup as above, but they'd only meet after both
+    # motions are long finished - the row equation has a solution, it just
+    # falls outside either trajectory's time window.
+    a = Trajectory(Position(0, 2), Position(1, 2), duration_ms=1000)
+    b = Trajectory(Position(5, 2), Position(4, 2), duration_ms=1000)
+
+    assert trajectories_collide(a, b) is False
+
+
 def test_trajectories_collide_false_when_time_windows_dont_overlap_at_all():
     a = Trajectory(Position(0, 0), Position(0, 3), duration_ms=1000, start_offset_ms=-1000)
     b = Trajectory(Position(0, 3), Position(0, 0), duration_ms=1000, start_offset_ms=5000)
 
     assert trajectories_collide(a, b) is False
+
+
+def test_trajectories_collide_false_when_one_trajectory_has_zero_duration():
+    # A zero-duration trajectory (source and destination the same point) has
+    # no rate to divide by - must be guarded explicitly rather than crashing.
+    stationary = Trajectory(Position(0, 0), Position(0, 0), duration_ms=0)
+    moving = Trajectory(Position(0, 0), Position(0, 3), duration_ms=3000)
+
+    assert trajectories_collide(stationary, moving) is False
+
+
+def test_trajectories_collide_true_when_both_trajectories_are_identical():
+    # Same source, destination, and duration - the degenerate case where
+    # every rate and offset matches, not just the ones that vary.
+    a = Trajectory(Position(0, 0), Position(0, 3), duration_ms=3000)
+    b = Trajectory(Position(0, 0), Position(0, 3), duration_ms=3000)
+
+    assert trajectories_collide(a, b) is True

@@ -137,6 +137,60 @@ def test_has_route_conflict_is_false_for_a_knight_shaped_move_even_when_its_endp
     assert arbiter.has_route_conflict(knight, Position(2, 1), Position(0, 0)) is False
 
 
+def test_route_planning_ignores_an_active_knight_shaped_motion_as_a_potential_blocker():
+    board = parse("wN . .\n. . .\nbR . .")
+    arbiter = RealTimeArbiter(board)
+    knight = board.get_piece(Position(0, 0))
+    rook = board.get_piece(Position(2, 0))
+    arbiter.start_motion(knight, Position(0, 0), Position(1, 2))
+
+    # A knight's in-flight motion has no continuous path to collide along,
+    # so it must never be treated as a blocker for someone else's straight
+    # move, even one that ends where the knight started.
+    assert arbiter.has_route_conflict(rook, Position(2, 0), Position(0, 0)) is False
+
+
+def test_a_knight_that_arrives_to_find_a_teammate_already_there_stays_at_its_source_cell():
+    board = parse("wN . .\n. . wR")
+    arbiter = RealTimeArbiter(board)
+    knight = board.get_piece(Position(0, 0))
+    rook = board.get_piece(Position(1, 2))
+    arbiter.start_motion(knight, Position(0, 0), Position(1, 2))
+
+    events = arbiter.advance_time(2000)
+
+    # A knight has no partial path to fall back onto - cell_before treats
+    # its own source as the "one cell short" landing spot.
+    assert board.get_piece(Position(0, 0)) is knight
+    assert knight.state == IDLE
+    assert board.get_piece(Position(1, 2)) is rook
+    assert events == [ArrivalEvent(piece=knight, captured_piece=None)]
+
+
+def test_mid_flight_capture_wins_when_the_victim_would_also_complete_its_own_motion_this_same_tick():
+    board = parse("wR . . . bR")
+    arbiter = RealTimeArbiter(board)
+    white_rook = board.get_piece(Position(0, 0))
+    black_rook = board.get_piece(Position(0, 4))
+    arbiter.start_motion(white_rook, Position(0, 0), Position(0, 3))
+    arbiter.advance_time(2000)  # white has exactly 1000ms (1 cell) left
+
+    # Black closes the final cell into white's own destination - the
+    # collision lands exactly where, and exactly when, white would arrive
+    # under its own steam. Both motions become "complete" in the very same
+    # tick; the capture must still win instead of white landing safely a
+    # moment before black's resolution tries to occupy the same cell.
+    accepted = arbiter.start_motion(black_rook, Position(0, 4), Position(0, 3))
+    assert accepted is True
+
+    events = arbiter.advance_time(1000)
+
+    assert board.get_piece(Position(0, 3)) is black_rook
+    assert black_rook.state == IDLE
+    assert white_rook.state == CAPTURED
+    assert events == [ArrivalEvent(piece=black_rook, captured_piece=white_rook)]
+
+
 def test_start_motion_captures_an_opposing_piece_that_meets_it_head_on():
     board = parse("wR . . bR")
     arbiter = RealTimeArbiter(board)
@@ -196,6 +250,26 @@ def test_start_motion_rejects_a_same_color_move_with_no_safe_cell_to_reach():
 
     assert accepted is False
     assert second_rook.state == IDLE
+    assert len(arbiter.get_active_motions()) == 1
+
+
+def test_start_motion_rejects_a_move_that_would_collide_with_an_enemy_before_reaching_one_cell():
+    board = parse("wR . . . bR")
+    arbiter = RealTimeArbiter(board)
+    white_rook = board.get_piece(Position(0, 0))
+    black_rook = board.get_piece(Position(0, 4))
+    arbiter.start_motion(black_rook, Position(0, 4), Position(0, 0))
+    arbiter.advance_time(3900)
+
+    # Black is almost home; white closing from the other end would meet it
+    # only 50ms into its own travel - far short of the 1000ms needed to
+    # reach even one cell, so there's no safe cell to truncate to and the
+    # move must be rejected outright instead of "capturing after 0 cells."
+    accepted = arbiter.start_motion(white_rook, Position(0, 0), Position(0, 4))
+
+    assert accepted is False
+    assert white_rook.state == IDLE
+    assert board.get_piece(Position(0, 0)) is white_rook
     assert len(arbiter.get_active_motions()) == 1
 
 
