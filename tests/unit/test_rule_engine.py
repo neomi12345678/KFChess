@@ -1,9 +1,29 @@
+import pytest
+
 from boardio.board_parser import parse
 from engine.game_engine import GameEngine
-from model.piece import PAWN, QUEEN, ROOK
+from model.piece import KING, PAWN, QUEEN, ROOK
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
-from rules.rule_engine import KingCaptureWinCondition, LastRankPromotion, RuleEngine
+from rules.piece_rules import KingRule
+from rules.rule_engine import (
+    IncompletePieceRuleRegistryError,
+    KingCaptureWinCondition,
+    LastRankPromotion,
+    RuleEngine,
+    ensure_covers,
+)
+
+
+def test_ensure_covers_raises_when_a_piece_kind_has_no_registered_rule():
+    with pytest.raises(IncompletePieceRuleRegistryError) as excinfo:
+        ensure_covers({KING: KingRule()}, {KING, PAWN})
+
+    assert excinfo.value.missing_kinds == [PAWN]
+
+
+def test_ensure_covers_accepts_a_registry_with_every_kind_present():
+    ensure_covers({KING: KingRule()}, {KING})
 
 
 def test_validate_move_accepts_a_legal_rook_move():

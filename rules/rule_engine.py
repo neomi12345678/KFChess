@@ -1,11 +1,28 @@
 from dataclasses import dataclass
-from typing import Dict, Optional, Protocol
+from typing import Dict, Iterable, Optional, Protocol
 
 from model.board import BoardRepresentation
-from model.piece import BISHOP, KING, KNIGHT, PAWN, Piece, QUEEN, ROOK, WHITE
+from model.piece import BISHOP, KING, KIND_BY_LETTER, KNIGHT, PAWN, Piece, QUEEN, ROOK, WHITE
 from model.position import Position
 from rules.board_rules import BoardRules
 from rules.piece_rules import BishopRule, KingRule, KnightRule, PawnRule, PieceRule, QueenRule, RookRule
+
+
+class IncompletePieceRuleRegistryError(Exception):
+    def __init__(self, missing_kinds: Iterable[str]):
+        missing = sorted(missing_kinds)
+        super().__init__(f"no piece rule registered for: {', '.join(missing)}")
+        self.missing_kinds = missing
+
+
+# Fails fast at import time if a PieceKind (model.piece.KIND_BY_LETTER) was
+# added without a matching entry below - otherwise that piece would only be
+# discovered as silently illegal-to-move, during actual gameplay.
+def ensure_covers(piece_rules: Dict[str, PieceRule], kinds: Iterable[str]) -> None:
+    missing = set(kinds) - set(piece_rules)
+    if missing:
+        raise IncompletePieceRuleRegistryError(missing)
+
 
 # The default chess piece set. A custom game passes its own dict to
 # RuleEngine instead of editing this one.
@@ -17,6 +34,8 @@ STANDARD_PIECE_RULES: Dict[str, PieceRule] = {
     KING: KingRule(),
     PAWN: PawnRule(),
 }
+
+ensure_covers(STANDARD_PIECE_RULES, KIND_BY_LETTER.values())
 
 
 @dataclass
