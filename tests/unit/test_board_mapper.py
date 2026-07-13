@@ -35,3 +35,9 @@ def test_pixel_to_cell_rejects_coordinates_outside_the_board():
 
     assert mapper.pixel_to_cell(300, 50) is None
     assert mapper.pixel_to_cell(50, 300) is None
+
+
+def test_pixel_to_cell_uses_an_injected_cell_size_instead_of_the_configured_default():
+    mapper = BoardMapper(width=3, height=3, cell_size=10)
+
+    assert mapper.pixel_to_cell(15, 25) == Position(2, 1)
