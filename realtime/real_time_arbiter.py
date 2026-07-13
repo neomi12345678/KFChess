@@ -2,7 +2,7 @@ from typing import List, Optional
 
 from model.board import BoardRepresentation
 from model.game_state import ArrivalEvent
-from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, Piece
+from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, PieceRepresentation
 from model.position import Position
 from realtime import route_planner
 from realtime.motion import Airborne, Cooldown, Motion
@@ -24,23 +24,23 @@ class RealTimeArbiter:
     def get_active_motions(self) -> List[Motion]:
         return list(self._active_motions)
 
-    def get_airborne_pieces(self) -> List[Piece]:
+    def get_airborne_pieces(self) -> List[PieceRepresentation]:
         return [airborne.piece for airborne in self._airborne_states]
 
-    def is_in_cooldown(self, piece: Piece) -> bool:
+    def is_in_cooldown(self, piece: PieceRepresentation) -> bool:
         return any(cooldown.piece is piece for cooldown in self._cooldowns)
 
     # True if the move would be altered at all by an in-flight motion -
     # blocked outright, or truncated short of a same-color race.
-    def has_route_conflict(self, piece: Piece, source: Position, destination: Position) -> bool:
+    def has_route_conflict(self, piece: PieceRepresentation, source: Position, destination: Position) -> bool:
         plan = self.plan_route(piece, source, destination)
         return plan.is_blocked or plan.destination != destination
 
     # Whoever is already moving has right of way - see route_planner.plan_route.
-    def plan_route(self, piece: Piece, source: Position, destination: Position) -> RoutePlan:
+    def plan_route(self, piece: PieceRepresentation, source: Position, destination: Position) -> RoutePlan:
         return route_planner.plan_route(self._active_motions, piece, source, destination)
 
-    def start_motion(self, piece: Piece, source: Position, destination: Position) -> bool:
+    def start_motion(self, piece: PieceRepresentation, source: Position, destination: Position) -> bool:
         if piece.state != IDLE or self.is_in_cooldown(piece):
             return False
 
@@ -52,7 +52,7 @@ class RealTimeArbiter:
         piece.state = MOVING
         return True
 
-    def start_jump(self, piece: Piece) -> bool:
+    def start_jump(self, piece: PieceRepresentation) -> bool:
         if piece.state != IDLE or self.is_in_cooldown(piece):
             return False
 
@@ -97,7 +97,7 @@ class RealTimeArbiter:
 
         return events
 
-    def _start_cooldown(self, piece: Piece) -> None:
+    def _start_cooldown(self, piece: PieceRepresentation) -> None:
         self._cooldowns.append(Cooldown(piece=piece))
 
     def _advance_cooldowns(self, ms: int) -> None:
@@ -105,7 +105,7 @@ class RealTimeArbiter:
             cooldown.elapsed_ms += ms
         self._cooldowns = [cooldown for cooldown in self._cooldowns if not cooldown.is_expired()]
 
-    def _land_airborne_piece(self, piece: Piece) -> None:
+    def _land_airborne_piece(self, piece: PieceRepresentation) -> None:
         self._airborne_states = [
             airborne for airborne in self._airborne_states if airborne.piece is not piece
         ]

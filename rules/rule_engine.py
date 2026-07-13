@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Protocol
 
 from model.board import BoardRepresentation
-from model.piece import BISHOP, KING, KIND_BY_LETTER, KNIGHT, PAWN, Piece, QUEEN, ROOK, WHITE
+from model.piece import BISHOP, KING, KIND_BY_LETTER, KNIGHT, PAWN, PieceRepresentation, QUEEN, ROOK, WHITE
 from model.position import Position
 from rules.board_rules import BoardRules
 from rules.piece_rules import BishopRule, KingRule, KnightRule, PawnRule, PieceRule, QueenRule, RookRule
@@ -78,12 +78,12 @@ class WinCondition(Protocol):
     ...) can define its own ending condition without touching GameEngine.
     """
 
-    def is_game_over(self, captured_piece: Optional[Piece]) -> bool:
+    def is_game_over(self, captured_piece: Optional[PieceRepresentation]) -> bool:
         ...
 
 
 class KingCaptureWinCondition:
-    def is_game_over(self, captured_piece: Optional[Piece]) -> bool:
+    def is_game_over(self, captured_piece: Optional[PieceRepresentation]) -> bool:
         return captured_piece is not None and captured_piece.kind == KING
 
 
@@ -95,7 +95,7 @@ class PromotionRule(Protocol):
     without touching RealTimeArbiter.
     """
 
-    def promote(self, piece: Piece, board_height: int) -> None:
+    def promote(self, piece: PieceRepresentation, board_height: int) -> None:
         ...
 
 
@@ -104,7 +104,7 @@ class LastRankPromotion:
         self._promotable_kind = promotable_kind
         self._promote_to = promote_to
 
-    def promote(self, piece: Piece, board_height: int) -> None:
+    def promote(self, piece: PieceRepresentation, board_height: int) -> None:
         if piece.kind != self._promotable_kind:
             return
 

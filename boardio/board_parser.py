@@ -1,6 +1,6 @@
 from config import EMPTY_TOKEN
 from model.board import Board
-from model.piece import COLOR_BY_LETTER, KIND_BY_LETTER, Piece
+from model.piece import COLOR_BY_LETTER, KIND_BY_LETTER, Piece, PieceRepresentation
 from model.position import Position
 
 _LETTER_BY_COLOR = {color: letter for letter, color in COLOR_BY_LETTER.items()}
@@ -58,6 +58,6 @@ def _parse_piece(token: str, r: int, c: int) -> Piece:
     )
 
 
-# The inverse of _parse_piece: semantic Piece back to a two-letter token.
-def piece_to_token(piece: Piece) -> str:
+# The inverse of _parse_piece: a semantic piece back to a two-letter token.
+def piece_to_token(piece: PieceRepresentation) -> str:
     return f"{_LETTER_BY_COLOR[piece.color]}{_LETTER_BY_KIND[piece.kind]}"

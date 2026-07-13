@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from config import AIRBORNE_DURATION_MS, CELL_DURATION_MS, COOLDOWN_DURATION_MS
-from model.piece import Piece
+from model.piece import PieceRepresentation
 from model.position import Position
 
 _EPSILON = 1e-9
@@ -25,7 +25,7 @@ def motion_duration_ms(source: Position, destination: Position) -> int:
 # A piece currently traveling from source to destination.
 @dataclass
 class Motion:
-    piece: Piece
+    piece: PieceRepresentation
     source: Position
     destination: Position
     elapsed_ms: int = 0
@@ -42,7 +42,7 @@ class Motion:
 # doesn't move, it just holds its cell for a limited window.
 @dataclass
 class Airborne:
-    piece: Piece
+    piece: PieceRepresentation
     elapsed_ms: int = 0
 
     def is_expired(self) -> bool:
@@ -54,7 +54,7 @@ class Airborne:
 # reset to IDLE.
 @dataclass
 class Cooldown:
-    piece: Piece
+    piece: PieceRepresentation
     elapsed_ms: int = 0
 
     def is_expired(self) -> bool:

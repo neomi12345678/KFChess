@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from config import CELL_DURATION_MS
 from model.board import BoardRepresentation
-from model.piece import Piece
+from model.piece import PieceRepresentation
 from model.position import Position
 from realtime.motion import Motion, Trajectory, collision_time_ms, is_straight_line, motion_duration_ms
 
@@ -54,7 +54,7 @@ def retreat_cell(board: BoardRepresentation, source: Position, destination: Posi
 # same-color conflict isn't a rejection, just a race - the new mover stops
 # one cell short instead of overwriting a teammate.
 def plan_route(
-    active_motions: List[Motion], piece: Piece, source: Position, destination: Position
+    active_motions: List[Motion], piece: PieceRepresentation, source: Position, destination: Position
 ) -> RoutePlan:
     if not is_straight_line(source, destination):
         return RoutePlan(destination=destination, is_blocked=False)

@@ -1,14 +1,14 @@
 from dataclasses import dataclass
 from typing import List, Optional
 
-from model.board import Board
-from model.piece import Piece
+from model.board import BoardRepresentation
+from model.piece import PieceRepresentation
 from model.position import Position
 
 
 @dataclass
 class GameState:
-    board: Board
+    board: BoardRepresentation
 
 
 # Shared event/snapshot vocabulary: the engine, the real-time arbiter, and
@@ -30,8 +30,8 @@ class JumpResult:
 
 @dataclass
 class ArrivalEvent:
-    piece: Piece
-    captured_piece: Optional[Piece]
+    piece: PieceRepresentation
+    captured_piece: Optional[PieceRepresentation]
 
 
 @dataclass

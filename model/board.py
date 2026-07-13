@@ -1,6 +1,6 @@
 from typing import Dict, Optional, Protocol, Set
 
-from model.piece import Piece
+from model.piece import Piece, PieceRepresentation
 from model.position import Position
 
 
@@ -30,9 +30,9 @@ class BoardRepresentation(Protocol):
 
     def is_in_bounds(self, position: Position) -> bool: ...
 
-    def get_piece(self, position: Position) -> Optional[Piece]: ...
+    def get_piece(self, position: Position) -> Optional[PieceRepresentation]: ...
 
-    def add_piece(self, position: Position, piece: Piece) -> None: ...
+    def add_piece(self, position: Position, piece: PieceRepresentation) -> None: ...
 
     def remove_piece(self, position: Position) -> None: ...
 

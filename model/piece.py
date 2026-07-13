@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Protocol
 
 from model.position import Position
 
@@ -19,6 +20,23 @@ IDLE = "idle"
 MOVING = "moving"
 CAPTURED = "captured"
 AIRBORNE = "airborne"
+
+
+class PieceRepresentation(Protocol):
+    """The state contract every piece implementation must satisfy.
+
+    Rules, the engine, the arbiter, and realtime motion tracking depend
+    only on these members, never on Piece's concrete dataclass layout -
+    so a future binary/packed representation can be dropped in,
+    implementing just this shape, without touching a single line of game
+    logic.
+    """
+
+    id: str
+    color: str
+    kind: str
+    cell: Position
+    state: str
 
 
 @dataclass
