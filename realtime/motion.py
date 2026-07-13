@@ -49,9 +49,9 @@ class Airborne:
         return self.elapsed_ms >= AIRBORNE_DURATION_MS
 
 
-# A piece that just finished a motion or a jump and is resting - it can't
-# start another action until this expires, even though its own state has
-# already reset to IDLE.
+# A piece that just landed from a jump and is resting - it can't start
+# another action until this expires, even though its own state has already
+# reset to IDLE.
 @dataclass
 class Cooldown:
     piece: Piece

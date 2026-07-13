@@ -131,7 +131,7 @@ class RealTimeArbiter:
         # A same-color piece won a race to this cell since this motion
         # started - stop short instead of overwriting a teammate.
         if defender is not None and defender.color == motion.piece.color:
-            fallback = route_planner.cell_before(motion.source, motion.destination)
+            fallback = route_planner.retreat_cell(self._board, motion.source, motion.destination)
             self._board.remove_piece(motion.source)
             self._board.add_piece(fallback, motion.piece)
             motion.piece.state = IDLE

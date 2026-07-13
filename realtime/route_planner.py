@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from config import CELL_DURATION_MS
+from model.board import BoardRepresentation
 from model.piece import Piece
 from model.position import Position
 from realtime.motion import Motion, Trajectory, collision_time_ms, is_straight_line, motion_duration_ms
@@ -25,14 +26,25 @@ class RoutePlan:
     is_blocked: bool
 
 
-# The last cell along a straight path before destination - source itself
-# for a knight-shaped jump, which has no such cell.
-def cell_before(source: Position, destination: Position) -> Position:
+# The nearest open cell backing away from destination toward source - used
+# when an arrival finds a teammate already at destination. Collision
+# detection only ever compares two motions still in flight against each
+# other, so it can miss a third piece that has, by the time this motion
+# lands, already finished its own separate motion and come to rest
+# somewhere along this path; walking back cell by cell (instead of
+# assuming the one cell immediately before destination is free) keeps
+# add_piece below from raising OccupiedCellError in that case. source
+# itself is always the final fallback - it's the cell this piece is
+# vacating, guaranteed empty once it does.
+def retreat_cell(board: BoardRepresentation, source: Position, destination: Position) -> Position:
     if not is_straight_line(source, destination):
         return source
     row_step = _sign(destination.row - source.row)
     col_step = _sign(destination.col - source.col)
-    return Position(destination.row - row_step, destination.col - col_step)
+    position = Position(destination.row - row_step, destination.col - col_step)
+    while position != source and board.get_piece(position) is not None:
+        position = Position(position.row - row_step, position.col - col_step)
+    return position
 
 
 # Whoever is already moving has right of way: a new move that would cross

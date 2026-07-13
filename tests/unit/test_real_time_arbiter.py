@@ -159,7 +159,7 @@ def test_a_knight_that_arrives_to_find_a_teammate_already_there_stays_at_its_sou
 
     events = arbiter.advance_time(2000)
 
-    # A knight has no partial path to fall back onto - cell_before treats
+    # A knight has no partial path to fall back onto - retreat_cell treats
     # its own source as the "one cell short" landing spot.
     assert board.get_piece(Position(0, 0)) is knight
     assert knight.state == IDLE

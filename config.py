@@ -12,8 +12,8 @@ EMPTY_TOKEN = "."
 CELL_DURATION_MS = 1000
 AIRBORNE_DURATION_MS = CELL_DURATION_MS
 
-# How long a piece rests after finishing a motion or a jump before it can
-# start another one.
+# How long a piece rests after landing from a jump before it can act again -
+# an ordinary motion's arrival incurs no cooldown.
 COOLDOWN_DURATION_MS = CELL_DURATION_MS
 
 # Movement shapes, as (row, col) deltas - the piece rules read these
