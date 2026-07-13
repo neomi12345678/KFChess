@@ -34,11 +34,38 @@ thing this project is graded on) is that each of the following could be
 swapped out without touching the others:
 
 - **Storage.** `model/board.py` defines `BoardRepresentation`, a `Protocol`
-  (width/height/is_in_bounds/get_piece/add_piece/remove_piece/move_piece).
-  `rules`, `engine`, and `realtime` all depend on this interface, never on
-  `Board`'s dict-backed internals — `tests/unit/test_board_representation.py`
-  proves it by running the rule engine against a second, list-backed
-  implementation. A future bitboard representation is a drop-in.
+  (width/height/is_in_bounds/get_piece/add_piece/remove_piece/move_piece), and
+  `model/piece.py` defines the matching `PieceRepresentation` (id/color/kind/
+  cell/state). `rules`, `engine`, and `realtime` all depend on these
+  interfaces, never on `Board`'s dict-backed internals or `Piece`'s concrete
+  dataclass layout — `tests/unit/test_board_representation.py` proves it by
+  running the rule engine against a second, list-backed implementation.
+
+  This is deliberately more than documentation: there are no `board._cells`
+  reads outside `model/board.py`, and every module that touches a board
+  (`rules/board_rules.py`, `rules/piece_rules.py`, `engine/game_engine.py`,
+  `realtime/real_time_arbiter.py`, `realtime/route_planner.py`,
+  `input/controller.py`) types against `BoardRepresentation`, not `Board`.
+  Only `boardio/board_parser.py` and `texttests/script_runner.py` name the
+  concrete class, because something has to build one from text.
+
+  **What's still missing for a real binary/bitboard representation:** the
+  Protocol split makes the storage swappable in principle, but several
+  places currently mutate a `Piece` returned by `get_piece` in place instead
+  of writing the change back through the board -
+  `model/board.py` (`piece.cell = ...`), `realtime/real_time_arbiter.py`
+  (`piece.state = ...`), and `rules/rule_engine.py`'s `LastRankPromotion`
+  (`piece.kind = ...`). That's harmless for a dict-backed `Board`, where
+  `get_piece` returns the same object stored in `_cells`, but it would
+  silently do nothing on a packed/bit-based store, which can only
+  synthesize a fresh `Piece` per call. Before a `BitboardRepresentation`
+  lands, those three sites need to switch to an immutable `Piece`
+  (`mark_moving()`/`mark_idle()`/`mark_captured()` returning a
+  `dataclasses.replace`d copy) plus an explicit write-back call on the
+  board - nothing in `rules/piece_rules.py` or `rules/board_rules.py` needs
+  to change, since they only ever read piece attributes, never write them.
+  Not done yet on purpose: there's no concrete storage to swap in today, so
+  this is a plan, not a change made speculatively ahead of the need.
 
 - **Notation.** `model/piece.py`'s `KIND_BY_LETTER`/`COLOR_BY_LETTER` are the
   single source of truth for board notation; `boardio/board_parser.py` and
