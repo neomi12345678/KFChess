@@ -456,6 +456,26 @@ def test_airborne_piece_captures_an_enemy_that_arrives_on_its_cell():
     assert events[0].captured_piece is rook
 
 
+def test_airborne_piece_does_not_capture_a_teammate_that_arrives_on_its_cell():
+    board = parse(". . .\nwK wR .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    king = board.get_piece(Position(1, 0))
+    rook = board.get_piece(Position(1, 1))
+
+    # Rook starts first and is already halfway home before the king jumps,
+    # so the king is still mid-jump (not yet expired) when the rook arrives.
+    arbiter.start_motion(rook, Position(1, 1), Position(1, 0))
+    arbiter.advance_time(500)
+    arbiter.start_jump(king)
+    events = arbiter.advance_time(500)
+
+    assert board.get_piece(Position(1, 0)) is king
+    assert board.get_piece(Position(1, 1)) is rook
+    assert rook.state == IDLE
+    assert king.state == AIRBORNE
+    assert events == [ArrivalEvent(piece=rook, captured_piece=None)]
+
+
 def test_airborne_protection_no_longer_applies_once_it_has_expired():
     board = parse(". . . .\nwK . . bR\n. . . .")
     arbiter = RealTimeArbiter(board)

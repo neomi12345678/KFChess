@@ -113,9 +113,11 @@ class RealTimeArbiter:
     def _resolve_arrival(self, motion: Motion) -> ArrivalEvent:
         defender = self._board.get_piece(motion.destination)
 
-        # Reversed capture: an airborne defender survives and captures the
-        # arriving piece instead of being captured itself.
-        if defender is not None and defender.state == AIRBORNE:
+        # Reversed capture: an airborne enemy defender survives and captures
+        # the arriving piece instead of being captured itself. A same-color
+        # airborne defender is not an enemy to repel - it falls through to
+        # the same-color race branch below instead.
+        if defender is not None and defender.state == AIRBORNE and defender.color != motion.piece.color:
             self._board.remove_piece(motion.source)
             motion.piece.state = CAPTURED
             defender.state = IDLE
