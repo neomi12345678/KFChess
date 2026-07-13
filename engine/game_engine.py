@@ -67,6 +67,9 @@ class GameEngine:
         if piece is not None and piece.state == AIRBORNE:
             return MoveResult(is_accepted=False, reason="piece_is_airborne")
 
+        if piece is not None and self._real_time_arbiter.is_in_cooldown(piece):
+            return MoveResult(is_accepted=False, reason="piece_in_cooldown")
+
         validation = self._rule_engine.validate_move(self._board, source, destination)
         if not validation.is_valid:
             return MoveResult(is_accepted=False, reason=validation.reason)
@@ -85,6 +88,9 @@ class GameEngine:
         piece = self._board.get_piece(position)
         if piece is None:
             return JumpResult(is_accepted=False, reason="empty_cell")
+
+        if self._real_time_arbiter.is_in_cooldown(piece):
+            return JumpResult(is_accepted=False, reason="piece_in_cooldown")
 
         if not self._real_time_arbiter.start_jump(piece):
             return JumpResult(is_accepted=False, reason="piece_is_moving")

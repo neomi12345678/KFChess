@@ -11,3 +11,7 @@ EMPTY_TOKEN = "."
 
 CELL_DURATION_MS = 1000
 AIRBORNE_DURATION_MS = CELL_DURATION_MS
+
+# How long a piece rests after finishing a motion or a jump before it can
+# start another one.
+COOLDOWN_DURATION_MS = CELL_DURATION_MS

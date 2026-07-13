@@ -220,6 +220,28 @@ def test_request_jump_rejects_a_piece_that_is_already_moving():
     assert board.get_piece(Position(1, 1)).state == MOVING
 
 
+def test_request_move_rejects_a_piece_still_in_cooldown_after_finishing_a_motion():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    engine.request_move(Position(1, 1), Position(0, 1))
+    engine.wait(1000)
+
+    result = engine.request_move(Position(0, 1), Position(0, 0))
+
+    assert result.is_accepted is False
+    assert result.reason == "piece_in_cooldown"
+
+
+def test_request_jump_rejects_a_piece_still_in_cooldown_after_a_jump_expires():
+    board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
+    engine.request_jump(Position(1, 1))
+    engine.wait(1000)
+
+    result = engine.request_jump(Position(1, 1))
+
+    assert result.is_accepted is False
+    assert result.reason == "piece_in_cooldown"
+
+
 def test_request_jump_rejects_when_game_is_over():
     board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
     engine.game_over = True

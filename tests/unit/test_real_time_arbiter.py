@@ -418,3 +418,76 @@ def test_airborne_protection_no_longer_applies_once_it_has_expired():
     assert board.get_piece(Position(1, 0)) is rook
     assert king.state == CAPTURED
     assert events[0].captured_piece is king
+
+
+def test_start_motion_rejects_a_piece_still_in_cooldown_right_after_it_finishes_moving():
+    board = parse(". . .\n. wR .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    rook = board.get_piece(Position(1, 1))
+    arbiter.start_motion(rook, Position(1, 1), Position(0, 1))
+    arbiter.advance_time(1000)
+
+    assert arbiter.is_in_cooldown(rook) is True
+    accepted = arbiter.start_motion(rook, Position(0, 1), Position(0, 0))
+
+    assert accepted is False
+    assert rook.state == IDLE
+    assert board.get_piece(Position(0, 1)) is rook
+
+
+def test_start_motion_succeeds_again_once_the_cooldown_expires():
+    board = parse(". . .\n. wR .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    rook = board.get_piece(Position(1, 1))
+    arbiter.start_motion(rook, Position(1, 1), Position(0, 1))
+    arbiter.advance_time(1000)
+
+    arbiter.advance_time(1000)
+
+    assert arbiter.is_in_cooldown(rook) is False
+    accepted = arbiter.start_motion(rook, Position(0, 1), Position(0, 0))
+
+    assert accepted is True
+
+
+def test_start_jump_rejects_a_piece_still_in_cooldown_right_after_its_jump_expires():
+    board = parse(". . .\n. wK .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    king = board.get_piece(Position(1, 1))
+    arbiter.start_jump(king)
+    arbiter.advance_time(1000)
+
+    assert arbiter.is_in_cooldown(king) is True
+    accepted = arbiter.start_jump(king)
+
+    assert accepted is False
+    assert king.state == IDLE
+
+
+def test_start_jump_succeeds_again_once_the_cooldown_from_a_previous_jump_expires():
+    board = parse(". . .\n. wK .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    king = board.get_piece(Position(1, 1))
+    arbiter.start_jump(king)
+    arbiter.advance_time(1000)
+
+    arbiter.advance_time(1000)
+
+    assert arbiter.is_in_cooldown(king) is False
+    accepted = arbiter.start_jump(king)
+
+    assert accepted is True
+
+
+def test_cooldown_does_not_block_a_different_piece_from_acting():
+    board = parse("wR . .\n. . .\nbR . .")
+    arbiter = RealTimeArbiter(board)
+    white_rook = board.get_piece(Position(0, 0))
+    black_rook = board.get_piece(Position(2, 0))
+    arbiter.start_motion(white_rook, Position(0, 0), Position(0, 1))
+    arbiter.advance_time(1000)
+
+    assert arbiter.is_in_cooldown(white_rook) is True
+    accepted = arbiter.start_motion(black_rook, Position(2, 0), Position(2, 1))
+
+    assert accepted is True

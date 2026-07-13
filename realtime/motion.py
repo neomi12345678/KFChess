@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional
 
-from config import AIRBORNE_DURATION_MS, CELL_DURATION_MS
+from config import AIRBORNE_DURATION_MS, CELL_DURATION_MS, COOLDOWN_DURATION_MS
 from model.piece import Piece
 from model.position import Position
 
@@ -50,6 +50,18 @@ class Airborne:
 
     def is_expired(self) -> bool:
         return self.elapsed_ms >= AIRBORNE_DURATION_MS
+
+
+# A piece that just finished a motion or a jump and is resting - it can't
+# start another action until this expires, even though its own state has
+# already reset to IDLE.
+@dataclass
+class Cooldown:
+    piece: Piece
+    elapsed_ms: int = 0
+
+    def is_expired(self) -> bool:
+        return self.elapsed_ms >= COOLDOWN_DURATION_MS
 
 
 # A straight-line path through continuous space and time: at `source` when
