@@ -28,7 +28,7 @@ class RealTimeArbiter:
         return [airborne.piece for airborne in self._airborne_states]
 
     def is_in_cooldown(self, piece: PieceRepresentation) -> bool:
-        return any(cooldown.piece is piece for cooldown in self._cooldowns)
+        return any(cooldown.piece.id == piece.id for cooldown in self._cooldowns)
 
     # True if the move would be altered at all by an in-flight motion -
     # blocked outright, or truncated short of a same-color race.
@@ -107,7 +107,7 @@ class RealTimeArbiter:
 
     def _land_airborne_piece(self, piece: PieceRepresentation) -> None:
         self._airborne_states = [
-            airborne for airborne in self._airborne_states if airborne.piece is not piece
+            airborne for airborne in self._airborne_states if airborne.piece.id != piece.id
         ]
 
     def _resolve_arrival(self, motion: Motion) -> ArrivalEvent:
