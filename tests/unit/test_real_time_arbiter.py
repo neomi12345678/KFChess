@@ -1,7 +1,7 @@
 from boardio.board_parser import parse
 from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, PAWN, QUEEN
 from model.position import Position
-from realtime.real_time_arbiter import RealTimeArbiter
+from realtime.real_time_arbiter import ArrivalEvent, RealTimeArbiter
 
 
 def test_has_active_motion_false_when_nothing_moving():
@@ -20,6 +20,18 @@ def test_start_motion_marks_the_piece_as_moving_and_activates_arbiter():
 
     assert arbiter.has_active_motion() is True
     assert piece.state == MOVING
+
+
+def test_start_motion_rejects_a_piece_that_is_already_moving():
+    board = parse(". . .\n. wR .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    piece = board.get_piece(Position(1, 1))
+    arbiter.start_motion(piece, Position(1, 1), Position(0, 1))
+
+    accepted = arbiter.start_motion(piece, Position(1, 1), Position(1, 0))
+
+    assert accepted is False
+    assert len(arbiter.get_active_motions()) == 1
 
 
 def test_piece_has_not_arrived_after_999ms_for_a_one_cell_move():
@@ -82,43 +94,133 @@ def test_has_route_conflict_is_false_for_non_overlapping_paths():
     board = parse("wR . .\n. . .\nbR . .")
     arbiter = RealTimeArbiter(board)
     rook = board.get_piece(Position(0, 0))
+    other_rook = board.get_piece(Position(2, 0))
     arbiter.start_motion(rook, Position(0, 0), Position(0, 2))
 
-    assert arbiter.has_route_conflict(Position(2, 0), Position(2, 2)) is False
+    assert arbiter.has_route_conflict(other_rook, Position(2, 0), Position(2, 2)) is False
 
 
 def test_has_route_conflict_is_true_when_paths_share_a_cell():
     board = parse("wR . . bR")
     arbiter = RealTimeArbiter(board)
     rook = board.get_piece(Position(0, 0))
+    other_rook = board.get_piece(Position(0, 3))
     arbiter.start_motion(rook, Position(0, 0), Position(0, 3))
 
-    assert arbiter.has_route_conflict(Position(0, 3), Position(0, 0)) is True
+    assert arbiter.has_route_conflict(other_rook, Position(0, 3), Position(0, 0)) is True
 
 
 def test_has_route_conflict_is_false_for_paths_that_cross_the_same_cell_at_different_times():
-    board = parse(". . wR . .\n. . . . .\n. . . . .\nbR . . . .")
+    board = parse(". . wR . .\nbR . . . .\n. . . . .\n. . . . .")
     arbiter = RealTimeArbiter(board)
     rook = board.get_piece(Position(0, 2))
+    other_rook = board.get_piece(Position(1, 0))
     arbiter.start_motion(rook, Position(0, 2), Position(2, 2))
     arbiter.advance_time(1900)
 
     # The vertical motion is almost done and long past (1, 2); a fresh
     # horizontal move through (1, 2) wouldn't arrive there for a while - no
     # real collision, even though the two paths share that grid cell.
-    assert arbiter.has_route_conflict(Position(1, 0), Position(1, 4)) is False
+    assert arbiter.has_route_conflict(other_rook, Position(1, 0), Position(1, 4)) is False
 
 
 def test_has_route_conflict_is_false_for_a_knight_shaped_move_even_when_its_endpoint_crosses_another_path():
     board = parse("wR . .\n. . .\n. wN .")
     arbiter = RealTimeArbiter(board)
     rook = board.get_piece(Position(0, 0))
+    knight = board.get_piece(Position(2, 1))
     arbiter.start_motion(rook, Position(0, 0), Position(0, 2))
 
     # (2, 1) -> (0, 0) is an L-shape, not a straight line, so it's exempt
     # from route-conflict checking even though its endpoint (0, 0) lies on
     # the rook's active path.
-    assert arbiter.has_route_conflict(Position(2, 1), Position(0, 0)) is False
+    assert arbiter.has_route_conflict(knight, Position(2, 1), Position(0, 0)) is False
+
+
+def test_start_motion_captures_an_opposing_piece_that_meets_it_head_on():
+    board = parse("wR . . bR")
+    arbiter = RealTimeArbiter(board)
+    white_rook = board.get_piece(Position(0, 0))
+    black_rook = board.get_piece(Position(0, 3))
+
+    arbiter.start_motion(white_rook, Position(0, 0), Position(0, 3))
+    # Closing head-on, they'd meet at column 1.5 after 1500ms - black stops
+    # after 1 full cell (column 2), where the capture lands.
+    arbiter.start_motion(black_rook, Position(0, 3), Position(0, 0))
+
+    events = arbiter.advance_time(1000)
+
+    assert board.get_piece(Position(0, 2)) is black_rook
+    assert board.get_piece(Position(0, 0)) is None
+    assert board.get_piece(Position(0, 3)) is None
+    assert black_rook.state == IDLE
+    assert white_rook.state == CAPTURED
+    assert events == [ArrivalEvent(piece=black_rook, captured_piece=white_rook)]
+    assert arbiter.has_active_motion() is False
+
+
+def test_start_motion_stops_a_same_color_piece_one_cell_short_of_a_crossing_path():
+    board = parse(". . wR . .\n. . . . .\nwR . . . .\n. . . . .\n. . . . .")
+    arbiter = RealTimeArbiter(board)
+    vertical_rook = board.get_piece(Position(0, 2))
+    horizontal_rook = board.get_piece(Position(2, 0))
+
+    arbiter.start_motion(vertical_rook, Position(0, 2), Position(4, 2))
+    # Both would reach (2, 2) at exactly 2000ms - same color, so the newly
+    # commanded rook stops one cell short instead of sharing that cell.
+    arbiter.start_motion(horizontal_rook, Position(2, 0), Position(2, 4))
+
+    events = arbiter.advance_time(1000)
+
+    assert board.get_piece(Position(2, 1)) is horizontal_rook
+    assert horizontal_rook.state == IDLE
+    assert events == [ArrivalEvent(piece=horizontal_rook, captured_piece=None)]
+    # The already-active vertical motion is untouched by the other piece's
+    # new command and keeps travelling toward its original destination.
+    assert vertical_rook.state == MOVING
+    assert arbiter.has_active_motion() is True
+
+
+def test_start_motion_rejects_a_same_color_move_with_no_safe_cell_to_reach():
+    board = parse("wR . . . wR")
+    arbiter = RealTimeArbiter(board)
+    first_rook = board.get_piece(Position(0, 0))
+    second_rook = board.get_piece(Position(0, 4))
+
+    arbiter.start_motion(first_rook, Position(0, 0), Position(0, 3))
+    arbiter.advance_time(2000)
+
+    # first_rook has 1 cell left and they'd meet exactly 1000ms into
+    # second_rook's travel - no cell short of that to stop at safely.
+    accepted = arbiter.start_motion(second_rook, Position(0, 4), Position(0, 1))
+
+    assert accepted is False
+    assert second_rook.state == IDLE
+    assert len(arbiter.get_active_motions()) == 1
+
+
+def test_arrival_stops_short_instead_of_capturing_a_teammate_that_won_a_race_to_the_cell():
+    board = parse(". . wR\n. . .\nwR . .")
+    arbiter = RealTimeArbiter(board)
+    from_the_left = board.get_piece(Position(2, 0))
+    from_above = board.get_piece(Position(0, 2))
+
+    # Both head for (2, 2) along paths that only ever share that one cell,
+    # arriving at different times - plan_route never flags a conflict.
+    arbiter.start_motion(from_the_left, Position(2, 0), Position(2, 2))
+    arbiter.advance_time(500)
+    accepted = arbiter.start_motion(from_above, Position(0, 2), Position(2, 2))
+    assert accepted is True
+
+    events = arbiter.advance_time(2500)
+
+    assert board.get_piece(Position(2, 2)) is from_the_left
+    assert from_the_left.state == IDLE
+    # from_above loses the race and stops one cell short instead of
+    # overwriting its teammate.
+    assert board.get_piece(Position(1, 2)) is from_above
+    assert from_above.state == IDLE
+    assert ArrivalEvent(piece=from_above, captured_piece=None) in events
 
 
 def test_two_pieces_can_move_at_once_on_non_overlapping_routes():

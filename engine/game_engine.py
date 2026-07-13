@@ -67,16 +67,14 @@ class GameEngine:
         if piece is not None and piece.state == AIRBORNE:
             return MoveResult(is_accepted=False, reason="piece_is_airborne")
 
-        # Concurrency gate: reject only if this path crosses another
-        # in-flight motion, so unrelated pieces can still move at once.
-        if self._real_time_arbiter.has_route_conflict(source, destination):
-            return MoveResult(is_accepted=False, reason="route_conflict")
-
         validation = self._rule_engine.validate_move(self._board, source, destination)
         if not validation.is_valid:
             return MoveResult(is_accepted=False, reason=validation.reason)
 
-        self._real_time_arbiter.start_motion(piece, source, destination)
+        # start_motion may shorten or refuse this move if it collides with
+        # an in-flight motion - piece.state is already IDLE here.
+        if not self._real_time_arbiter.start_motion(piece, source, destination):
+            return MoveResult(is_accepted=False, reason="route_conflict")
 
         return MoveResult(is_accepted=True, reason="ok")
 

@@ -4,7 +4,9 @@ from typing import List, Optional
 from model.board import BoardRepresentation
 from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, Piece
 from model.position import Position
-from realtime.motion import Airborne, Motion, Trajectory, is_straight_line, motion_duration_ms, trajectories_collide
+from realtime import route_planner
+from realtime.motion import Airborne, Motion
+from realtime.route_planner import RoutePlan
 from rules.rule_engine import LastRankPromotion, PromotionRule
 
 
@@ -30,33 +32,30 @@ class RealTimeArbiter:
     def get_airborne_pieces(self) -> List[Piece]:
         return [airborne.piece for airborne in self._airborne_states]
 
-    # True if the requested move would put this piece at the same point at
-    # the same instant as an already in-flight motion - a continuous-time
-    # check, not just "do the paths cross the same grid cell": two paths
-    # that cross in space but at different times are not a conflict.
-    # Knight-shaped moves (not a straight line) have no continuous path to
-    # collide along and are exempt on either side, treated purely as a
-    # jump from source straight to destination.
-    def has_route_conflict(self, source: Position, destination: Position) -> bool:
-        if not is_straight_line(source, destination):
+    # True if the move would be altered at all by an in-flight motion -
+    # blocked, truncated, or turned into a mid-flight capture.
+    def has_route_conflict(self, piece: Piece, source: Position, destination: Position) -> bool:
+        plan = self.plan_route(piece, source, destination)
+        return plan.is_blocked or plan.destination != destination
+
+    # Only the new mover is ever shortened. Different colors capture at the
+    # meeting cell; same color stops one cell short of it.
+    def plan_route(self, piece: Piece, source: Position, destination: Position) -> RoutePlan:
+        return route_planner.plan_route(self._active_motions, piece, source, destination)
+
+    def start_motion(self, piece: Piece, source: Position, destination: Position) -> bool:
+        if piece.state != IDLE:
             return False
 
-        requested = Trajectory(source, destination, motion_duration_ms(source, destination))
+        plan = self.plan_route(piece, source, destination)
+        if plan.is_blocked:
+            return False
 
-        for motion in self._active_motions:
-            if not is_straight_line(motion.source, motion.destination):
-                continue
-            in_flight = Trajectory(
-                motion.source, motion.destination, motion.duration_ms, start_offset_ms=-motion.elapsed_ms
-            )
-            if trajectories_collide(in_flight, requested):
-                return True
-
-        return False
-
-    def start_motion(self, piece: Piece, source: Position, destination: Position) -> None:
-        self._active_motions.append(Motion(piece=piece, source=source, destination=destination))
+        self._active_motions.append(
+            Motion(piece=piece, source=source, destination=plan.destination, capture_target=plan.capture_target)
+        )
         piece.state = MOVING
+        return True
 
     def start_jump(self, piece: Piece) -> bool:
         if piece.state != IDLE:
@@ -78,6 +77,10 @@ class RealTimeArbiter:
         # Resolve arrivals before expiring airborne protection below, so a
         # piece landing exactly as its jump window ends is still defended.
         for motion in completed_motions:
+            # A mid-flight capture resolved earlier this batch may have
+            # already cancelled this motion (it was the victim).
+            if motion not in self._active_motions:
+                continue
             self._active_motions.remove(motion)
             events.append(self._resolve_arrival(motion))
 
@@ -101,7 +104,27 @@ class RealTimeArbiter:
             airborne for airborne in self._airborne_states if airborne.piece is not piece
         ]
 
+    # Cancels a piece's own motion because it was just captured mid-flight -
+    # it never reaches the board at any cell but the one it started from.
+    def _cancel_motion(self, piece: Piece) -> None:
+        for motion in self._active_motions:
+            if motion.piece is piece:
+                self._active_motions.remove(motion)
+                self._board.remove_piece(motion.source)
+                break
+
     def _resolve_arrival(self, motion: Motion) -> ArrivalEvent:
+        # Truncated to exactly where it meets an opposing piece head-on -
+        # that piece is captured in transit.
+        if motion.capture_target is not None:
+            self._cancel_motion(motion.capture_target)
+            motion.capture_target.state = CAPTURED
+            self._board.remove_piece(motion.source)
+            self._board.add_piece(motion.destination, motion.piece)
+            motion.piece.state = IDLE
+            self._promotion_rule.promote(motion.piece, self._board.height)
+            return ArrivalEvent(piece=motion.piece, captured_piece=motion.capture_target)
+
         defender = self._board.get_piece(motion.destination)
 
         # Reversed capture: an airborne defender survives and captures the
@@ -112,6 +135,15 @@ class RealTimeArbiter:
             defender.state = IDLE
             self._land_airborne_piece(defender)
             return ArrivalEvent(piece=defender, captured_piece=motion.piece)
+
+        # A same-color piece won a race to this cell since this motion
+        # started - stop short instead of overwriting a teammate.
+        if defender is not None and defender.color == motion.piece.color:
+            fallback = route_planner.cell_before(motion.source, motion.destination)
+            self._board.remove_piece(motion.source)
+            self._board.add_piece(fallback, motion.piece)
+            motion.piece.state = IDLE
+            return ArrivalEvent(piece=motion.piece, captured_piece=None)
 
         captured_piece = defender
         self._board.remove_piece(motion.source)

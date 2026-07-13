@@ -1,6 +1,6 @@
 from engine.game_engine import GameEngine
 from boardio.board_parser import parse
-from model.piece import AIRBORNE, BLACK, KING, MOVING, WHITE
+from model.piece import AIRBORNE, BLACK, CAPTURED, IDLE, KING, MOVING, WHITE
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
@@ -90,20 +90,64 @@ def test_request_move_allows_two_pieces_to_move_concurrently_on_non_overlapping_
     assert board.get_piece(Position(2, 2)) is not None
 
 
-def test_request_move_rejects_a_move_whose_route_conflicts_with_another_active_motion():
+def test_request_move_captures_an_opposing_piece_that_meets_it_head_on():
     board, engine, arbiter = make_engine("wR . . bR")
+    white_rook = board.get_piece(Position(0, 0))
+    black_rook = board.get_piece(Position(0, 3))
 
     first = engine.request_move(Position(0, 0), Position(0, 3))
     second = engine.request_move(Position(0, 3), Position(0, 0))
 
     assert first.is_accepted is True
+    assert second.is_accepted is True
+
+    engine.wait(1000)
+
+    # They'd truly meet at column 1.5 after 1500ms - black only completes 1
+    # full cell before that instant, and captures white there.
+    assert board.get_piece(Position(0, 2)) is black_rook
+    assert board.get_piece(Position(0, 0)) is None
+    assert board.get_piece(Position(0, 3)) is None
+    assert white_rook.state == CAPTURED
+
+
+def test_request_move_stops_a_same_color_piece_one_cell_short_of_a_crossing_path():
+    board, engine, arbiter = make_engine(". . wR . .\n. . . . .\nwR . . . .\n. . . . .\n. . . . .")
+    vertical_rook = board.get_piece(Position(0, 2))
+    horizontal_rook = board.get_piece(Position(2, 0))
+
+    first = engine.request_move(Position(0, 2), Position(4, 2))
+    second = engine.request_move(Position(2, 0), Position(2, 4))
+
+    assert first.is_accepted is True
+    assert second.is_accepted is True
+
+    engine.wait(1000)
+
+    # Both paths cross (2, 2) at exactly 2000ms - same color, so the newly
+    # commanded rook stops one cell short instead of sharing that cell.
+    assert board.get_piece(Position(2, 1)) is horizontal_rook
+    assert horizontal_rook.state == IDLE
+    assert vertical_rook.state == MOVING
+
+
+def test_request_move_rejects_outright_when_a_same_color_collision_leaves_no_safe_cell():
+    board, engine, arbiter = make_engine("wR . . . wR")
+    first_rook = board.get_piece(Position(0, 0))
+    second_rook = board.get_piece(Position(0, 4))
+
+    first = engine.request_move(Position(0, 0), Position(0, 3))
+    engine.wait(2000)
+
+    # first_rook has 1 cell left and they'd meet exactly 1000ms into
+    # second_rook's travel - no cell short of that to stop at safely.
+    second = engine.request_move(Position(0, 4), Position(0, 1))
+
+    assert first.is_accepted is True
     assert second.is_accepted is False
     assert second.reason == "route_conflict"
-
-    engine.wait(3000)
-
-    assert board.get_piece(Position(0, 3)) is not None
-    assert board.get_piece(Position(0, 0)) is None
+    assert second_rook.state == IDLE
+    assert len(arbiter.get_active_motions()) == 1
 
 
 def test_wait_delegates_to_real_time_arbiter():

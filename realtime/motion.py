@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 from config import AIRBORNE_DURATION_MS, CELL_DURATION_MS
 from model.piece import Piece
@@ -28,6 +29,9 @@ class Motion:
     source: Position
     destination: Position
     elapsed_ms: int = 0
+    # Set when truncated to meet an opposing piece head-on - its arrival
+    # must also cancel and capture that piece.
+    capture_target: Optional[Piece] = None
 
     @property
     def duration_ms(self) -> int:
@@ -65,19 +69,16 @@ class Trajectory:
         return self.start_offset_ms + self.duration_ms
 
 
-# True if two straight-line trajectories would occupy the same point at
-# the same instant, somewhere within the time window both are in flight -
-# not just whether their paths cross the same grid cell, but whether
-# they'd actually be there together. Solves position_a(t) == position_b(t)
-# for row and column at once, restricted to their overlapping time window.
-def trajectories_collide(a: Trajectory, b: Trajectory) -> bool:
+# The instant, in the shared "now"-relative ms coordinate, at which two
+# straight-line trajectories occupy the same point - None if they never do.
+def collision_time_ms(a: Trajectory, b: Trajectory) -> Optional[float]:
     if a.duration_ms == 0 or b.duration_ms == 0:
-        return False
+        return None
 
     overlap_start = max(a.start_offset_ms, b.start_offset_ms)
     overlap_end = min(a.end_offset_ms, b.end_offset_ms)
     if overlap_start > overlap_end:
-        return False
+        return None
 
     row_rate_a = (a.destination.row - a.source.row) / a.duration_ms
     col_rate_a = (a.destination.col - a.source.col) / a.duration_ms
@@ -106,4 +107,13 @@ def trajectories_collide(a: Trajectory, b: Trajectory) -> bool:
         elif abs(col_offset) < _EPSILON:
             collision_time = overlap_start
 
-    return collision_time is not None and overlap_start - _EPSILON <= collision_time <= overlap_end + _EPSILON
+    if collision_time is None or not (overlap_start - _EPSILON <= collision_time <= overlap_end + _EPSILON):
+        return None
+
+    return collision_time
+
+
+# True if two straight-line trajectories would occupy the same point at
+# the same instant, somewhere within the time window both are in flight.
+def trajectories_collide(a: Trajectory, b: Trajectory) -> bool:
+    return collision_time_ms(a, b) is not None
