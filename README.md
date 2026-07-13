@@ -13,9 +13,11 @@ validating one move against a static board.
 python main.py < path/to/script.kfc
 ```
 
-Input is a text script: a `Board:` section (rows of two-letter tokens like
-`wR`/`bK`, or `.` for empty) followed by a `Commands:` section (`click row
-col`, `jump row col`, `wait ms`, `print board`). The same command dispatcher
+Input is a text script: a `Board` header, rows of two-letter tokens like
+`wR`/`bK` (or `.` for empty), a blank line, then commands - one per line:
+`click x y`, `jump x y` (pixel coordinates, converted to a board cell via
+`BoardMapper`), `wait ms`, `print board`. See
+`tests/integration/scripts/*.kfc` for real examples. The same command dispatcher
 (`texttests/script_runner.py`) backs both `main.py` and the integration
 tests below, so there's exactly one implementation of "what a command
 does," not two.

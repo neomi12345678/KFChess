@@ -18,27 +18,27 @@ def parse_line(line: str) -> Optional[Command]:
     return Command(name=parts[0], args=parts[1:])
 
 
-# Splits the VPL-style "Board:" / "Commands:" protocol into its two raw
-# sections; parsing each section's contents happens elsewhere (board_parser
-# for the board lines, parse_line above for each command line).
+# Splits the .kfc protocol into its two raw sections: a "Board" header
+# line, the board rows that follow it up to the first blank line, and
+# every non-blank line after that as commands - no "Commands:" marker,
+# matching every real script under tests/integration/scripts/*.kfc.
+# Parsing each section's contents happens elsewhere (board_parser for the
+# board lines, parse_line above for each command line).
 def split_sections(text: str) -> Tuple[List[str], List[str]]:
+    lines = text.splitlines()
+
+    i = 0
+    while i < len(lines) and lines[i].strip() == "":
+        i += 1
+
+    if i >= len(lines) or lines[i].strip().rstrip(":") != "Board":
+        return [], []
+    i += 1
+
     board_lines = []
-    command_lines = []
-    section = None
+    while i < len(lines) and lines[i].strip() != "":
+        board_lines.append(lines[i].strip())
+        i += 1
 
-    for line in text.splitlines():
-        stripped = line.strip()
-
-        if stripped == "Board:":
-            section = "board"
-            continue
-        if stripped == "Commands:":
-            section = "commands"
-            continue
-
-        if section == "board":
-            board_lines.append(stripped)
-        elif section == "commands" and stripped:
-            command_lines.append(stripped)
-
+    command_lines = [line.strip() for line in lines[i:] if line.strip() != ""]
     return board_lines, command_lines
