@@ -1,5 +1,6 @@
 from typing import Iterable, Protocol, Set, Tuple
 
+from config import BISHOP_DIRECTIONS, KING_OFFSETS, KNIGHT_OFFSETS, QUEEN_DIRECTIONS, ROOK_DIRECTIONS
 from model.board import BoardRepresentation
 from model.piece import Piece, WHITE
 from model.position import Position
@@ -10,13 +11,6 @@ from model.position import Position
 class PieceRule(Protocol):
     def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
         ...
-
-
-_ROOK_DIRECTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-_BISHOP_DIRECTIONS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
-_QUEEN_DIRECTIONS = _ROOK_DIRECTIONS + _BISHOP_DIRECTIONS
-_KNIGHT_OFFSETS = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
-_KING_OFFSETS = _QUEEN_DIRECTIONS
 
 
 # Shared by rook/bishop/queen: walk outward from the piece in each
@@ -65,27 +59,27 @@ def _single_step(board: BoardRepresentation, piece: Piece, offsets: Iterable[Tup
 
 class RookRule:
     def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
-        return _slide(board, piece, _ROOK_DIRECTIONS)
+        return _slide(board, piece, ROOK_DIRECTIONS)
 
 
 class BishopRule:
     def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
-        return _slide(board, piece, _BISHOP_DIRECTIONS)
+        return _slide(board, piece, BISHOP_DIRECTIONS)
 
 
 class QueenRule:
     def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
-        return _slide(board, piece, _QUEEN_DIRECTIONS)
+        return _slide(board, piece, QUEEN_DIRECTIONS)
 
 
 class KnightRule:
     def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
-        return _single_step(board, piece, _KNIGHT_OFFSETS)
+        return _single_step(board, piece, KNIGHT_OFFSETS)
 
 
 class KingRule:
     def legal_destinations(self, board: BoardRepresentation, piece: Piece) -> Set[Position]:
-        return _single_step(board, piece, _KING_OFFSETS)
+        return _single_step(board, piece, KING_OFFSETS)
 
 
 class PawnRule:
