@@ -1,17 +1,32 @@
 from engine.game_engine import GameEngine
 from boardio.board_parser import parse
-from model.piece import AIRBORNE, BLACK, CAPTURED, IDLE, KING, LONG_REST, MOVING, ROOK, WHITE, Piece
+from config import AIRBORNE_DURATION_MULTIPLIER, REST_DURATION_MULTIPLIER
+from model.game_state import ArrivalEvent, GameObserver, MoveLoggedEvent
+from model.piece import AIRBORNE, BLACK, CAPTURED, IDLE, KING, LONG_REST, MOVING, PAWN, ROOK, WHITE, Piece
 from model.position import Position
 from realtime.motion import animation_cycle_duration_ms, move_cell_duration_ms
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
+
+
+class RecordingObserver(GameObserver):
+    def __init__(self):
+        self.logged_moves = []
+        self.arrivals = []
+
+    def on_move_logged(self, event: MoveLoggedEvent) -> None:
+        self.logged_moves.append(event)
+
+    def on_arrival(self, event: ArrivalEvent) -> None:
+        self.arrivals.append(event)
 
 # All piece kinds currently share the same speed/animation numbers in the
 # provided asset configs, so one reference piece's derived durations are
 # valid for every piece used below.
 _reference_piece = Piece(id="ref", color=WHITE, kind=ROOK, cell=Position(0, 0))
 CELL_DURATION_MS = move_cell_duration_ms(_reference_piece)
-LONG_REST_DURATION_MS = animation_cycle_duration_ms(_reference_piece, "long_rest")
+AIRBORNE_DURATION_MS = round(animation_cycle_duration_ms(_reference_piece, "jump") * AIRBORNE_DURATION_MULTIPLIER)
+LONG_REST_DURATION_MS = round(animation_cycle_duration_ms(_reference_piece, "long_rest") * REST_DURATION_MULTIPLIER)
 
 
 def make_engine(board_text):
@@ -257,7 +272,7 @@ def test_request_move_succeeds_again_once_the_long_rest_from_a_previous_move_exp
 def test_request_move_rejects_a_piece_still_in_cooldown_after_landing_from_a_jump():
     board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
     engine.request_jump(Position(1, 1))
-    engine.wait(1000)
+    engine.wait(AIRBORNE_DURATION_MS)
 
     result = engine.request_move(Position(1, 1), Position(0, 1))
 
@@ -268,7 +283,7 @@ def test_request_move_rejects_a_piece_still_in_cooldown_after_landing_from_a_jum
 def test_request_jump_rejects_a_piece_still_in_cooldown_after_a_jump_expires():
     board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
     engine.request_jump(Position(1, 1))
-    engine.wait(1000)
+    engine.wait(AIRBORNE_DURATION_MS)
 
     result = engine.request_jump(Position(1, 1))
 
@@ -346,3 +361,121 @@ def test_snapshot_reflects_game_over_flag():
     snapshot = engine.snapshot()
 
     assert snapshot.game_over is True
+
+
+def test_an_accepted_move_notifies_observers_with_the_move_facts():
+    # GameEngine reports raw facts (color/kind/source/destination/
+    # is_capture), never notation text - see model/game_state.py's
+    # MoveLoggedEvent docstring for why building "Rb3"-style strings is
+    # view/observers.py's job, not the engine's.
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    observer = RecordingObserver()
+    engine.add_observer(observer)
+
+    engine.request_move(Position(1, 1), Position(0, 1))
+
+    [event] = observer.logged_moves
+    assert event.color == WHITE
+    assert event.kind == ROOK
+    assert event.source == Position(1, 1)
+    assert event.destination == Position(0, 1)
+    assert event.is_capture is False
+    assert event.is_jump is False
+    assert event.elapsed_ms == 0
+
+
+def test_a_rejected_move_does_not_notify_observers():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    observer = RecordingObserver()
+    engine.add_observer(observer)
+
+    engine.request_move(Position(1, 1), Position(2, 2))  # not a straight line - illegal
+
+    assert observer.logged_moves == []
+
+
+def test_a_capturing_moves_event_marks_is_capture_true():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. bP .")
+    observer = RecordingObserver()
+    engine.add_observer(observer)
+
+    engine.request_move(Position(1, 1), Position(2, 1))
+
+    [event] = observer.logged_moves
+    assert event.is_capture is True
+
+
+def test_a_move_logs_the_engines_own_elapsed_time_not_wall_clock_time():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    observer = RecordingObserver()
+    engine.add_observer(observer)
+
+    engine.wait(1234)
+    engine.request_move(Position(1, 1), Position(0, 1))
+
+    [event] = observer.logged_moves
+    assert event.elapsed_ms == 1234
+
+
+def test_an_accepted_jump_notifies_observers_with_is_jump_true_and_no_travel():
+    # A jump has no destination (see RealTimeArbiter.start_jump) - source
+    # and destination both report the piece's own cell.
+    board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
+    observer = RecordingObserver()
+    engine.add_observer(observer)
+
+    engine.request_jump(Position(1, 1))
+
+    [event] = observer.logged_moves
+    assert event.color == WHITE
+    assert event.kind == KING
+    assert event.is_jump is True
+    assert event.source == Position(1, 1)
+    assert event.destination == Position(1, 1)
+
+
+def test_a_rejected_jump_does_not_notify_observers():
+    board, engine, arbiter = make_engine(". . .\n. . .\n. . .")
+    observer = RecordingObserver()
+    engine.add_observer(observer)
+
+    engine.request_jump(Position(1, 1))  # empty cell
+
+    assert observer.logged_moves == []
+
+
+def test_wait_notifies_observers_of_every_arrival_including_non_captures():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    observer = RecordingObserver()
+    engine.add_observer(observer)
+
+    engine.request_move(Position(1, 1), Position(0, 1))
+    engine.wait(CELL_DURATION_MS)
+
+    [event] = observer.arrivals
+    assert event.captured_piece is None
+
+
+def test_wait_notifies_observers_of_a_captures_event_with_the_captured_piece():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. bP .")
+    observer = RecordingObserver()
+    engine.add_observer(observer)
+
+    engine.request_move(Position(1, 1), Position(2, 1))
+    engine.wait(CELL_DURATION_MS)
+
+    [event] = observer.arrivals
+    assert event.captured_piece.kind == PAWN
+
+
+def test_multiple_observers_are_all_notified_of_the_same_move():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    first = RecordingObserver()
+    second = RecordingObserver()
+    engine.add_observer(first)
+    engine.add_observer(second)
+
+    engine.request_move(Position(1, 1), Position(0, 1))
+
+    assert len(first.logged_moves) == 1
+    assert len(second.logged_moves) == 1

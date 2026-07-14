@@ -1,4 +1,7 @@
+import pytest
+
 from boardio.board_parser import parse
+from config import AIRBORNE_DURATION_MULTIPLIER, REST_DURATION_MULTIPLIER
 from model.game_state import ArrivalEvent
 from model.piece import AIRBORNE, CAPTURED, IDLE, LONG_REST, MOVING, PAWN, QUEEN, SHORT_REST, WHITE, ROOK, Piece
 from model.position import Position
@@ -10,9 +13,9 @@ from realtime.real_time_arbiter import RealTimeArbiter
 # valid for every piece used below (rooks, kings, knights, pawns).
 _reference_piece = Piece(id="ref", color=WHITE, kind=ROOK, cell=Position(0, 0))
 CELL_DURATION_MS = move_cell_duration_ms(_reference_piece)
-AIRBORNE_DURATION_MS = animation_cycle_duration_ms(_reference_piece, "jump")
-SHORT_REST_DURATION_MS = animation_cycle_duration_ms(_reference_piece, "short_rest")
-LONG_REST_DURATION_MS = animation_cycle_duration_ms(_reference_piece, "long_rest")
+AIRBORNE_DURATION_MS = round(animation_cycle_duration_ms(_reference_piece, "jump") * AIRBORNE_DURATION_MULTIPLIER)
+SHORT_REST_DURATION_MS = round(animation_cycle_duration_ms(_reference_piece, "short_rest") * REST_DURATION_MULTIPLIER)
+LONG_REST_DURATION_MS = round(animation_cycle_duration_ms(_reference_piece, "long_rest") * REST_DURATION_MULTIPLIER)
 
 
 def test_has_active_motion_false_when_nothing_moving():
@@ -341,6 +344,75 @@ def test_capturing_a_piece_removes_it_and_marks_it_captured():
     assert events[0].captured_piece is captured_pawn
 
 
+def test_a_piece_captured_while_resting_does_not_get_resurrected_when_its_stale_rest_timer_expires():
+    # Resting gives no protection against capture, unlike AIRBORNE.
+    board = parse(". . .\n. wR .\nbR . .")
+    arbiter = RealTimeArbiter(board)
+    white_rook = board.get_piece(Position(1, 1))
+    black_rook = board.get_piece(Position(2, 0))
+
+    arbiter.start_motion(white_rook, Position(1, 1), Position(1, 0))
+    arbiter.advance_time(CELL_DURATION_MS)
+    assert white_rook.state == LONG_REST
+
+    arbiter.start_motion(black_rook, Position(2, 0), Position(1, 0))
+    arbiter.advance_time(CELL_DURATION_MS)
+    assert white_rook.state == CAPTURED
+
+    # Advance well past white_rook's original long_rest duration.
+    arbiter.advance_time(LONG_REST_DURATION_MS + CELL_DURATION_MS)
+
+    assert white_rook.state == CAPTURED
+
+
+def test_a_piece_captured_mid_flight_does_not_leave_a_stale_motion_that_resurrects_it():
+    board = parse("wR . . . . . . .\n. . . . . . . .\n. . . . . . . .\nbR . . . . . . .")
+    arbiter = RealTimeArbiter(board)
+    slow_mover = board.get_piece(Position(0, 0))  # heading far away (7 cells)
+    fast_attacker = board.get_piece(Position(3, 0))  # heading to slow_mover's source (3 cells)
+
+    arbiter.start_motion(slow_mover, Position(0, 0), Position(0, 7))
+    arbiter.start_motion(fast_attacker, Position(3, 0), Position(0, 0))
+
+    # Small ticks, like a real frame loop - one big lump sum would let both
+    # arrivals resolve in the same call and mask the bug.
+    for _ in range(1000):
+        arbiter.advance_time(10)
+        if slow_mover.state == CAPTURED:
+            break
+
+    assert slow_mover.state == CAPTURED
+    assert board.get_piece(Position(0, 0)) is fast_attacker
+
+    # Advance well past when slow_mover's original (now-stale) motion
+    # would have arrived at its intended destination.
+    for _ in range(1000):
+        arbiter.advance_time(10)
+
+    assert slow_mover.state == CAPTURED
+    assert board.get_piece(Position(0, 7)) is None
+    assert board.get_piece(Position(0, 0)) is fast_attacker
+
+
+def test_a_pieces_own_arrival_is_skipped_if_it_was_captured_earlier_in_the_same_tick():
+    # Same-duration motions completing in one advance_time call: the
+    # attacker (started first) resolves first and captures the victim,
+    # so the victim's own stale Motion must be skipped, not double-resolved.
+    board = parse("wR . . .\n. . . .\n. . . .\nbR . . .")
+    arbiter = RealTimeArbiter(board)
+    victim = board.get_piece(Position(0, 0))
+    attacker = board.get_piece(Position(3, 0))
+
+    arbiter.start_motion(attacker, Position(3, 0), Position(0, 0))  # started first
+    arbiter.start_motion(victim, Position(0, 0), Position(0, 3))  # same 3-cell duration
+
+    arbiter.advance_time(3 * CELL_DURATION_MS + 100)  # both complete in one call
+
+    assert victim.state == CAPTURED
+    assert board.get_piece(Position(0, 3)) is None
+    assert board.get_piece(Position(0, 0)) is attacker
+
+
 def test_white_pawn_promotes_to_queen_on_arrival_at_row_zero():
     board = parse(". . .\n. wP .")
     arbiter = RealTimeArbiter(board)
@@ -460,6 +532,11 @@ def test_one_airborne_pieces_defense_does_not_affect_another_airborne_piece():
 
     assert board.get_piece(Position(0, 0)) is white_king
     assert rook.state == CAPTURED
+    # black_king's own, unrelated jump is untouched by white_king's defense.
+    assert black_king.state == AIRBORNE
+
+    arbiter.advance_time(AIRBORNE_DURATION_MS - 2 * CELL_DURATION_MS)
+
     assert black_king.state == SHORT_REST
     assert arbiter.get_airborne_pieces() == []
 
@@ -604,3 +681,17 @@ def test_cooldown_does_not_block_a_different_piece_from_acting():
     accepted = arbiter.start_motion(black_rook, Position(2, 0), Position(2, 1))
 
     assert accepted is True
+
+
+def test_enter_state_rejects_a_next_state_when_finished_value_it_does_not_recognize():
+    # This is a fail-fast guard against malformed asset config.json data -
+    # next_state_when_finished should only ever be "idle"/"short_rest"/
+    # "long_rest" (see model/piece.py's STATE_FOLDER and each state's own
+    # config.json). A typo or unsupported value in that file must not be
+    # silently ignored.
+    board = parse(". . .\n. wR .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    rook = board.get_piece(Position(1, 1))
+
+    with pytest.raises(ValueError):
+        arbiter._enter_state(rook, "bogus_state")

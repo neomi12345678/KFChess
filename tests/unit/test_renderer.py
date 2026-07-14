@@ -3,9 +3,12 @@ from typing import List, Tuple
 
 from engine.game_engine import GameEngine
 from boardio.board_parser import parse
+from model.game_state import MoveLoggedEvent
+from model.piece import BLACK, PAWN, WHITE
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
+from view.observers import MoveLogObserver, ScoreObserver
 from view.renderer import Renderer
 
 
@@ -15,6 +18,10 @@ class FakeCanvas:
     images: List[Tuple[str, int, int]] = field(default_factory=list)
     highlighted_cells: List[Tuple[int, int]] = field(default_factory=list)
     texts: List[str] = field(default_factory=list)
+    # (text, x) pairs, in addition to `texts` above - new panel-placement
+    # tests need the x each line was drawn at; existing tests only ever
+    # assert on `texts` itself, so that stays a plain list of strings.
+    text_positions: List[Tuple[str, int]] = field(default_factory=list)
 
     def draw_rect(self, x, y, width, height):
         self.rects.append((x, y, width, height))
@@ -25,8 +32,9 @@ class FakeCanvas:
     def highlight_cell(self, row, col):
         self.highlighted_cells.append((row, col))
 
-    def draw_text(self, text, x, y):
+    def draw_text(self, text, x, y, font_size=1.0, color=(255, 255, 255, 255)):
         self.texts.append(text)
+        self.text_positions.append((text, x))
 
 
 def make_engine(board_text):
@@ -88,3 +96,112 @@ def test_renderer_shows_game_over_message():
     Renderer(canvas).draw(snapshot)
 
     assert canvas.texts == ["Game Over"]
+
+
+def test_renderer_draws_no_panel_text_when_side_panels_are_not_configured():
+    # side_panel_width_px defaults to 0 - a Renderer that never asked for
+    # panels must behave exactly as it did before panels existed, even if
+    # (mistakenly) given observers/names anyway.
+    board, engine = make_engine("wK . .\n. . .\n. . .")
+    snapshot = engine.snapshot()
+    canvas = FakeCanvas()
+
+    Renderer(canvas, move_log=MoveLogObserver(board_height=3), score=ScoreObserver()).draw(snapshot)
+
+    assert canvas.texts == []
+
+
+def test_renderer_draws_default_name_and_zero_score_when_no_observers_are_given():
+    board, engine = make_engine("wK . .\n. . .\n. . .")
+    snapshot = engine.snapshot()
+    canvas = FakeCanvas()
+
+    Renderer(canvas, side_panel_width_px=200).draw(snapshot)
+
+    assert "White" in canvas.texts
+    assert "Black" in canvas.texts
+    assert canvas.texts.count("Score: 0") == 2
+
+
+def test_renderer_draws_player_names_and_score_from_the_given_observers():
+    board, engine = make_engine("wK . .\n. . .\n. . .")
+    snapshot = engine.snapshot()
+    canvas = FakeCanvas()
+    score = ScoreObserver()
+    score.on_arrival(_arrival_with_capture())
+
+    Renderer(
+        canvas,
+        score=score,
+        player_names={WHITE: "Musti Shusti", BLACK: "Chicko Miko"},
+        side_panel_width_px=200,
+    ).draw(snapshot)
+
+    assert "Musti Shusti" in canvas.texts
+    assert "Chicko Miko" in canvas.texts
+    assert "Score: 1" in canvas.texts
+
+
+def _pawn_move_event(color, source, destination, elapsed_ms=0):
+    return MoveLoggedEvent(
+        color=color,
+        kind=PAWN,
+        source=source,
+        destination=destination,
+        is_capture=False,
+        is_jump=False,
+        elapsed_ms=elapsed_ms,
+    )
+
+
+def test_renderer_draws_move_log_entries_for_each_color_with_formatted_time():
+    board, engine = make_engine("wK . .\n. . .\n. . .")
+    snapshot = engine.snapshot()
+    canvas = FakeCanvas()
+    # MoveLogObserver's own board_height is independent of the tiny 3x3
+    # board this test's Renderer/snapshot uses - it only drives notation.
+    move_log = MoveLogObserver(board_height=8)
+    move_log.on_move_logged(_pawn_move_event(WHITE, Position(6, 4), Position(4, 4), elapsed_ms=4105))
+
+    Renderer(canvas, move_log=move_log, side_panel_width_px=200).draw(snapshot)
+
+    assert "00:04.105  e4" in canvas.texts
+
+
+def test_renderer_only_shows_the_most_recent_moves_up_to_the_configured_limit():
+    board, engine = make_engine("wK . .\n. . .\n. . .")
+    snapshot = engine.snapshot()
+    canvas = FakeCanvas()
+    move_log = MoveLogObserver(board_height=8)
+    for i in range(5):
+        move_log.on_move_logged(_pawn_move_event(WHITE, Position(6, i), Position(4, i), elapsed_ms=i))
+
+    Renderer(canvas, move_log=move_log, side_panel_width_px=200, max_visible_moves=2).draw(snapshot)
+
+    shown = [text for text in canvas.texts if text.startswith("00:00.00") and len(text) > len("00:00.000")]
+    assert shown == ["00:00.003  d4", "00:00.004  e4"]
+
+
+def test_renderer_draws_blacks_panel_on_the_left_and_whites_on_the_right():
+    board, engine = make_engine("wK . .\n. . .\n. . .")  # 3 columns * CELL_SIZE = 300px board
+    snapshot = engine.snapshot()
+    canvas = FakeCanvas()
+    move_log = MoveLogObserver(board_height=8)
+    move_log.on_move_logged(_pawn_move_event(BLACK, Position(1, 4), Position(3, 4)))
+    move_log.on_move_logged(_pawn_move_event(WHITE, Position(6, 4), Position(4, 4)))
+
+    Renderer(canvas, move_log=move_log, side_panel_width_px=200).draw(snapshot)
+
+    black_x = dict(canvas.text_positions)["00:00.000  e5"]
+    white_x = dict(canvas.text_positions)["00:00.000  e4"]
+    assert black_x == 10
+    assert white_x == 200 + 3 * 100 + 10  # side_panel_width_px + board_px_width + margin
+
+
+def _arrival_with_capture():
+    from model.game_state import ArrivalEvent
+    from model.piece import PAWN, Piece
+
+    attacker = Piece(id="atk", color=WHITE, kind=PAWN, cell=Position(0, 0))
+    captured = Piece(id="cap", color=BLACK, kind=PAWN, cell=Position(0, 1))
+    return ArrivalEvent(piece=attacker, captured_piece=captured)

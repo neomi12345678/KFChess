@@ -1,4 +1,6 @@
-from app import App
+from app import App, build_game
+from boardio.board_parser import parse
+from model.position import Position
 
 
 class SpyController:
@@ -62,3 +64,28 @@ def test_render_draws_a_snapshot_built_with_the_current_selection():
 
     assert game_engine.snapshot_calls == ["some-cell"]
     assert renderer.drawn == [snapshot]
+
+
+def test_build_game_with_no_board_offset_selects_the_piece_at_the_raw_pixel():
+    board = parse("wK . .\n. . .\n. . .")
+    game_engine, controller = build_game(board)
+
+    controller.click(50, 50)
+
+    assert controller.selected == Position(0, 0)
+
+
+def test_build_game_threads_board_offset_x_into_the_board_mapper_it_builds():
+    # Regression guard: play.py draws the board inset by SIDE_PANEL_WIDTH_PX
+    # (see graphics/img_canvas.py) - a click at the raw, un-shifted pixel a
+    # piece used to sit at must now miss (it's in the side panel), and the
+    # shifted pixel must hit instead. Losing this wiring is what broke every
+    # click/move in the running game after side panels were added.
+    board = parse("wK . .\n. . .\n. . .")
+    game_engine, controller = build_game(board, board_offset_x=260)
+
+    controller.click(50, 50)
+    assert controller.selected is None
+
+    controller.click(260 + 50, 50)
+    assert controller.selected == Position(0, 0)

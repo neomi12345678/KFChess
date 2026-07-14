@@ -3,7 +3,13 @@ import cv2
 ESC_KEY = 27
 
 
-class GameWindow:
+# Not unit-tested: __init__ opens a real OS window as a side effect
+# (cv2.namedWindow), and show()/close() drive that same real window and its
+# live event queue - there's no way to exercise this class without either
+# a real display or mocking cv2, and this project's tests use real objects
+# only, never mocks. Covered instead by actually running play.py (see the
+# `run` skill) and clicking through it by hand.
+class GameWindow:  # pragma: no cover
     """The only place cv2's window/event-loop primitives are touched
     directly - everything else in the app talks to ImgCanvas/Img.
 

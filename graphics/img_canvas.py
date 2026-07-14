@@ -1,6 +1,7 @@
 import pathlib
 
 import cv2
+import numpy as np
 
 import piece_config
 from config import CELL_SIZE
@@ -22,8 +23,19 @@ class ImgCanvas:
     # board.png's native resolution (828x822) doesn't divide evenly into
     # CELL_SIZE-sized cells - resizing it to exactly width*height cells here
     # is what keeps every piece aligned to its square instead of drifting.
-    def __init__(self, board_width: int = 8, board_height: int = 8):
+    #
+    # side_panel_width_px reserves blank margins left and right of the board
+    # for view/renderer.py's moves-log/score/name panels - 0 by default, so
+    # any caller that doesn't ask for panels gets a frame sized exactly to
+    # the board, byte-identical to before this existed. When it's set, the
+    # board is inset by that many pixels on each side and every board-
+    # relative draw call below (draw_image/highlight_cell) shifts by the
+    # same amount; draw_text does not, since Renderer already computes
+    # frame-absolute coordinates for anything it draws outside the board
+    # (see view/renderer.py).
+    def __init__(self, board_width: int = 8, board_height: int = 8, side_panel_width_px: int = 0):
         self._board = Img().read(BOARD_PATH, size=(board_width * CELL_SIZE, board_height * CELL_SIZE))
+        self._board_offset_x = side_panel_width_px
         self._frame = None
         self._animator = SpriteAnimator()
         # Every (piece_code, state, frame) sprite file's pixels never change
@@ -36,10 +48,23 @@ class ImgCanvas:
         self._sprite_cache: dict[pathlib.Path, Img] = {}
 
     def begin_frame(self) -> None:
-        # A fresh Img sharing a *copy* of the board's pixels, so drawing a
-        # piece/highlight never mutates the cached board image.
         self._frame = Img()
-        self._frame.img = self._board.img.copy()
+        if self._board_offset_x == 0:
+            # A fresh Img sharing a *copy* of the board's pixels, so drawing
+            # a piece/highlight never mutates the cached board image.
+            self._frame.img = self._board.img.copy()
+            return
+
+        board_h, board_w = self._board.img.shape[:2]
+        channels = self._board.img.shape[2]
+        # Fully opaque dark gray panel background - alpha must be 255, not
+        # 0, or the panels would come out fully transparent (and, depending
+        # on how the frame is later consumed, show as unintended white/black
+        # instead of a visible backdrop for the panel text).
+        fill = (40, 40, 40, 255) if channels == 4 else (40, 40, 40)
+        canvas = np.full((board_h, board_w + 2 * self._board_offset_x, channels), fill, dtype=self._board.img.dtype)
+        canvas[:, self._board_offset_x:self._board_offset_x + board_w] = self._board.img
+        self._frame.img = canvas
 
     def frame(self):
         return self._frame.img
@@ -68,10 +93,10 @@ class ImgCanvas:
             self._sprite_cache[path] = sprite
 
         sprite_h, sprite_w = sprite.img.shape[:2]
-        sprite.draw_on(self._frame, x - sprite_w // 2, y - sprite_h // 2)
+        sprite.draw_on(self._frame, self._board_offset_x + x - sprite_w // 2, y - sprite_h // 2)
 
     def highlight_cell(self, row: int, col: int, color=(0, 255, 255), alpha: float = 0.35) -> None:
-        x, y = col * CELL_SIZE, row * CELL_SIZE
+        x, y = self._board_offset_x + col * CELL_SIZE, row * CELL_SIZE
         region = self._frame.img[y:y + CELL_SIZE, x:x + CELL_SIZE]
         overlay = region.copy()
         overlay[:, :, :3] = color

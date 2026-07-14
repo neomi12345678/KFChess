@@ -8,10 +8,15 @@ from rules.rule_engine import RuleEngine
 # Builds the engine + input layers for a parsed board - the one place both
 # main.py's script runner and play.py's interactive window get this wiring
 # from, so a constructor change to any of these only needs updating here.
-def build_game(board):
+#
+# board_offset_x defaults to 0 (main.py's script runner has no window, let
+# alone side panels) - play.py passes its actual SIDE_PANEL_WIDTH_PX so
+# clicks on the visually-inset board (see graphics/img_canvas.py) map back
+# to the right column instead of being read as raw, unshifted pixels.
+def build_game(board, board_offset_x: int = 0):
     real_time_arbiter = RealTimeArbiter(board)
     game_engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=real_time_arbiter)
-    board_mapper = BoardMapper(width=board.width, height=board.height)
+    board_mapper = BoardMapper(width=board.width, height=board.height, board_offset_x=board_offset_x)
     controller = Controller(board=board, board_mapper=board_mapper, game_engine=game_engine)
     return game_engine, controller
 

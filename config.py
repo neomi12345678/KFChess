@@ -9,18 +9,35 @@ these.
 CELL_SIZE = 100
 EMPTY_TOKEN = "."
 
-# Real-world scale we chose for converting the animation assets'
-# physics.speed_m_per_sec (assets/pieces/*/states/*/config.json) into a
-# per-cell duration: a real ~5.7cm chess square at those speeds would cross
-# in ~40ms - too fast to see - so we treat one square as one meter instead,
-# which conveniently also means CELL_SIZE pixels == 1 meter.
-#
-# Every other piece of real-time timing (move-cell duration, jump hangtime,
-# short_rest/long_rest length) is read per-piece from each piece's own
-# assets/pieces/<code>/states/<state>/config.json instead of a global
-# constant here - see piece_config.py and realtime/motion.py's
-# move_cell_duration_ms/animation_cycle_duration_ms.
+# Width, in pixels, of each side panel (moves log/score/player name) the
+# board is flanked by - see graphics/img_canvas.py's side_panel_width_px.
+# 0 by default (ImgCanvas's own default) so anything that doesn't ask for
+# panels gets a frame sized exactly to the board, unchanged.
+SIDE_PANEL_WIDTH_PX = 260
+
+# How many of the most recent moves-log entries a side panel shows at once
+# (see view/renderer.py) - older entries still exist in
+# view.observers.MoveLogObserver, just scrolled out of what's drawn.
+MAX_VISIBLE_MOVES_PER_PANEL = 30
+
+# One square == one meter, not a natural distance - chosen so the assets'
+# physics.speed_m_per_sec produces a duration slow enough to see, instead
+# of the ~40ms a real ~5.7cm square would give at those speeds.
 METERS_PER_SQUARE = 1.0
+
+# Raw short_rest/long_rest length was barely noticeable in a live playtest,
+# so it's scaled up here to make the "can't act yet" window perceptible -
+# gameplay-feel tuning, not derived from the assets.
+REST_DURATION_MULTIPLIER = 1.5
+
+# Raw jump hangtime is shorter than even the fastest attack, so a
+# defensive jump could never still be airborne when the attack lands
+# (found via live playtest - a frame-by-frame loop catches this timing
+# gap that a single coarse test wait masks). 4x also has to cover the
+# human reaction time between right-clicking to jump and the attacker
+# completing a two-click select-then-target; 2x didn't leave enough
+# margin to test reliably by hand.
+AIRBORNE_DURATION_MULTIPLIER = 4.0
 
 # Movement shapes, as (row, col) deltas - the piece rules read these
 # instead of hardcoding direction/offset tuples of their own.

@@ -2,8 +2,11 @@ import time
 
 from app import App, build_game
 from boardio.board_parser import parse as parse_board
+from config import SIDE_PANEL_WIDTH_PX
 from graphics.img_canvas import ImgCanvas
 from graphics.window import GameWindow
+from model.piece import BLACK, WHITE
+from view.observers import MoveLogObserver, ScoreObserver
 from view.renderer import Renderer
 
 STARTING_BOARD = """
@@ -18,11 +21,38 @@ wR wN wB wQ wK wB wN wR
 """.strip()
 
 
-def main() -> None:
+# Everything buildable without opening a real OS window - split out from
+# main() so it's unit-testable on its own. GameWindow's constructor calls
+# cv2.namedWindow, an actual side effect on the screen, and the loop below
+# blocks on a real event queue - neither belongs in a test, real or faked;
+# this function is the rest of main()'s wiring, minus those two things.
+def build_app(white_name: str = "White", black_name: str = "Black"):
     board = parse_board(STARTING_BOARD)
-    game_engine, controller = build_game(board)
-    canvas = ImgCanvas(board_width=board.width, board_height=board.height)
-    app = App(controller=controller, game_engine=game_engine, renderer=Renderer(canvas))
+    game_engine, controller = build_game(board, board_offset_x=SIDE_PANEL_WIDTH_PX)
+
+    # Registered as GameEngine observers (see engine/game_engine.py's
+    # add_observer) rather than wired into build_game - this is the GUI's
+    # own moves-log/score display, not something main.py's text-script
+    # runner needs, so it stays out of the shared build_game wiring.
+    move_log = MoveLogObserver(board_height=board.height)
+    score = ScoreObserver()
+    game_engine.add_observer(move_log)
+    game_engine.add_observer(score)
+
+    canvas = ImgCanvas(board_width=board.width, board_height=board.height, side_panel_width_px=SIDE_PANEL_WIDTH_PX)
+    renderer = Renderer(
+        canvas,
+        move_log=move_log,
+        score=score,
+        player_names={WHITE: white_name, BLACK: black_name},
+        side_panel_width_px=SIDE_PANEL_WIDTH_PX,
+    )
+    app = App(controller=controller, game_engine=game_engine, renderer=renderer)
+    return app, game_engine, canvas
+
+
+def main(white_name: str = "White", black_name: str = "Black") -> None:  # pragma: no cover
+    app, game_engine, canvas = build_app(white_name, black_name)
 
     window = GameWindow("KFChess")
     window.on_click(app.on_click)
@@ -50,5 +80,5 @@ def main() -> None:
     window.close()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

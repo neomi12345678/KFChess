@@ -114,3 +114,60 @@ def test_renderer_and_img_canvas_integrate_end_to_end_for_a_real_snapshot():
     Renderer(canvas).draw(engine.snapshot(selected=Position(0, 0)))
 
     assert canvas.frame() is not None
+
+
+def test_side_panel_width_px_defaults_to_zero_and_leaves_the_frame_board_sized():
+    canvas = ImgCanvas(board_width=3, board_height=3)
+    canvas.begin_frame()
+
+    assert canvas.frame().shape[1] == 3 * CELL_SIZE
+
+
+def test_side_panel_width_px_widens_the_frame_by_twice_the_panel_width():
+    canvas = ImgCanvas(board_width=3, board_height=3, side_panel_width_px=200)
+    canvas.begin_frame()
+
+    assert canvas.frame().shape[1] == 3 * CELL_SIZE + 2 * 200
+    assert canvas.frame().shape[0] == 3 * CELL_SIZE
+
+
+def test_side_panel_area_is_a_solid_opaque_background_not_transparent():
+    canvas = ImgCanvas(board_width=3, board_height=3, side_panel_width_px=200)
+    canvas.begin_frame()
+
+    left_panel_pixel = canvas.frame()[0, 0]
+    assert left_panel_pixel[3] == 255  # fully opaque alpha, not left as 0
+
+
+def test_highlight_cell_is_shifted_right_by_the_side_panel_width():
+    # Board-relative draws (highlight_cell/draw_image) must land on the
+    # actual board, which is now inset by side_panel_width_px - not at the
+    # raw column*CELL_SIZE offset from the frame's own left edge.
+    canvas = ImgCanvas(board_width=3, board_height=3, side_panel_width_px=200)
+    canvas.begin_frame()
+    before = canvas.frame().copy()
+
+    canvas.highlight_cell(row=0, col=0, color=(0, 255, 255), alpha=0.5)
+
+    # The panel region (before the board even starts) is untouched.
+    assert np.array_equal(canvas.frame()[:, 0:200], before[:, 0:200])
+    # The actual board's first cell, now offset by the panel width, changed.
+    assert not np.array_equal(
+        canvas.frame()[0:CELL_SIZE, 200:200 + CELL_SIZE],
+        before[0:CELL_SIZE, 200:200 + CELL_SIZE],
+    )
+
+
+def test_draw_image_is_shifted_right_by_the_side_panel_width():
+    canvas = ImgCanvas(board_width=3, board_height=3, side_panel_width_px=200)
+    canvas.begin_frame()
+    before = canvas.frame().copy()
+
+    center_x, center_y = CELL_SIZE // 2, CELL_SIZE // 2
+    canvas.draw_image("p1:white:king:idle", x=center_x, y=center_y)
+
+    assert np.array_equal(canvas.frame()[:, 0:200], before[:, 0:200])
+    assert not np.array_equal(
+        canvas.frame()[0:CELL_SIZE, 200:200 + CELL_SIZE],
+        before[0:CELL_SIZE, 200:200 + CELL_SIZE],
+    )

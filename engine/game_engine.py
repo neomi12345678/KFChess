@@ -1,9 +1,9 @@
-from typing import Optional
+from typing import List, Optional
 
 from config import CELL_SIZE
 from model.board import BoardRepresentation
-from model.game_state import GameSnapshot, JumpResult, MoveResult, PieceSnapshot
-from model.piece import AIRBORNE, MOVING
+from model.game_state import GameObserver, GameSnapshot, JumpResult, MoveLoggedEvent, MoveResult, PieceSnapshot
+from model.piece import jump_availability, move_availability
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import KingCaptureWinCondition, RuleEngine, WinCondition
@@ -22,31 +22,61 @@ class GameEngine:
         self._real_time_arbiter = real_time_arbiter
         self._win_condition = win_condition if win_condition is not None else KingCaptureWinCondition()
         self.game_over = False
+        self._observers: List[GameObserver] = []
+        # Drives moves-log timestamps off the same simulated clock wait()
+        # already advances everything else by, instead of time.monotonic() -
+        # keeps it tied to realtime/'s own notion of "now" and trivially
+        # testable without sleeping.
+        self._elapsed_ms = 0
+
+    # GameEngine never needs to know a moves log or scoreboard exist - it
+    # just notifies whoever is registered (view/observers.py) and moves on,
+    # so the move/jump pipeline never waits on them.
+    def add_observer(self, observer: GameObserver) -> None:
+        self._observers.append(observer)
 
     def request_move(self, source: Position, destination: Position) -> MoveResult:
         if self.game_over:
             return MoveResult(is_accepted=False, reason="game_over")
 
-        # A piece already committed to a motion or jump can't be
-        # redirected until that action finishes.
+        # A piece already committed to a motion or jump, or still resting,
+        # can't be redirected - see model/piece.py's move_availability for
+        # the single table this reads instead of re-deriving its own
+        # per-state checks.
         piece = self._board.get_piece(source)
-        if piece is not None and piece.state == MOVING:
-            return MoveResult(is_accepted=False, reason="motion_in_progress")
-
-        if piece is not None and piece.state == AIRBORNE:
-            return MoveResult(is_accepted=False, reason="piece_is_airborne")
-
-        if piece is not None and self._real_time_arbiter.is_in_cooldown(piece):
-            return MoveResult(is_accepted=False, reason="piece_in_cooldown")
+        if piece is not None:
+            availability = move_availability(piece.state)
+            if not availability.allowed:
+                return MoveResult(is_accepted=False, reason=availability.reason_if_blocked)
 
         validation = self._rule_engine.validate_move(self._board, source, destination)
         if not validation.is_valid:
             return MoveResult(is_accepted=False, reason=validation.reason)
 
+        # Peeked before start_motion, which never mutates the board itself
+        # (only realtime/real_time_arbiter.py's _resolve_arrival does, once
+        # this motion later arrives) - is_capture is reported as-is to
+        # observers (see MoveLoggedEvent), so a route conflict that later
+        # truncates the destination can leave it a display-only
+        # approximation of what actually happened. GameEngine doesn't
+        # correct for that itself - see model/game_state.py's
+        # MoveLoggedEvent docstring for why that's the view layer's problem,
+        # not this one's.
+        is_capture = self._board.get_piece(destination) is not None
+
         # start_motion may shorten or refuse this move if it collides with
         # an in-flight motion - piece.state is already IDLE here.
         if not self._real_time_arbiter.start_motion(piece, source, destination):
             return MoveResult(is_accepted=False, reason="route_conflict")
+
+        self._notify_move(
+            color=piece.color,
+            kind=piece.kind,
+            source=source,
+            destination=destination,
+            is_capture=is_capture,
+            is_jump=False,
+        )
 
         return MoveResult(is_accepted=True, reason="ok")
 
@@ -58,21 +88,57 @@ class GameEngine:
         if piece is None:
             return JumpResult(is_accepted=False, reason="empty_cell")
 
-        if self._real_time_arbiter.is_in_cooldown(piece):
-            return JumpResult(is_accepted=False, reason="piece_in_cooldown")
+        availability = jump_availability(piece.state)
+        if not availability.allowed:
+            return JumpResult(is_accepted=False, reason=availability.reason_if_blocked)
 
-        if not self._real_time_arbiter.start_jump(piece):
-            return JumpResult(is_accepted=False, reason="piece_is_moving")
+        # Unlike start_motion (which can still refuse over a route
+        # conflict even once availability passes), start_jump's only
+        # rejection condition is the same state check availability already
+        # covered above - so, unlike request_move, there's no second,
+        # independent reason its result needs checking for here.
+        self._real_time_arbiter.start_jump(piece)
+
+        # A jump has no destination (see RealTimeArbiter.start_jump) - the
+        # piece's own current cell stands in for both source and
+        # destination in the event this produces.
+        self._notify_move(
+            color=piece.color,
+            kind=piece.kind,
+            source=position,
+            destination=position,
+            is_capture=False,
+            is_jump=True,
+        )
 
         return JumpResult(is_accepted=True, reason="ok")
 
     def wait(self, ms: int) -> None:
+        self._elapsed_ms += ms
+
         # advance_time may resolve several arrivals in one call (concurrent
         # motions can complete on the same tick) - check every one of them.
         events = self._real_time_arbiter.advance_time(ms)
         for event in events:
+            for observer in self._observers:
+                observer.on_arrival(event)
             if self._win_condition.is_game_over(event.captured_piece):
                 self.game_over = True
+
+    def _notify_move(
+        self, *, color: str, kind: str, source: Position, destination: Position, is_capture: bool, is_jump: bool
+    ) -> None:
+        event = MoveLoggedEvent(
+            color=color,
+            kind=kind,
+            source=source,
+            destination=destination,
+            is_capture=is_capture,
+            is_jump=is_jump,
+            elapsed_ms=self._elapsed_ms,
+        )
+        for observer in self._observers:
+            observer.on_move_logged(event)
 
     def snapshot(self, selected: Optional[Position] = None) -> GameSnapshot:
         motion_by_piece_id = {

@@ -3,7 +3,7 @@ from typing import Optional
 
 from input.board_mapper import BoardMapper
 from model.board import BoardRepresentation
-from model.piece import MOVING
+from model.piece import is_selectable
 from model.position import Position
 
 
@@ -27,30 +27,31 @@ class Controller:
             self.selected = None
             return ControllerResult(selected=None, move_requested=False)
 
-        # First click with nothing selected: select the piece here, if any.
         if self.selected is None:
             if self._board.get_piece(cell) is not None:
                 self.selected = cell
             return ControllerResult(selected=self.selected, move_requested=False)
 
-        # Second click on another piece of the same color: switch the
-        # selection to it instead of attempting an (always-illegal) move -
-        # unless that piece is itself mid-motion and can't be selected yet.
+        # Switch selection to a same-color piece instead of attempting an
+        # always-illegal move against it - unless it's mid-motion (see
+        # model/piece.py's is_selectable, the same table-driven state check
+        # GameEngine/RealTimeArbiter use for whether an action may start).
         clicked_piece = self._board.get_piece(cell)
         selected_piece = self._board.get_piece(self.selected)
         if clicked_piece is not None and selected_piece is not None and clicked_piece.color == selected_piece.color:
-            if clicked_piece.state != MOVING:
+            if is_selectable(clicked_piece.state):
                 self.selected = cell
             return ControllerResult(selected=self.selected, move_requested=False)
 
-        # Otherwise treat the second click as a move request, accepted or
-        # not - the selection always clears either way.
         source = self.selected
         self.selected = None
         self._game_engine.request_move(source, cell)
         return ControllerResult(selected=None, move_requested=True)
 
     def jump(self, x: int, y: int):
+        # Jump is single-click, not click/click select-then-target - clear
+        # any leftover selection so it doesn't hijack the next click as a move.
+        self.selected = None
         cell = self._board_mapper.pixel_to_cell(x, y)
         if cell is None:
             return None

@@ -2,20 +2,11 @@ import time
 from dataclasses import dataclass
 
 import piece_config
-from model.piece import AIRBORNE, IDLE, LONG_REST, MOVING, SHORT_REST
+from model.piece import STATE_FOLDER
 
-# Model states (model/piece.py) -> animation folder names
-# (assets/pieces/<code>/states/<folder>). Any state with no entry here
-# (captured, or a future addition) falls back to "idle" - a piece that
-# isn't one of these real-time states shouldn't be on the board to draw in
-# the first place.
-STATE_FOLDER = {
-    IDLE: "idle",
-    MOVING: "move",
-    AIRBORNE: "jump",
-    SHORT_REST: "short_rest",
-    LONG_REST: "long_rest",
-}
+# A piece not covered by model.piece.STATE_FOLDER (captured, or a future
+# addition) falls back to "idle" - a piece that isn't one of the mapped
+# real-time states shouldn't be on the board to draw in the first place.
 
 
 @dataclass

@@ -145,3 +145,19 @@ def test_jump_outside_the_board_is_ignored():
     controller.jump(-10, 50)
 
     assert engine.requested_jumps == []
+
+
+def test_jump_clears_a_leftover_selection_from_an_earlier_click():
+    # A click before a jump (selecting a piece, then jumping a different
+    # one instead of completing the move) must not leave stale selection
+    # state around to hijack the next click as a move request.
+    controller, engine = make_controller("wK . bR\n. . .\n. . .")
+    controller.click(50, 50)  # selects the king
+    assert controller.selected == Position(0, 0)
+
+    controller.jump(250, 50)  # jumps the rook instead
+
+    assert controller.selected is None
+
+    controller.click(150, 50)  # should select this cell, not request a move
+    assert engine.requested_moves == []
