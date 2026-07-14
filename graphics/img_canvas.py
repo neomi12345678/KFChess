@@ -89,7 +89,11 @@ class ImgCanvas:
 
         sprite = self._sprite_cache.get(path)
         if sprite is None:
-            sprite = Img().read(path, size=(CELL_SIZE, CELL_SIZE), keep_aspect=True)
+            # Sprites are natively smaller than CELL_SIZE (e.g. 64x64 ->
+            # 100x100) - this is an enlargement, not a shrink, so it needs
+            # INTER_LINEAR (Img.read's own default, INTER_AREA, is meant
+            # for shrinking and blurs when used to enlarge instead).
+            sprite = Img().read(path, size=(CELL_SIZE, CELL_SIZE), keep_aspect=True, interpolation=cv2.INTER_LINEAR)
             self._sprite_cache[path] = sprite
 
         sprite_h, sprite_w = sprite.img.shape[:2]
