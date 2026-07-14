@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from typing import Optional
 
-from config import AIRBORNE_DURATION_MS, CELL_DURATION_MS, COOLDOWN_DURATION_MS
+import piece_config
+from config import METERS_PER_SQUARE
 from model.piece import PieceRepresentation
 from model.position import Position
 
@@ -17,9 +18,19 @@ def is_straight_line(source: Position, destination: Position) -> bool:
     return row_diff == 0 or col_diff == 0 or abs(row_diff) == abs(col_diff)
 
 
-def motion_duration_ms(source: Position, destination: Position) -> int:
+# How long this piece takes to cross one square while moving, derived from
+# its own "move" state's physics.speed_m_per_sec (assets/pieces/<code>/
+# states/move/config.json) - every piece kind currently shares the same
+# speed, but this reads each piece's own data rather than assuming that.
+def move_cell_duration_ms(piece: PieceRepresentation) -> int:
+    code = piece_config.piece_code(piece.kind, piece.color)
+    speed = piece_config.load(code, "move").speed_m_per_sec
+    return round(1000 * METERS_PER_SQUARE / speed)
+
+
+def motion_duration_ms(source: Position, destination: Position, piece: PieceRepresentation) -> int:
     cells = max(abs(destination.row - source.row), abs(destination.col - source.col))
-    return cells * CELL_DURATION_MS
+    return cells * move_cell_duration_ms(piece)
 
 
 # A piece currently traveling from source to destination.
@@ -32,33 +43,33 @@ class Motion:
 
     @property
     def duration_ms(self) -> int:
-        return motion_duration_ms(self.source, self.destination)
+        return motion_duration_ms(self.source, self.destination, self.piece)
 
     def is_complete(self) -> bool:
         return self.elapsed_ms >= self.duration_ms
 
 
-# A piece that jumped and is temporarily immune where it stands - it
-# doesn't move, it just holds its cell for a limited window.
+# A timed period a piece spends in one real-time state - airborne after a
+# jump, short_rest after landing from one, or long_rest after an ordinary
+# move - before automatically moving on to its next state. duration_ms is
+# resolved once, from that piece's own state config, when the period starts.
 @dataclass
-class Airborne:
+class TimedState:
     piece: PieceRepresentation
+    duration_ms: int
     elapsed_ms: int = 0
 
     def is_expired(self) -> bool:
-        return self.elapsed_ms >= AIRBORNE_DURATION_MS
+        return self.elapsed_ms >= self.duration_ms
 
 
-# A piece that just landed from a jump and is resting - it can't start
-# another action until this expires, even though its own state has already
-# reset to IDLE.
-@dataclass
-class Cooldown:
-    piece: PieceRepresentation
-    elapsed_ms: int = 0
-
-    def is_expired(self) -> bool:
-        return self.elapsed_ms >= COOLDOWN_DURATION_MS
+# jump/short_rest/long_rest all have physics.speed_m_per_sec == 0.0 (they
+# don't cover distance), so there's no speed to derive a duration from -
+# one full pass through the state's own sprites is used as its real-time
+# duration instead (see piece_config.StateConfig.animation_cycle_ms).
+def animation_cycle_duration_ms(piece: PieceRepresentation, state_folder: str) -> int:
+    code = piece_config.piece_code(piece.kind, piece.color)
+    return piece_config.load(code, state_folder).animation_cycle_ms
 
 
 # A straight-line path through continuous space and time: at `source` when

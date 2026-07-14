@@ -1,8 +1,18 @@
 from boardio.board_parser import parse
 from model.game_state import ArrivalEvent
-from model.piece import AIRBORNE, CAPTURED, IDLE, MOVING, PAWN, QUEEN
+from model.piece import AIRBORNE, CAPTURED, IDLE, LONG_REST, MOVING, PAWN, QUEEN, SHORT_REST, WHITE, ROOK, Piece
 from model.position import Position
+from realtime.motion import animation_cycle_duration_ms, move_cell_duration_ms
 from realtime.real_time_arbiter import RealTimeArbiter
+
+# All piece kinds currently share the same speed/animation numbers in the
+# provided asset configs, so one reference piece's derived durations are
+# valid for every piece used below (rooks, kings, knights, pawns).
+_reference_piece = Piece(id="ref", color=WHITE, kind=ROOK, cell=Position(0, 0))
+CELL_DURATION_MS = move_cell_duration_ms(_reference_piece)
+AIRBORNE_DURATION_MS = animation_cycle_duration_ms(_reference_piece, "jump")
+SHORT_REST_DURATION_MS = animation_cycle_duration_ms(_reference_piece, "short_rest")
+LONG_REST_DURATION_MS = animation_cycle_duration_ms(_reference_piece, "long_rest")
 
 
 def test_has_active_motion_false_when_nothing_moving():
@@ -35,32 +45,48 @@ def test_start_motion_rejects_a_piece_that_is_already_moving():
     assert len(arbiter.get_active_motions()) == 1
 
 
-def test_piece_has_not_arrived_after_999ms_for_a_one_cell_move():
+def test_piece_has_not_arrived_just_before_a_one_cell_move_completes():
     board = parse(". . .\n. wR .\n. . .")
     arbiter = RealTimeArbiter(board)
     piece = board.get_piece(Position(1, 1))
     arbiter.start_motion(piece, Position(1, 1), Position(0, 1))
 
-    events = arbiter.advance_time(999)
+    events = arbiter.advance_time(CELL_DURATION_MS - 1)
 
     assert events == []
     assert board.get_piece(Position(1, 1)) is piece
     assert board.get_piece(Position(0, 1)) is None
 
 
-def test_piece_arrives_after_1000ms_for_a_one_cell_move():
+def test_piece_arrives_and_enters_long_rest_for_a_one_cell_move():
     board = parse(". . .\n. wR .\n. . .")
     arbiter = RealTimeArbiter(board)
     piece = board.get_piece(Position(1, 1))
     arbiter.start_motion(piece, Position(1, 1), Position(0, 1))
 
-    events = arbiter.advance_time(1000)
+    events = arbiter.advance_time(CELL_DURATION_MS)
 
     assert len(events) == 1
     assert board.get_piece(Position(1, 1)) is None
     assert board.get_piece(Position(0, 1)) is piece
-    assert piece.state == IDLE
+    # An ordinary arrival goes into long_rest, not straight to idle - see
+    # assets/pieces/*/states/move/config.json's next_state_when_finished.
+    assert piece.state == LONG_REST
     assert arbiter.has_active_motion() is False
+
+
+def test_piece_returns_to_idle_once_its_long_rest_expires():
+    board = parse(". . .\n. wR .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    piece = board.get_piece(Position(1, 1))
+    arbiter.start_motion(piece, Position(1, 1), Position(0, 1))
+
+    arbiter.advance_time(CELL_DURATION_MS)
+    assert piece.state == LONG_REST
+
+    arbiter.advance_time(LONG_REST_DURATION_MS)
+
+    assert piece.state == IDLE
 
 
 def test_partial_wait_followed_by_remaining_wait_equals_one_full_wait():
@@ -69,8 +95,8 @@ def test_partial_wait_followed_by_remaining_wait_equals_one_full_wait():
     piece = board.get_piece(Position(1, 1))
     arbiter.start_motion(piece, Position(1, 1), Position(0, 1))
 
-    arbiter.advance_time(400)
-    events = arbiter.advance_time(600)
+    arbiter.advance_time(CELL_DURATION_MS // 2)
+    events = arbiter.advance_time(CELL_DURATION_MS - CELL_DURATION_MS // 2)
 
     assert len(events) == 1
     assert board.get_piece(Position(0, 1)) is piece
@@ -82,11 +108,11 @@ def test_multiple_waits_accumulate_correctly_for_a_two_cell_move():
     piece = board.get_piece(Position(0, 1))
     arbiter.start_motion(piece, Position(0, 1), Position(2, 1))
 
-    events_after_first_wait = arbiter.advance_time(1000)
+    events_after_first_wait = arbiter.advance_time(CELL_DURATION_MS)
     assert events_after_first_wait == []
     assert board.get_piece(Position(0, 1)) is piece
 
-    events_after_second_wait = arbiter.advance_time(1000)
+    events_after_second_wait = arbiter.advance_time(CELL_DURATION_MS)
     assert len(events_after_second_wait) == 1
     assert board.get_piece(Position(2, 1)) is piece
 
@@ -117,7 +143,11 @@ def test_has_route_conflict_is_false_for_paths_that_cross_the_same_cell_at_diffe
     rook = board.get_piece(Position(0, 2))
     other_rook = board.get_piece(Position(1, 0))
     arbiter.start_motion(rook, Position(0, 2), Position(2, 2))
-    arbiter.advance_time(1900)
+    # Almost done but not yet complete - if this landed on or past the
+    # motion's full 2*CELL_DURATION_MS, it would already be resolved and
+    # removed from active_motions, making the conflict check trivially pass
+    # for the wrong reason.
+    arbiter.advance_time(2 * CELL_DURATION_MS - 50)
 
     # The vertical motion is almost done and long past (1, 2); a fresh
     # horizontal move through (1, 2) wouldn't arrive there for a while - no
@@ -158,12 +188,14 @@ def test_a_knight_that_arrives_to_find_a_teammate_already_there_stays_at_its_sou
     rook = board.get_piece(Position(1, 2))
     arbiter.start_motion(knight, Position(0, 0), Position(1, 2))
 
-    events = arbiter.advance_time(2000)
+    events = arbiter.advance_time(2 * CELL_DURATION_MS)
 
     # A knight has no partial path to fall back onto - retreat_cell treats
-    # its own source as the "one cell short" landing spot.
+    # its own source as the "one cell short" landing spot. It still
+    # completed a motion (even a zero-distance one), so it still earns a
+    # long_rest like any other arrival.
     assert board.get_piece(Position(0, 0)) is knight
-    assert knight.state == IDLE
+    assert knight.state == LONG_REST
     assert board.get_piece(Position(1, 2)) is rook
     assert events == [ArrivalEvent(piece=knight, captured_piece=None)]
 
@@ -181,7 +213,7 @@ def test_start_motion_is_rejected_when_it_would_cross_an_active_opposing_motion(
     assert accepted is False
     assert black_rook.state == IDLE
 
-    events = arbiter.advance_time(3000)
+    events = arbiter.advance_time(3 * CELL_DURATION_MS)
 
     # White's motion is entirely unaffected by the rejected request, and
     # captures black normally on arrival - black never left its square.
@@ -199,14 +231,16 @@ def test_start_motion_stops_a_same_color_piece_one_cell_short_of_a_crossing_path
     horizontal_rook = board.get_piece(Position(2, 0))
 
     arbiter.start_motion(vertical_rook, Position(0, 2), Position(4, 2))
-    # Both would reach (2, 2) at exactly 2000ms - same color, so the newly
-    # commanded rook stops one cell short instead of sharing that cell.
+    # Both would reach (2, 2) at exactly 2 * CELL_DURATION_MS - same color,
+    # so the newly commanded rook stops one cell short instead of sharing
+    # that cell, shortening its own motion to exactly 1 * CELL_DURATION_MS.
     arbiter.start_motion(horizontal_rook, Position(2, 0), Position(2, 4))
 
-    events = arbiter.advance_time(1000)
+    events = arbiter.advance_time(CELL_DURATION_MS)
 
     assert board.get_piece(Position(2, 1)) is horizontal_rook
-    assert horizontal_rook.state == IDLE
+    # Stopping short of a teammate still counts as completing a motion.
+    assert horizontal_rook.state == LONG_REST
     assert events == [ArrivalEvent(piece=horizontal_rook, captured_piece=None)]
     # The already-active vertical motion is untouched by the other piece's
     # new command and keeps travelling toward its original destination.
@@ -221,9 +255,9 @@ def test_start_motion_rejects_a_same_color_move_with_no_safe_cell_to_reach():
     second_rook = board.get_piece(Position(0, 4))
 
     arbiter.start_motion(first_rook, Position(0, 0), Position(0, 3))
-    arbiter.advance_time(2000)
+    arbiter.advance_time(2 * CELL_DURATION_MS)
 
-    # first_rook has 1 cell left and they'd meet exactly 1000ms into
+    # first_rook has 1 cell left and they'd meet exactly one cell into
     # second_rook's travel - no cell short of that to stop at safely.
     accepted = arbiter.start_motion(second_rook, Position(0, 4), Position(0, 1))
 
@@ -238,11 +272,11 @@ def test_start_motion_rejects_a_move_that_would_collide_with_an_enemy_before_rea
     white_rook = board.get_piece(Position(0, 0))
     black_rook = board.get_piece(Position(0, 4))
     arbiter.start_motion(black_rook, Position(0, 4), Position(0, 0))
-    arbiter.advance_time(3900)
+    arbiter.advance_time(4 * CELL_DURATION_MS - 100)
 
     # Black is almost home, closing to a collision with white's requested
-    # path only 50ms in - even this near-miss is rejected outright, same
-    # as any other different-color route conflict.
+    # path almost immediately - even this near-miss is rejected outright,
+    # same as any other different-color route conflict.
     accepted = arbiter.start_motion(white_rook, Position(0, 0), Position(0, 4))
 
     assert accepted is False
@@ -260,18 +294,18 @@ def test_arrival_stops_short_instead_of_capturing_a_teammate_that_won_a_race_to_
     # Both head for (2, 2) along paths that only ever share that one cell,
     # arriving at different times - plan_route never flags a conflict.
     arbiter.start_motion(from_the_left, Position(2, 0), Position(2, 2))
-    arbiter.advance_time(500)
+    arbiter.advance_time(CELL_DURATION_MS // 2)
     accepted = arbiter.start_motion(from_above, Position(0, 2), Position(2, 2))
     assert accepted is True
 
-    events = arbiter.advance_time(2500)
+    events = arbiter.advance_time(3 * CELL_DURATION_MS)
 
     assert board.get_piece(Position(2, 2)) is from_the_left
-    assert from_the_left.state == IDLE
+    assert from_the_left.state == LONG_REST
     # from_above loses the race and stops one cell short instead of
-    # overwriting its teammate.
+    # overwriting its teammate - it still completed a motion.
     assert board.get_piece(Position(1, 2)) is from_above
-    assert from_above.state == IDLE
+    assert from_above.state == LONG_REST
     assert ArrivalEvent(piece=from_above, captured_piece=None) in events
 
 
@@ -286,7 +320,7 @@ def test_two_pieces_can_move_at_once_on_non_overlapping_routes():
 
     assert len(arbiter.get_active_motions()) == 2
 
-    events = arbiter.advance_time(2000)
+    events = arbiter.advance_time(2 * CELL_DURATION_MS)
 
     assert len(events) == 2
     assert board.get_piece(Position(0, 2)) is white_rook
@@ -300,7 +334,7 @@ def test_capturing_a_piece_removes_it_and_marks_it_captured():
     captured_pawn = board.get_piece(Position(0, 1))
 
     arbiter.start_motion(rook, Position(1, 1), Position(0, 1))
-    events = arbiter.advance_time(1000)
+    events = arbiter.advance_time(CELL_DURATION_MS)
 
     assert board.get_piece(Position(0, 1)) is rook
     assert captured_pawn.state == CAPTURED
@@ -313,7 +347,7 @@ def test_white_pawn_promotes_to_queen_on_arrival_at_row_zero():
     pawn = board.get_piece(Position(1, 1))
 
     arbiter.start_motion(pawn, Position(1, 1), Position(0, 1))
-    arbiter.advance_time(1000)
+    arbiter.advance_time(CELL_DURATION_MS)
 
     assert board.get_piece(Position(0, 1)).kind == QUEEN
 
@@ -324,7 +358,7 @@ def test_black_pawn_promotes_to_queen_on_arrival_at_last_row():
     pawn = board.get_piece(Position(0, 1))
 
     arbiter.start_motion(pawn, Position(0, 1), Position(1, 1))
-    arbiter.advance_time(1000)
+    arbiter.advance_time(CELL_DURATION_MS)
 
     assert board.get_piece(Position(1, 1)).kind == QUEEN
 
@@ -335,7 +369,7 @@ def test_pawn_does_not_promote_before_reaching_the_last_row():
     pawn = board.get_piece(Position(2, 1))
 
     arbiter.start_motion(pawn, Position(2, 1), Position(1, 1))
-    arbiter.advance_time(1000)
+    arbiter.advance_time(CELL_DURATION_MS)
 
     assert board.get_piece(Position(1, 1)).kind == PAWN
 
@@ -400,11 +434,14 @@ def test_each_airborne_piece_lands_independently_when_its_own_duration_elapses()
     black_king = board.get_piece(Position(0, 2))
     arbiter.start_jump(white_king)
 
-    arbiter.advance_time(600)
+    half = AIRBORNE_DURATION_MS // 2
+    arbiter.advance_time(half)
     arbiter.start_jump(black_king)
-    arbiter.advance_time(400)
+    arbiter.advance_time(AIRBORNE_DURATION_MS - half)
 
-    assert white_king.state == IDLE
+    # White's jump has now run its full duration and landed into
+    # short_rest; black's jump only just started and is still airborne.
+    assert white_king.state == SHORT_REST
     assert black_king.state == AIRBORNE
     assert arbiter.get_airborne_pieces() == [black_king]
 
@@ -419,11 +456,11 @@ def test_one_airborne_pieces_defense_does_not_affect_another_airborne_piece():
     arbiter.start_jump(black_king)
 
     arbiter.start_motion(rook, Position(0, 2), Position(0, 0))
-    arbiter.advance_time(2000)
+    arbiter.advance_time(2 * CELL_DURATION_MS)
 
     assert board.get_piece(Position(0, 0)) is white_king
     assert rook.state == CAPTURED
-    assert black_king.state == IDLE
+    assert black_king.state == SHORT_REST
     assert arbiter.get_airborne_pieces() == []
 
 
@@ -433,9 +470,9 @@ def test_airborne_piece_lands_back_in_place_once_its_duration_elapses():
     king = board.get_piece(Position(1, 1))
     arbiter.start_jump(king)
 
-    arbiter.advance_time(1000)
+    arbiter.advance_time(AIRBORNE_DURATION_MS)
 
-    assert king.state == IDLE
+    assert king.state == SHORT_REST
     assert board.get_piece(Position(1, 1)) is king
 
 
@@ -447,11 +484,13 @@ def test_airborne_piece_captures_an_enemy_that_arrives_on_its_cell():
     arbiter.start_jump(king)
 
     arbiter.start_motion(rook, Position(1, 1), Position(1, 0))
-    events = arbiter.advance_time(1000)
+    events = arbiter.advance_time(CELL_DURATION_MS)
 
     assert board.get_piece(Position(1, 0)) is king
     assert board.get_piece(Position(1, 1)) is None
     assert rook.state == CAPTURED
+    # A successful defense goes straight back to idle - it doesn't tire the
+    # defender the way completing a jump on its own does.
     assert king.state == IDLE
     assert events[0].captured_piece is rook
 
@@ -465,13 +504,13 @@ def test_airborne_piece_does_not_capture_a_teammate_that_arrives_on_its_cell():
     # Rook starts first and is already halfway home before the king jumps,
     # so the king is still mid-jump (not yet expired) when the rook arrives.
     arbiter.start_motion(rook, Position(1, 1), Position(1, 0))
-    arbiter.advance_time(500)
+    arbiter.advance_time(CELL_DURATION_MS // 2)
     arbiter.start_jump(king)
-    events = arbiter.advance_time(500)
+    events = arbiter.advance_time(CELL_DURATION_MS - CELL_DURATION_MS // 2)
 
     assert board.get_piece(Position(1, 0)) is king
     assert board.get_piece(Position(1, 1)) is rook
-    assert rook.state == IDLE
+    assert rook.state == LONG_REST
     assert king.state == AIRBORNE
     assert events == [ArrivalEvent(piece=rook, captured_piece=None)]
 
@@ -482,24 +521,41 @@ def test_airborne_protection_no_longer_applies_once_it_has_expired():
     king = board.get_piece(Position(1, 0))
     rook = board.get_piece(Position(1, 3))
     arbiter.start_jump(king)
-    arbiter.advance_time(1000)
+    arbiter.advance_time(AIRBORNE_DURATION_MS)
+    assert king.state == SHORT_REST
 
     arbiter.start_motion(rook, Position(1, 3), Position(1, 0))
-    events = arbiter.advance_time(3000)
+    events = arbiter.advance_time(3 * CELL_DURATION_MS)
 
     assert board.get_piece(Position(1, 0)) is rook
     assert king.state == CAPTURED
     assert events[0].captured_piece is king
 
 
-def test_start_motion_succeeds_immediately_after_finishing_a_motion_without_cooldown():
-    # Only jumping incurs a cooldown - an ordinary motion's arrival leaves
-    # the piece immediately ready to move again.
+def test_start_motion_rejects_a_piece_still_in_long_rest_right_after_finishing_a_motion():
+    # Every ordinary arrival earns a long_rest - the piece can't act again
+    # until it expires.
     board = parse(". . .\n. wR .\n. . .")
     arbiter = RealTimeArbiter(board)
     rook = board.get_piece(Position(1, 1))
     arbiter.start_motion(rook, Position(1, 1), Position(0, 1))
-    arbiter.advance_time(1000)
+    arbiter.advance_time(CELL_DURATION_MS)
+
+    assert arbiter.is_in_cooldown(rook) is True
+    accepted = arbiter.start_motion(rook, Position(0, 1), Position(0, 0))
+
+    assert accepted is False
+    assert rook.state == LONG_REST
+
+
+def test_start_motion_succeeds_again_once_the_long_rest_from_a_previous_move_expires():
+    board = parse(". . .\n. wR .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    rook = board.get_piece(Position(1, 1))
+    arbiter.start_motion(rook, Position(1, 1), Position(0, 1))
+    arbiter.advance_time(CELL_DURATION_MS)
+
+    arbiter.advance_time(LONG_REST_DURATION_MS)
 
     assert arbiter.is_in_cooldown(rook) is False
     accepted = arbiter.start_motion(rook, Position(0, 1), Position(0, 0))
@@ -507,28 +563,28 @@ def test_start_motion_succeeds_immediately_after_finishing_a_motion_without_cool
     assert accepted is True
 
 
-def test_start_jump_rejects_a_piece_still_in_cooldown_right_after_its_jump_expires():
+def test_start_jump_rejects_a_piece_still_in_short_rest_right_after_its_jump_expires():
     board = parse(". . .\n. wK .\n. . .")
     arbiter = RealTimeArbiter(board)
     king = board.get_piece(Position(1, 1))
     arbiter.start_jump(king)
-    arbiter.advance_time(1000)
+    arbiter.advance_time(AIRBORNE_DURATION_MS)
 
     assert arbiter.is_in_cooldown(king) is True
     accepted = arbiter.start_jump(king)
 
     assert accepted is False
-    assert king.state == IDLE
+    assert king.state == SHORT_REST
 
 
-def test_start_jump_succeeds_again_once_the_cooldown_from_a_previous_jump_expires():
+def test_start_jump_succeeds_again_once_the_short_rest_from_a_previous_jump_expires():
     board = parse(". . .\n. wK .\n. . .")
     arbiter = RealTimeArbiter(board)
     king = board.get_piece(Position(1, 1))
     arbiter.start_jump(king)
-    arbiter.advance_time(1000)
+    arbiter.advance_time(AIRBORNE_DURATION_MS)
 
-    arbiter.advance_time(1000)
+    arbiter.advance_time(SHORT_REST_DURATION_MS)
 
     assert arbiter.is_in_cooldown(king) is False
     accepted = arbiter.start_jump(king)
@@ -542,7 +598,7 @@ def test_cooldown_does_not_block_a_different_piece_from_acting():
     white_king = board.get_piece(Position(0, 0))
     black_rook = board.get_piece(Position(2, 0))
     arbiter.start_jump(white_king)
-    arbiter.advance_time(1000)
+    arbiter.advance_time(AIRBORNE_DURATION_MS)
 
     assert arbiter.is_in_cooldown(white_king) is True
     accepted = arbiter.start_motion(black_rook, Position(2, 0), Position(2, 1))

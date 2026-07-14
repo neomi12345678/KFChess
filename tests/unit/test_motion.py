@@ -1,5 +1,8 @@
+from model.piece import KING, WHITE, Piece
 from model.position import Position
-from realtime.motion import Trajectory, is_straight_line, motion_duration_ms, trajectories_collide
+from realtime.motion import Trajectory, is_straight_line, move_cell_duration_ms, motion_duration_ms, trajectories_collide
+
+_piece = Piece(id="p", color=WHITE, kind=KING, cell=Position(0, 0))
 
 
 def test_is_straight_line_true_for_a_horizontal_move():
@@ -15,7 +18,15 @@ def test_is_straight_line_false_for_a_knight_shaped_move():
 
 
 def test_motion_duration_ms_scales_with_distance():
-    assert motion_duration_ms(Position(0, 0), Position(0, 3)) == 3000
+    assert motion_duration_ms(Position(0, 0), Position(0, 3), _piece) == 3 * move_cell_duration_ms(_piece)
+
+
+# Pinned to the literal expected value, derived independently of
+# motion_duration_ms's own formula, so a rounding/unit bug in
+# move_cell_duration_ms (or the assets/pieces/*/states/move/config.json it
+# reads) doesn't slip through undetected.
+def test_move_cell_duration_ms_matches_the_configured_move_speed():
+    assert move_cell_duration_ms(_piece) == 667
 
 
 def test_trajectories_collide_true_when_two_pieces_meet_head_on():

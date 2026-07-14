@@ -2,11 +2,10 @@ import math
 from dataclasses import dataclass
 from typing import List, Optional
 
-from config import CELL_DURATION_MS
 from model.board import BoardRepresentation
 from model.piece import PieceRepresentation
 from model.position import Position
-from realtime.motion import Motion, Trajectory, collision_time_ms, is_straight_line, motion_duration_ms
+from realtime.motion import Motion, Trajectory, collision_time_ms, is_straight_line, motion_duration_ms, move_cell_duration_ms
 
 # Tolerance, in ms, for treating a collision time as landing exactly on a
 # cell boundary despite floating-point drift from the trajectory math.
@@ -59,7 +58,7 @@ def plan_route(
     if not is_straight_line(source, destination):
         return RoutePlan(destination=destination, is_blocked=False)
 
-    requested = Trajectory(source, destination, motion_duration_ms(source, destination))
+    requested = Trajectory(source, destination, motion_duration_ms(source, destination, piece))
 
     earliest_collision_ms: Optional[float] = None
     blocking_motion: Optional[Motion] = None
@@ -84,7 +83,7 @@ def plan_route(
 
     row_step = _sign(destination.row - source.row)
     col_step = _sign(destination.col - source.col)
-    cells_reachable = math.floor(earliest_collision_ms / CELL_DURATION_MS + _CELL_EPSILON_MS)
+    cells_reachable = math.floor(earliest_collision_ms / move_cell_duration_ms(piece) + _CELL_EPSILON_MS)
 
     safe_cells = cells_reachable - 1
     if safe_cells < 1:

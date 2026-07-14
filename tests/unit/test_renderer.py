@@ -47,6 +47,18 @@ def test_renderer_draws_the_board_grid_and_pieces_without_mutating_state():
     assert board.get_piece(Position(2, 2)) is not None
 
 
+def test_renderer_encodes_piece_id_color_kind_and_state_in_the_draw_image_key():
+    board, engine = make_engine("wK . .\n. . .\n. . .")
+    snapshot = engine.snapshot()
+    canvas = FakeCanvas()
+
+    Renderer(canvas).draw(snapshot)
+
+    king = board.get_piece(Position(0, 0))
+    [(key, _, _)] = canvas.images
+    assert key == f"{king.id}:white:king:idle"
+
+
 def test_renderer_highlights_the_selected_cell():
     board, engine = make_engine("wK . .\n. . .\n. . .")
     snapshot = engine.snapshot(selected=Position(0, 0))

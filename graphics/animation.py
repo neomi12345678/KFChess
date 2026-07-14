@@ -1,0 +1,61 @@
+import time
+from dataclasses import dataclass
+
+import piece_config
+from model.piece import AIRBORNE, IDLE, LONG_REST, MOVING, SHORT_REST
+
+# Model states (model/piece.py) -> animation folder names
+# (assets/pieces/<code>/states/<folder>). Any state with no entry here
+# (captured, or a future addition) falls back to "idle" - a piece that
+# isn't one of these real-time states shouldn't be on the board to draw in
+# the first place.
+STATE_FOLDER = {
+    IDLE: "idle",
+    MOVING: "move",
+    AIRBORNE: "jump",
+    SHORT_REST: "short_rest",
+    LONG_REST: "long_rest",
+}
+
+
+@dataclass
+class _EnteredState:
+    folder: str
+    entered_at: float
+
+
+class SpriteAnimator:
+    """Picks which sprite frame to show for a piece, driven by each
+    animation folder's own config.json (frames_per_sec/is_loop, read via
+    piece_config.py) - the same state machine the course's config format
+    describes, just read for its graphics half only. Real move/jump/rest
+    timing still comes from realtime/, which reads the same files' physics
+    half; this only decides which frame to paint.
+    """
+
+    # clock is injectable so tests can control elapsed time deterministically
+    # instead of sleeping in real time.
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._entered_by_piece_id: dict[str, _EnteredState] = {}
+
+    def sprite_path(self, piece_id: str, piece_code: str, state: str):
+        folder = STATE_FOLDER.get(state, "idle")
+        frame = self._current_frame(piece_id, piece_code, folder)
+        return piece_config.PIECES_DIR / piece_code / "states" / folder / "sprites" / f"{frame}.png"
+
+    def _current_frame(self, piece_id: str, piece_code: str, folder: str) -> int:
+        now = self._clock()
+        entered = self._entered_by_piece_id.get(piece_id)
+        if entered is None or entered.folder != folder:
+            entered = _EnteredState(folder=folder, entered_at=now)
+            self._entered_by_piece_id[piece_id] = entered
+
+        state_config = piece_config.load(piece_code, folder)
+
+        elapsed_frames = int((now - entered.entered_at) * state_config.frames_per_sec)
+        if state_config.is_loop:
+            index = elapsed_frames % state_config.frame_count
+        else:
+            index = min(elapsed_frames, state_config.frame_count - 1)
+        return index + 1  # sprite files are 1-indexed

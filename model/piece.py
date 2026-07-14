@@ -20,6 +20,12 @@ IDLE = "idle"
 MOVING = "moving"
 CAPTURED = "captured"
 AIRBORNE = "airborne"
+# Recovery periods after finishing an action, before the piece can act
+# again - after an ordinary move (SHORT_REST is after a jump instead). Both
+# mirror the animation state machine assets/pieces/*/states/*/config.json
+# describes (move -> long_rest -> idle, jump -> short_rest -> idle).
+SHORT_REST = "short_rest"
+LONG_REST = "long_rest"
 
 
 class PieceRepresentation(Protocol):

@@ -22,7 +22,8 @@ class Renderer:
     # renderer never needs to know whether a piece is moving.
     def _draw_pieces(self, snapshot: GameSnapshot) -> None:
         for piece in snapshot.pieces:
-            self._canvas.draw_image(f"{piece.color}{piece.kind}", x=piece.pixel_x, y=piece.pixel_y)
+            key = f"{piece.id}:{piece.color}:{piece.kind}:{piece.state}"
+            self._canvas.draw_image(key, x=piece.pixel_x, y=piece.pixel_y)
 
     def _draw_selection(self, snapshot: GameSnapshot) -> None:
         if snapshot.selected_cell is not None:

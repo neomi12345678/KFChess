@@ -1,9 +1,17 @@
 from engine.game_engine import GameEngine
 from boardio.board_parser import parse
-from model.piece import AIRBORNE, BLACK, CAPTURED, IDLE, KING, MOVING, WHITE
+from model.piece import AIRBORNE, BLACK, CAPTURED, IDLE, KING, LONG_REST, MOVING, ROOK, WHITE, Piece
 from model.position import Position
+from realtime.motion import animation_cycle_duration_ms, move_cell_duration_ms
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
+
+# All piece kinds currently share the same speed/animation numbers in the
+# provided asset configs, so one reference piece's derived durations are
+# valid for every piece used below.
+_reference_piece = Piece(id="ref", color=WHITE, kind=ROOK, cell=Position(0, 0))
+CELL_DURATION_MS = move_cell_duration_ms(_reference_piece)
+LONG_REST_DURATION_MS = animation_cycle_duration_ms(_reference_piece, "long_rest")
 
 
 def make_engine(board_text):
@@ -122,12 +130,13 @@ def test_request_move_stops_a_same_color_piece_one_cell_short_of_a_crossing_path
     assert first.is_accepted is True
     assert second.is_accepted is True
 
-    engine.wait(1000)
-
-    # Both paths cross (2, 2) at exactly 2000ms - same color, so the newly
-    # commanded rook stops one cell short instead of sharing that cell.
+    # Both paths cross (2, 2) at exactly 2 * CELL_DURATION_MS - same color,
+    # so the newly commanded rook stops one cell short instead of sharing
+    # that cell, shortening its own motion to exactly 1 * CELL_DURATION_MS.
+    engine.wait(CELL_DURATION_MS)
     assert board.get_piece(Position(2, 1)) is horizontal_rook
-    assert horizontal_rook.state == IDLE
+    # Stopping short of a teammate still counts as completing a motion.
+    assert horizontal_rook.state == LONG_REST
     assert vertical_rook.state == MOVING
 
 
@@ -137,9 +146,9 @@ def test_request_move_rejects_outright_when_a_same_color_collision_leaves_no_saf
     second_rook = board.get_piece(Position(0, 4))
 
     first = engine.request_move(Position(0, 0), Position(0, 3))
-    engine.wait(2000)
+    engine.wait(2 * CELL_DURATION_MS)
 
-    # first_rook has 1 cell left and they'd meet exactly 1000ms into
+    # first_rook has 1 cell left and they'd meet exactly one cell into
     # second_rook's travel - no cell short of that to stop at safely.
     second = engine.request_move(Position(0, 4), Position(0, 1))
 
@@ -220,10 +229,25 @@ def test_request_jump_rejects_a_piece_that_is_already_moving():
     assert board.get_piece(Position(1, 1)).state == MOVING
 
 
-def test_request_move_succeeds_immediately_after_finishing_a_motion_without_cooldown():
+def test_request_move_rejects_a_piece_still_in_long_rest_right_after_finishing_a_motion():
+    # Every ordinary arrival earns a long_rest (assets/pieces/*/states/move/
+    # config.json's next_state_when_finished) - the piece can't act again
+    # until it expires.
     board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
     engine.request_move(Position(1, 1), Position(0, 1))
-    engine.wait(1000)
+    engine.wait(CELL_DURATION_MS)
+
+    result = engine.request_move(Position(0, 1), Position(0, 0))
+
+    assert result.is_accepted is False
+    assert result.reason == "piece_in_cooldown"
+
+
+def test_request_move_succeeds_again_once_the_long_rest_from_a_previous_move_expires():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    engine.request_move(Position(1, 1), Position(0, 1))
+    engine.wait(CELL_DURATION_MS)
+    engine.wait(LONG_REST_DURATION_MS)
 
     result = engine.request_move(Position(0, 1), Position(0, 0))
 
@@ -287,27 +311,31 @@ def test_snapshot_includes_the_selected_cell_when_given():
 def test_snapshot_interpolates_pixels_for_a_piece_mid_motion():
     board, engine, arbiter = make_engine(". . .\n. . .\n. . .\nwR . .")
     engine.request_move(Position(3, 0), Position(1, 0))
-    arbiter.advance_time(500)
+    # A two-cell move's total duration is 2 * CELL_DURATION_MS, so waiting
+    # exactly one CELL_DURATION_MS lands on a clean, constant-agnostic
+    # halfway point regardless of what CELL_DURATION_MS itself is.
+    arbiter.advance_time(CELL_DURATION_MS)
 
     snapshot = engine.snapshot()
 
     rook_snapshot = snapshot.pieces[0]
     assert rook_snapshot.pixel_x == 50
-    assert rook_snapshot.pixel_y == 300
+    assert rook_snapshot.pixel_y == 250
 
 
 def test_snapshot_interpolates_pixels_independently_for_two_concurrent_motions():
     board, engine, arbiter = make_engine("wR . .\n. . .\nbR . .")
     engine.request_move(Position(0, 0), Position(0, 2))
     engine.request_move(Position(2, 0), Position(2, 2))
-    arbiter.advance_time(500)
+    # Both are two-cell moves - one CELL_DURATION_MS is exactly halfway.
+    arbiter.advance_time(CELL_DURATION_MS)
 
     snapshot = engine.snapshot()
     pieces_by_color = {piece.color: piece for piece in snapshot.pieces}
 
-    assert pieces_by_color[WHITE].pixel_x == 100
+    assert pieces_by_color[WHITE].pixel_x == 150
     assert pieces_by_color[WHITE].pixel_y == 50
-    assert pieces_by_color[BLACK].pixel_x == 100
+    assert pieces_by_color[BLACK].pixel_x == 150
     assert pieces_by_color[BLACK].pixel_y == 250
 
 

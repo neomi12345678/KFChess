@@ -1,3 +1,21 @@
+from engine.game_engine import GameEngine
+from input.board_mapper import BoardMapper
+from input.controller import Controller
+from realtime.real_time_arbiter import RealTimeArbiter
+from rules.rule_engine import RuleEngine
+
+
+# Builds the engine + input layers for a parsed board - the one place both
+# main.py's script runner and play.py's interactive window get this wiring
+# from, so a constructor change to any of these only needs updating here.
+def build_game(board):
+    real_time_arbiter = RealTimeArbiter(board)
+    game_engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=real_time_arbiter)
+    board_mapper = BoardMapper(width=board.width, height=board.height)
+    controller = Controller(board=board, board_mapper=board_mapper, game_engine=game_engine)
+    return game_engine, controller
+
+
 # Wires the interactive (non-CLI) surface together: clicks go to the
 # controller, rendering reads back whatever state that produced.
 class App:
@@ -8,6 +26,9 @@ class App:
 
     def on_click(self, x: int, y: int) -> None:
         self._controller.click(x, y)
+
+    def on_jump(self, x: int, y: int) -> None:
+        self._controller.jump(x, y)
 
     def render(self) -> None:
         snapshot = self._game_engine.snapshot(selected=self._controller.selected)

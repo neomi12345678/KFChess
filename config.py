@@ -9,12 +9,18 @@ these.
 CELL_SIZE = 100
 EMPTY_TOKEN = "."
 
-CELL_DURATION_MS = 1000
-AIRBORNE_DURATION_MS = CELL_DURATION_MS
-
-# How long a piece rests after landing from a jump before it can act again -
-# an ordinary motion's arrival incurs no cooldown.
-COOLDOWN_DURATION_MS = CELL_DURATION_MS
+# Real-world scale we chose for converting the animation assets'
+# physics.speed_m_per_sec (assets/pieces/*/states/*/config.json) into a
+# per-cell duration: a real ~5.7cm chess square at those speeds would cross
+# in ~40ms - too fast to see - so we treat one square as one meter instead,
+# which conveniently also means CELL_SIZE pixels == 1 meter.
+#
+# Every other piece of real-time timing (move-cell duration, jump hangtime,
+# short_rest/long_rest length) is read per-piece from each piece's own
+# assets/pieces/<code>/states/<state>/config.json instead of a global
+# constant here - see piece_config.py and realtime/motion.py's
+# move_cell_duration_ms/animation_cycle_duration_ms.
+METERS_PER_SQUARE = 1.0
 
 # Movement shapes, as (row, col) deltas - the piece rules read these
 # instead of hardcoding direction/offset tuples of their own.
