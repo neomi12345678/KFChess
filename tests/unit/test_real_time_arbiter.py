@@ -1,5 +1,5 @@
 from boardio.board_parser import parse
-from config import (
+from logic_config import (
     AIRBORNE_BASE_DURATION_MS,
     AIRBORNE_DURATION_MULTIPLIER,
     LONG_REST_BASE_DURATION_MS,
@@ -15,7 +15,7 @@ from realtime.real_time_arbiter import RealTimeArbiter
 # All piece kinds currently share the same speed in the provided asset
 # configs, so one reference piece's derived move duration is valid for
 # every piece used below (rooks, kings, knights, pawns). Airborne/rest
-# durations are fixed game-design constants (config.py), not per-piece.
+# durations are fixed game-design constants (logic_config.py), not per-piece.
 _reference_piece = Piece(id="ref", color=WHITE, kind=ROOK, cell=Position(0, 0))
 CELL_DURATION_MS = move_cell_duration_ms(_reference_piece)
 AIRBORNE_DURATION_MS = round(AIRBORNE_BASE_DURATION_MS * AIRBORNE_DURATION_MULTIPLIER)
@@ -78,7 +78,7 @@ def test_piece_arrives_and_enters_long_rest_for_a_one_cell_move():
     assert board.get_piece(Position(1, 1)) is None
     assert board.get_piece(Position(0, 1)) is piece
     # An ordinary arrival goes into long_rest, not straight to idle - see
-    # config.py's LONG_REST_BASE_DURATION_MS. piece.state itself goes
+    # logic_config.py's LONG_REST_BASE_DURATION_MS. piece.state itself goes
     # straight back to IDLE (see model/piece.py) - only is_in_cooldown()'s
     # own out-of-band bookkeeping remembers the cooldown.
     assert piece.state == IDLE

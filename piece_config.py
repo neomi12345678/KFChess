@@ -1,11 +1,20 @@
 """Reads assets/pieces/<code>/states/<state>/config.json - the single
-source of truth physics/ (speed), realtime/ (what state comes next), and
-graphics/ (frames_per_sec, is_loop, frame count) all read from, so none of
-the three layers maintain separate copies of the same per-piece-per-state
-data. jump/short_rest/long_rest durations are NOT read from here -
-config.py's AIRBORNE_BASE_DURATION_MS/SHORT_REST_BASE_DURATION_MS/
+source of truth physics/motion.py (speed) and the view/graphics side
+(what state comes next, frames_per_sec, is_loop, frame count) both read
+from, so the two never maintain separate copies of the same
+per-piece-per-state data. jump/short_rest/long_rest durations are NOT read
+from here - logic_config.py's AIRBORNE_BASE_DURATION_MS/SHORT_REST_BASE_DURATION_MS/
 LONG_REST_BASE_DURATION_MS own those, so realtime/physics timing never
 depends on graphics-only fields like frame count or frames_per_sec.
+
+load_motion/load_animation split the same underlying file into two
+narrow, layer-scoped shapes instead of one combined dataclass, so
+physics/motion.py's only import from here can never carry animation
+fields it has no business seeing (next_state_when_finished is filed
+under the JSON's own "physics" key, but is consumed only by
+view/piece_state_machine.py's animation-state transitions, never by
+physics/motion.py itself) - both loaders share the same cached raw read
+below, so there's still exactly one place that parses the file.
 """
 
 import json
@@ -32,8 +41,12 @@ def piece_code(kind: str, color: str) -> str:
 
 
 @dataclass(frozen=True)
-class StateConfig:
+class MotionConfig:
     speed_m_per_sec: float
+
+
+@dataclass(frozen=True)
+class AnimationConfig:
     next_state_when_finished: str
     frames_per_sec: int
     is_loop: bool
@@ -43,7 +56,11 @@ class StateConfig:
 _cache: dict = {}
 
 
-def load(code: str, state_folder: str) -> StateConfig:
+# Parses+caches the raw config.json + on-disk frame count once per
+# (code, state_folder), regardless of which of load_motion/load_animation
+# asked for it first - the single place either loader touches the
+# filesystem, so the two can never drift into reading the file differently.
+def _load_raw(code: str, state_folder: str) -> dict:
     key = (code, state_folder)
     cached = _cache.get(key)
     if cached is not None:
@@ -52,14 +69,27 @@ def load(code: str, state_folder: str) -> StateConfig:
     state_dir = PIECES_DIR / code / "states" / state_folder
     with open(state_dir / "config.json", encoding="utf-8") as f:
         data = json.load(f)
-    frame_count = len(list((state_dir / "sprites").glob("*.png")))
+    data["_frame_count"] = len(list((state_dir / "sprites").glob("*.png")))
 
-    config = StateConfig(
-        speed_m_per_sec=data["physics"]["speed_m_per_sec"],
+    _cache[key] = data
+    return data
+
+
+# The only piece of this file physics/motion.py ever imports - never
+# carries next_state_when_finished/frames_per_sec/is_loop/frame_count,
+# fields it has no use for and no business seeing.
+def load_motion(code: str, state_folder: str) -> MotionConfig:
+    data = _load_raw(code, state_folder)
+    return MotionConfig(speed_m_per_sec=data["physics"]["speed_m_per_sec"])
+
+
+# What graphics/animation.py and view/piece_state_machine.py import -
+# never carries speed_m_per_sec, which is physics/motion.py's alone.
+def load_animation(code: str, state_folder: str) -> AnimationConfig:
+    data = _load_raw(code, state_folder)
+    return AnimationConfig(
         next_state_when_finished=data["physics"]["next_state_when_finished"],
         frames_per_sec=data["graphics"]["frames_per_sec"],
         is_loop=data["graphics"]["is_loop"],
-        frame_count=frame_count,
+        frame_count=data["_frame_count"],
     )
-    _cache[key] = config
-    return config

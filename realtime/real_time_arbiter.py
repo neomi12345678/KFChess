@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from config import (
+from logic_config import (
     AIRBORNE_BASE_DURATION_MS,
     AIRBORNE_DURATION_MULTIPLIER,
     LONG_REST_BASE_DURATION_MS,
@@ -136,7 +136,7 @@ class RealTimeArbiter:
 
     # A landed move always earns a long_rest, a landed jump always earns a
     # short_rest, and either rest always finishes back at idle - a fixed
-    # game-design shape (see config.py's *_BASE_DURATION_MS), never derived
+    # game-design shape (see logic_config.py's *_BASE_DURATION_MS), never derived
     # from a piece's own animation config. piece.state itself never records
     # short_rest/long_rest; it goes straight back to IDLE, and only
     # is_in_cooldown()'s own bookkeeping below remembers the cooldown.

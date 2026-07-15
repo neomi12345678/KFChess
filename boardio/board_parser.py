@@ -1,4 +1,4 @@
-from config import EMPTY_TOKEN
+from logic_config import EMPTY_TOKEN
 from model.board import Board
 from model.piece import COLOR_BY_LETTER, KIND_BY_LETTER, Piece, PieceRepresentation
 from model.position import Position

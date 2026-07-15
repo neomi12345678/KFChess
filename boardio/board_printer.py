@@ -1,5 +1,5 @@
 from boardio.board_parser import piece_to_token
-from config import EMPTY_TOKEN
+from logic_config import EMPTY_TOKEN
 from model.board import BoardRepresentation
 from model.position import Position
 

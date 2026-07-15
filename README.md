@@ -76,7 +76,7 @@ swapped out without touching the others:
   movement rule, so a kind added to `model/piece.py` without a matching rule
   fails immediately instead of becoming silently illegal-to-move.
 
-- **Movement shapes and timing.** `config.py` holds every direction/offset
+- **Movement shapes and timing.** `logic_config.py` holds every direction/offset
   tuple (`ROOK_DIRECTIONS`, `KNIGHT_OFFSETS`, ...) and timing constant
   (`CELL_DURATION_MS`, `AIRBORNE_DURATION_MS`, `COOLDOWN_DURATION_MS`). Piece
   rules (`rules/piece_rules.py`) read these instead of hardcoding shapes, so

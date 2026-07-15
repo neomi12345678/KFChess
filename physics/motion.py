@@ -2,11 +2,19 @@ from dataclasses import dataclass
 from typing import Optional
 
 import piece_config
-from config import METERS_PER_SQUARE
 from model.piece import PieceRepresentation
 from model.position import Position
 
 _EPSILON = 1e-9
+
+# One square == one meter, not a natural distance - chosen so the assets'
+# physics.speed_m_per_sec produces a duration slow enough to see, instead
+# of the ~40ms a real ~5.7cm square would give at those speeds. Lives here,
+# not in logic_config.py: the rules/model layer only ever deals in board
+# squares and never needs a physical distance unit - only physics/, which
+# converts a piece's real-world speed into an on-screen-relevant duration,
+# has any notion that a square "is" a meter.
+METERS_PER_SQUARE = 1.0
 
 
 # Anything that isn't a straight rank/file/diagonal line is treated as a
@@ -24,7 +32,7 @@ def is_straight_line(source: Position, destination: Position) -> bool:
 # speed, but this reads each piece's own data rather than assuming that.
 def move_cell_duration_ms(piece: PieceRepresentation) -> int:
     code = piece_config.piece_code(piece.kind, piece.color)
-    speed = piece_config.load(code, "move").speed_m_per_sec
+    speed = piece_config.load_motion(code, "move").speed_m_per_sec
     return round(1000 * METERS_PER_SQUARE / speed)
 
 
@@ -53,7 +61,7 @@ class Motion:
 # short_rest after landing from one, or long_rest after an ordinary move -
 # before it's automatically cleared (see RealTimeArbiter.is_airborne()/
 # is_in_cooldown()). duration_ms is a fixed game-design constant
-# (config.py), resolved once when the period starts - never derived from
+# (logic_config.py), resolved once when the period starts - never derived from
 # the piece's own animation config.
 @dataclass
 class TimedState:

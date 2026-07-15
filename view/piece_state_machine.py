@@ -74,10 +74,10 @@ class PieceStateMachine:
         self._entries[piece_id] = (state, now)
 
     def _next_state(self, piece_code: str, state: str) -> str:
-        config = piece_config.load(piece_code, STATE_FOLDER[state])
+        config = piece_config.load_animation(piece_code, STATE_FOLDER[state])
         return config.next_state_when_finished
 
     def _clip_finished(self, piece_code: str, state: str, elapsed_s: float) -> bool:
-        config = piece_config.load(piece_code, STATE_FOLDER[state])
+        config = piece_config.load_animation(piece_code, STATE_FOLDER[state])
         one_cycle_s = config.frame_count / config.frames_per_sec
         return elapsed_s >= one_cycle_s

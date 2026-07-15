@@ -4,7 +4,7 @@ Nothing under model/, rules/, physics/, realtime/, engine/, or boardio/
 imports this module: game logic is defined in board-relative rows/columns
 and never needs a pixel size. Only input/board_mapper.py (translating a
 raw click into a cell) and the view/graphics/play.py side read this file -
-see config.py for the logic-side constants (durations, meters, movement
+see logic_config.py for the logic-side constants (durations, meters, movement
 shapes) that have no notion of pixels at all.
 """
 

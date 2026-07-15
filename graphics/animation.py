@@ -22,7 +22,7 @@ class SpriteAnimator:
     piece_config.py) - the same state machine the course's config format
     describes, just read for its graphics half only. Real move timing
     comes from physics/motion.py's speed_m_per_sec; jump/short_rest/
-    long_rest timing comes from config.py's fixed base-duration constants -
+    long_rest timing comes from logic_config.py's fixed base-duration constants -
     neither depends on this class's frame count/frames_per_sec, which only
     ever affect which sprite gets painted, never how long a state lasts.
     """
@@ -45,7 +45,7 @@ class SpriteAnimator:
             entered = _EnteredState(folder=folder, entered_at=now)
             self._entered_by_piece_id[piece_id] = entered
 
-        state_config = piece_config.load(piece_code, folder)
+        state_config = piece_config.load_animation(piece_code, folder)
 
         elapsed_frames = int((now - entered.entered_at) * state_config.frames_per_sec)
         if state_config.is_loop:

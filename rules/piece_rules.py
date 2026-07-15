@@ -1,6 +1,6 @@
 from typing import Iterable, Protocol, Set, Tuple
 
-from config import BISHOP_DIRECTIONS, KING_OFFSETS, KNIGHT_OFFSETS, QUEEN_DIRECTIONS, ROOK_DIRECTIONS
+from logic_config import BISHOP_DIRECTIONS, KING_OFFSETS, KNIGHT_OFFSETS, QUEEN_DIRECTIONS, ROOK_DIRECTIONS
 from model.board import BoardRepresentation
 from model.piece import PieceRepresentation, WHITE
 from model.position import Position
