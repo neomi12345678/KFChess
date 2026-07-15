@@ -2,15 +2,31 @@ from engine.game_engine import GameEngine
 from input.board_mapper import BoardMapper
 from input.controller import Controller
 from boardio.board_parser import parse
+from model.piece import is_selectable
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
 
 
 class FakeGameEngine:
-    def __init__(self):
+    """Stands in for GameEngine's query surface only (can_select/
+    is_same_color/request_move/request_jump) - a real object, not a mock,
+    reading the same Board a real GameEngine would hold internally (see
+    engine/game_engine.py's own can_select/is_same_color)."""
+
+    def __init__(self, board):
+        self._board = board
         self.requested_moves = []
         self.requested_jumps = []
+
+    def can_select(self, position):
+        piece = self._board.get_piece(position)
+        return piece is not None and is_selectable(piece.state)
+
+    def is_same_color(self, position_a, position_b):
+        piece_a = self._board.get_piece(position_a)
+        piece_b = self._board.get_piece(position_b)
+        return piece_a is not None and piece_b is not None and piece_a.color == piece_b.color
 
     def request_move(self, source, destination):
         self.requested_moves.append((source, destination))
@@ -22,8 +38,8 @@ class FakeGameEngine:
 def make_controller(board_text):
     board = parse(board_text)
     mapper = BoardMapper(width=board.width, height=board.height)
-    engine = FakeGameEngine()
-    controller = Controller(board=board, board_mapper=mapper, game_engine=engine)
+    engine = FakeGameEngine(board)
+    controller = Controller(board_mapper=mapper, game_engine=engine)
     return controller, engine
 
 
@@ -81,7 +97,7 @@ def test_selection_clears_after_second_click_even_when_the_engine_rejects_the_mo
     board = parse("wK . .\n. . .\n. . .")
     mapper = BoardMapper(width=board.width, height=board.height)
     engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=RealTimeArbiter(board))
-    controller = Controller(board=board, board_mapper=mapper, game_engine=engine)
+    controller = Controller(board_mapper=mapper, game_engine=engine)
     controller.click(50, 50)
 
     result = controller.click(250, 250)
@@ -108,7 +124,7 @@ def test_clicking_a_friendly_piece_that_is_moving_does_not_switch_selection():
     board = parse("wR . wK\n. . .")
     mapper = BoardMapper(width=board.width, height=board.height)
     engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=RealTimeArbiter(board))
-    controller = Controller(board=board, board_mapper=mapper, game_engine=engine)
+    controller = Controller(board_mapper=mapper, game_engine=engine)
     controller.click(50, 50)
     controller.click(50, 150)
     controller.click(250, 50)

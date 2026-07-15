@@ -1,6 +1,38 @@
+import sys
+
 import cv2
 
 ESC_KEY = 27
+
+_dpi_awareness_set = False
+
+
+# Without this, on a Windows display with Scaling != 100% (common on
+# laptops), the OS silently stretches the whole drawn window over more
+# physical pixels than the image actually has - so mouse coordinates from
+# cv2.setMouseCallback stop lining up 1:1 with a pixel in the board image,
+# and BoardMapper (which assumes exactly that 1:1 mapping) reads the wrong
+# cell. This tells Windows "give me physical pixels, don't stretch" -
+# see debug_mouse.py, the tool that exists specifically to catch this class
+# of bug. Must run before the first cv2.namedWindow. Idempotent: Windows
+# only allows setting this once per process, so a second GameWindow in the
+# same run (there isn't one today, but nothing here assumes it) must not
+# call it again.
+def _disable_windows_dpi_scaling() -> None:
+    global _dpi_awareness_set
+    if _dpi_awareness_set or sys.platform != "win32":
+        return
+    _dpi_awareness_set = True
+
+    import ctypes
+
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
 
 
 # Not unit-tested: __init__ opens a real OS window as a side effect
@@ -15,10 +47,12 @@ class GameWindow:  # pragma: no cover
 
     Fixed-size (WINDOW_AUTOSIZE): mouse coordinates from cv2 then map 1:1
     onto image pixels, sidestepping the screen-pixels-vs-image-pixels
-    problem that a resizable window would otherwise raise.
+    problem that a resizable window would otherwise raise - see
+    _disable_windows_dpi_scaling for the other half of that guarantee.
     """
 
     def __init__(self, title: str):
+        _disable_windows_dpi_scaling()
         self._title = title
         self._click_handler = None
         self._jump_handler = None

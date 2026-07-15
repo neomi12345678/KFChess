@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional, Tuple
 
 from model.board import BoardRepresentation
 from model.piece import PieceRepresentation
@@ -80,7 +80,16 @@ class GameObserver:
         pass
 
 
-@dataclass
+# Frozen: a read-only fact sheet for the view (see view/renderer.py), not a
+# handle onto the real Piece - nothing downstream can mutate a field back
+# into GameEngine's own state through this. id is still a plain str, not a
+# reference to the real Piece object, kept only so a per-piece-id-keyed
+# consumer (view/piece_state_machine.py's PieceStateMachine, graphics/
+# animation.py's SpriteAnimator) can track how long *this* piece has been in
+# its current visual state across frames - GameEngine itself never resolves
+# that duration (it has no notion of long_rest/short_rest, see motion_phase
+# below), so the view has to correlate frames by identity instead.
+@dataclass(frozen=True)
 class PieceSnapshot:
     id: str
     kind: str
@@ -105,10 +114,15 @@ class PieceSnapshot:
     motion_phase: str
 
 
-@dataclass
+# Frozen for the same reason PieceSnapshot is - the view's own read-only copy
+# of "what does the board look like right now", not a live handle onto
+# GameEngine's state. pieces is a tuple, not a list, so the whole snapshot is
+# actually immutable end to end (a frozen dataclass alone wouldn't stop a
+# consumer from appending to a mutable list field).
+@dataclass(frozen=True)
 class GameSnapshot:
     board_width: int
     board_height: int
-    pieces: List[PieceSnapshot]
+    pieces: Tuple[PieceSnapshot, ...]
     selected_cell: Optional[Position]
     game_over: bool

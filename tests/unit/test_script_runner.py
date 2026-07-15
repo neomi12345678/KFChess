@@ -12,7 +12,7 @@ def make_context(board_text):
     arbiter = RealTimeArbiter(board)
     game_engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=arbiter)
     mapper = BoardMapper(width=board.width, height=board.height)
-    controller = Controller(board=board, board_mapper=mapper, game_engine=game_engine)
+    controller = Controller(board_mapper=mapper, game_engine=game_engine)
     return board, controller, game_engine
 
 

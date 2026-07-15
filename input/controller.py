@@ -2,8 +2,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 from input.board_mapper import BoardMapper
-from model.board import BoardRepresentation
-from model.piece import is_selectable
 from model.position import Position
 
 
@@ -14,8 +12,14 @@ class ControllerResult:
 
 
 class Controller:
-    def __init__(self, board: BoardRepresentation, board_mapper: BoardMapper, game_engine):
-        self._board = board
+    """Interprets clicks and owns selection state only - never holds a Board
+    or reads a Piece directly. Every question about game state ("can this
+    cell be selected?", "are these two cells the same color?") is an
+    explicit call to GameEngine (the single gate), so selection permission
+    has exactly one source of truth, shared with GameEngine's own
+    request_move/request_jump checks - see GameEngine.can_select."""
+
+    def __init__(self, board_mapper: BoardMapper, game_engine):
         self._board_mapper = board_mapper
         self._game_engine = game_engine
         self.selected: Optional[Position] = None
@@ -28,18 +32,15 @@ class Controller:
             return ControllerResult(selected=None, move_requested=False)
 
         if self.selected is None:
-            if self._board.get_piece(cell) is not None:
+            if self._game_engine.can_select(cell):
                 self.selected = cell
             return ControllerResult(selected=self.selected, move_requested=False)
 
         # Switch selection to a same-color piece instead of attempting an
-        # always-illegal move against it - unless it's mid-motion (see
-        # model/piece.py's is_selectable, the same table-driven state check
-        # GameEngine/RealTimeArbiter use for whether an action may start).
-        clicked_piece = self._board.get_piece(cell)
-        selected_piece = self._board.get_piece(self.selected)
-        if clicked_piece is not None and selected_piece is not None and clicked_piece.color == selected_piece.color:
-            if is_selectable(clicked_piece.state):
+        # always-illegal move against it - unless it's currently unselectable
+        # (mid-motion, airborne, or in cooldown - see GameEngine.can_select).
+        if self._game_engine.is_same_color(self.selected, cell):
+            if self._game_engine.can_select(cell):
                 self.selected = cell
             return ControllerResult(selected=self.selected, move_requested=False)
 

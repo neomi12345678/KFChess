@@ -1,3 +1,7 @@
+from dataclasses import FrozenInstanceError
+
+import pytest
+
 from engine.game_engine import GameEngine
 from boardio.board_parser import parse
 from config import AIRBORNE_BASE_DURATION_MS, AIRBORNE_DURATION_MULTIPLIER, LONG_REST_BASE_DURATION_MS, REST_DURATION_MULTIPLIER
@@ -302,6 +306,63 @@ def test_request_jump_rejects_when_game_is_over():
     assert result.reason == "game_over"
 
 
+# can_select/is_same_color are the single gate Controller (input/controller.py)
+# queries instead of reading Board/RealTimeArbiter itself - see its own
+# docstring for why.
+
+
+def test_can_select_is_true_for_an_idle_piece():
+    board, engine, arbiter = make_engine("wK . .\n. . .\n. . .")
+
+    assert engine.can_select(Position(0, 0)) is True
+
+
+def test_can_select_is_false_for_an_empty_cell():
+    board, engine, arbiter = make_engine("wK . .\n. . .\n. . .")
+
+    assert engine.can_select(Position(1, 1)) is False
+
+
+def test_can_select_is_false_for_a_piece_that_is_currently_moving():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    engine.request_move(Position(1, 1), Position(0, 1))
+
+    assert engine.can_select(Position(1, 1)) is False
+
+
+def test_can_select_is_false_for_a_piece_that_is_currently_airborne():
+    board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
+    engine.request_jump(Position(1, 1))
+
+    assert engine.can_select(Position(1, 1)) is False
+
+
+def test_can_select_is_false_for_a_piece_still_in_cooldown_after_landing():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    engine.request_move(Position(1, 1), Position(0, 1))
+    engine.wait(CELL_DURATION_MS)
+
+    assert engine.can_select(Position(0, 1)) is False
+
+
+def test_is_same_color_is_true_for_two_pieces_of_the_same_color():
+    board, engine, arbiter = make_engine("wK . wR\n. . .\n. . .")
+
+    assert engine.is_same_color(Position(0, 0), Position(0, 2)) is True
+
+
+def test_is_same_color_is_false_for_pieces_of_opposing_colors():
+    board, engine, arbiter = make_engine("wK . bR\n. . .\n. . .")
+
+    assert engine.is_same_color(Position(0, 0), Position(0, 2)) is False
+
+
+def test_is_same_color_is_false_when_either_cell_is_empty():
+    board, engine, arbiter = make_engine("wK . .\n. . .\n. . .")
+
+    assert engine.is_same_color(Position(0, 0), Position(1, 1)) is False
+
+
 def test_snapshot_exposes_piece_data_without_returning_the_piece_object():
     board, engine, arbiter = make_engine("wK . .\n. . .\n. . .")
 
@@ -314,6 +375,23 @@ def test_snapshot_exposes_piece_data_without_returning_the_piece_object():
     assert piece_snapshot.color == WHITE
     assert piece_snapshot.kind == KING
     assert not hasattr(piece_snapshot, "cell")
+
+
+def test_snapshot_and_its_pieces_are_immutable():
+    # GameSnapshot/PieceSnapshot are the view's read-only fact sheet (see
+    # model/game_state.py) - nothing downstream should be able to mutate a
+    # field back as if it were live GameEngine state. pieces is a tuple, not
+    # a list, so frozen=True actually covers the whole snapshot, not just
+    # its top-level fields.
+    board, engine, arbiter = make_engine("wK . .\n. . .\n. . .")
+
+    snapshot = engine.snapshot()
+
+    assert isinstance(snapshot.pieces, tuple)
+    with pytest.raises(FrozenInstanceError):
+        snapshot.game_over = True
+    with pytest.raises(FrozenInstanceError):
+        snapshot.pieces[0].color = BLACK
 
 
 def test_snapshot_includes_the_selected_cell_when_given():

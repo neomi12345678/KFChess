@@ -2,7 +2,7 @@ from typing import List, Optional
 
 from model.board import BoardRepresentation
 from model.game_state import GameObserver, GameSnapshot, JumpResult, MoveLoggedEvent, MoveResult, PieceSnapshot
-from model.piece import PHASE_IDLE, PHASE_JUMP, PHASE_MOVE, MOVING, jump_availability, move_availability
+from model.piece import PHASE_IDLE, PHASE_JUMP, PHASE_MOVE, MOVING, is_selectable, jump_availability, move_availability
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import KingCaptureWinCondition, RuleEngine, WinCondition
@@ -33,6 +33,33 @@ class GameEngine:
     # so the move/jump pipeline never waits on them.
     def add_observer(self, observer: GameObserver) -> None:
         self._observers.append(observer)
+
+    # The single gate for "may this cell be selected right now?" - Controller
+    # (input/controller.py) calls this instead of reading Board/RealTimeArbiter
+    # itself, so selection permission has exactly one source of truth, shared
+    # with request_move/request_jump's own state checks below. Doesn't check
+    # game_over on its own: a selection query is harmless once the game has
+    # ended, and request_move/request_jump already gate on it before doing
+    # anything that matters.
+    def can_select(self, position: Position) -> bool:
+        piece = self._board.get_piece(position)
+        if piece is None:
+            return False
+        if not is_selectable(piece.state):
+            return False
+        if self._real_time_arbiter.is_airborne(piece):
+            return False
+        if self._real_time_arbiter.is_in_cooldown(piece):
+            return False
+        return True
+
+    # Whether the two cells hold pieces of the same color - Controller uses
+    # this to decide "switch selection" vs. "request a move/capture" without
+    # ever reading a Piece itself.
+    def is_same_color(self, position_a: Position, position_b: Position) -> bool:
+        piece_a = self._board.get_piece(position_a)
+        piece_b = self._board.get_piece(position_b)
+        return piece_a is not None and piece_b is not None and piece_a.color == piece_b.color
 
     def request_move(self, source: Position, destination: Position) -> MoveResult:
         if self.game_over:
@@ -188,7 +215,7 @@ class GameEngine:
         return GameSnapshot(
             board_width=self._board.width,
             board_height=self._board.height,
-            pieces=pieces,
+            pieces=tuple(pieces),
             selected_cell=selected,
             game_over=self.game_over,
         )
