@@ -16,30 +16,40 @@ KNIGHT = "knight"
 PAWN = "pawn"
 
 # A piece's real-time lifecycle state, independent of its board position.
+# Deliberately just these three: whether a piece is currently airborne
+# (mid-jump) or resting (post-move/post-jump cooldown) is never encoded
+# here - those are realtime.real_time_arbiter.RealTimeArbiter's own
+# out-of-band bookkeeping (is_airborne()/is_in_cooldown()), tracked
+# per-piece-id independently of this field, so a captured/resurrected
+# identity mixup can never leave a piece stuck mid-air or mid-rest by
+# mistake. See ANIMATION_* below for the separate, purely cosmetic
+# vocabulary a renderer uses instead.
 IDLE = "idle"
 MOVING = "moving"
 CAPTURED = "captured"
-AIRBORNE = "airborne"
-# Recovery periods after finishing an action, before the piece can act
-# again - after an ordinary move (SHORT_REST is after a jump instead). Both
-# mirror the animation state machine assets/pieces/*/states/*/config.json
-# describes (move -> long_rest -> idle, jump -> short_rest -> idle).
-SHORT_REST = "short_rest"
-LONG_REST = "long_rest"
 
-# Model state -> assets/pieces/<code>/states/<folder> animation folder name.
-# The single source of truth for this mapping - graphics/animation.py reads
-# it to pick sprites, realtime/real_time_arbiter.py reads it to look up a
-# finishing state's own next_state_when_finished - so the two layers can
-# never drift into disagreeing about what a state is called on disk.
-# CAPTURED has no entry: a captured piece is off the board, never drawn or
-# timed, so it never needs a folder.
+# What a renderer should currently be playing - a piece's own state above
+# never takes these values. GameEngine.snapshot() only ever reports
+# ANIMATION_IDLE/ANIMATION_MOVE/ANIMATION_JUMP (see RealTimeArbiter.
+# is_airborne()); ANIMATION_LONG_REST/ANIMATION_SHORT_REST are only ever
+# produced by view/piece_state_machine.py, layered on top for display -
+# the engine itself has no notion that a "rest animation" exists.
+ANIMATION_IDLE = "idle"
+ANIMATION_MOVE = "move"
+ANIMATION_JUMP = "jump"
+ANIMATION_SHORT_REST = "short_rest"
+ANIMATION_LONG_REST = "long_rest"
+
+# Animation state -> assets/pieces/<code>/states/<folder> animation folder
+# name. The single source of truth for this mapping - graphics/animation.py
+# and view/piece_state_machine.py both read it, so the two can never drift
+# into disagreeing about what an animation state is called on disk.
 STATE_FOLDER = {
-    IDLE: "idle",
-    MOVING: "move",
-    AIRBORNE: "jump",
-    SHORT_REST: "short_rest",
-    LONG_REST: "long_rest",
+    ANIMATION_IDLE: "idle",
+    ANIMATION_MOVE: "move",
+    ANIMATION_JUMP: "jump",
+    ANIMATION_SHORT_REST: "short_rest",
+    ANIMATION_LONG_REST: "long_rest",
 }
 
 
@@ -75,35 +85,21 @@ class ActionAvailability:
     reason_if_blocked: Optional[str] = None
 
 
-# The state machine's "entry" half - from each real-time state, whether a
-# "move" or "jump" may be *started*, and the reason to report back when it
-# can't. GameEngine and RealTimeArbiter both consult this one table instead
-# of each re-deriving their own piece.state checks, so there is exactly one
-# place that says what a piece may do from a given state.
-#
-# The "exit" half - what state automatically follows once a timed state's
-# own animation cycle finishes - is declared per piece in
-# assets/pieces/<code>/states/<state>/config.json's next_state_when_finished
-# and read by realtime/real_time_arbiter.py's _enter_state. Together the two
-# halves are the full state graph: this table's entries only ever route
-# through IDLE (both actions require it), and the JSON's exits only ever
-# land back on IDLE, short_rest, or long_rest - so the two halves meet
-# exactly at IDLE with no gap and no overlap.
+# From each of piece.state's three real values, whether a "move" or "jump"
+# may be *started*, and the reason to report back when it can't. Whether a
+# piece is airborne or resting is a separate, out-of-band question this
+# table has no notion of at all - see RealTimeArbiter.is_airborne()/
+# is_in_cooldown(), which GameEngine and RealTimeArbiter consult directly
+# for those, alongside this table, before starting a new move/jump.
 _MOVE_AVAILABILITY = {
     IDLE: ActionAvailability(allowed=True),
     MOVING: ActionAvailability(allowed=False, reason_if_blocked="motion_in_progress"),
-    AIRBORNE: ActionAvailability(allowed=False, reason_if_blocked="piece_is_airborne"),
-    SHORT_REST: ActionAvailability(allowed=False, reason_if_blocked="piece_in_cooldown"),
-    LONG_REST: ActionAvailability(allowed=False, reason_if_blocked="piece_in_cooldown"),
     CAPTURED: ActionAvailability(allowed=False, reason_if_blocked="piece_in_cooldown"),
 }
 
 _JUMP_AVAILABILITY = {
     IDLE: ActionAvailability(allowed=True),
     MOVING: ActionAvailability(allowed=False, reason_if_blocked="piece_is_moving"),
-    AIRBORNE: ActionAvailability(allowed=False, reason_if_blocked="piece_is_moving"),
-    SHORT_REST: ActionAvailability(allowed=False, reason_if_blocked="piece_in_cooldown"),
-    LONG_REST: ActionAvailability(allowed=False, reason_if_blocked="piece_in_cooldown"),
     CAPTURED: ActionAvailability(allowed=False, reason_if_blocked="piece_in_cooldown"),
 }
 

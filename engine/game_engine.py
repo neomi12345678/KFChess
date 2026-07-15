@@ -2,7 +2,7 @@ from typing import List, Optional
 
 from model.board import BoardRepresentation
 from model.game_state import GameObserver, GameSnapshot, JumpResult, MoveLoggedEvent, MoveResult, PieceSnapshot
-from model.piece import jump_availability, move_availability
+from model.piece import ANIMATION_IDLE, ANIMATION_JUMP, ANIMATION_MOVE, MOVING, jump_availability, move_availability
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import KingCaptureWinCondition, RuleEngine, WinCondition
@@ -38,15 +38,23 @@ class GameEngine:
         if self.game_over:
             return MoveResult(is_accepted=False, reason="game_over")
 
-        # A piece already committed to a motion or jump, or still resting,
-        # can't be redirected - see model/piece.py's move_availability for
-        # the single table this reads instead of re-deriving its own
-        # per-state checks.
+        # A piece already committed to a motion, still resting, or currently
+        # airborne, can't be redirected. Airborne/resting are never part of
+        # piece.state itself (see model/piece.py) - only RealTimeArbiter's
+        # own out-of-band bookkeeping (is_airborne()/is_in_cooldown()) knows
+        # which, so those are checked here directly instead of through
+        # move_availability's table.
         piece = self._board.get_piece(source)
         if piece is not None:
+            if self._real_time_arbiter.is_airborne(piece):
+                return MoveResult(is_accepted=False, reason="piece_is_airborne")
+
             availability = move_availability(piece.state)
             if not availability.allowed:
                 return MoveResult(is_accepted=False, reason=availability.reason_if_blocked)
+
+            if self._real_time_arbiter.is_in_cooldown(piece):
+                return MoveResult(is_accepted=False, reason="piece_in_cooldown")
 
         validation = self._rule_engine.validate_move(self._board, source, destination)
         if not validation.is_valid:
@@ -87,9 +95,15 @@ class GameEngine:
         if piece is None:
             return JumpResult(is_accepted=False, reason="empty_cell")
 
+        if self._real_time_arbiter.is_airborne(piece):
+            return JumpResult(is_accepted=False, reason="piece_is_moving")
+
         availability = jump_availability(piece.state)
         if not availability.allowed:
             return JumpResult(is_accepted=False, reason=availability.reason_if_blocked)
+
+        if self._real_time_arbiter.is_in_cooldown(piece):
+            return JumpResult(is_accepted=False, reason="piece_in_cooldown")
 
         # Unlike start_motion (which can still refuse over a route
         # conflict even once availability passes), start_jump's only
@@ -167,6 +181,7 @@ class GameEngine:
                         row=board_row,
                         col=board_col,
                         state=piece.state,
+                        animation_state=self._animation_state(piece),
                     )
                 )
 
@@ -177,6 +192,17 @@ class GameEngine:
             selected_cell=selected,
             game_over=self.game_over,
         )
+
+    # Only ever IDLE/MOVE/JUMP - never SHORT_REST/LONG_REST, which are a
+    # purely cosmetic overlay view/piece_state_machine.py derives on top of
+    # this report (see its own docstring for why the engine itself has no
+    # notion that a "rest animation" exists).
+    def _animation_state(self, piece) -> str:
+        if self._real_time_arbiter.is_airborne(piece):
+            return ANIMATION_JUMP
+        if piece.state == MOVING:
+            return ANIMATION_MOVE
+        return ANIMATION_IDLE
 
 
 # Linear interpolation between source and destination based on how much of

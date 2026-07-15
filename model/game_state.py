@@ -93,6 +93,13 @@ class PieceSnapshot:
     row: float
     col: float
     state: str
+    # What a renderer should currently be playing - always one of
+    # model.piece.ANIMATION_IDLE/ANIMATION_MOVE/ANIMATION_JUMP (see
+    # GameEngine._animation_state). Never ANIMATION_SHORT_REST/
+    # ANIMATION_LONG_REST - those are a purely cosmetic overlay only
+    # view/piece_state_machine.py ever produces, layered on top of this
+    # report for display, with no bearing on game state.
+    animation_state: str
 
 
 @dataclass

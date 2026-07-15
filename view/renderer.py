@@ -1,9 +1,11 @@
 from typing import Dict, Optional
 
+import piece_config
 from config import CELL_SIZE, MAX_VISIBLE_MOVES_PER_PANEL
 from model.game_state import GameSnapshot
 from model.piece import BLACK, WHITE
 from view.observers import MoveLogObserver, ScoreObserver
+from view.piece_state_machine import PieceStateMachine
 
 _PANEL_LINE_HEIGHT_PX = 18
 _PANEL_TEXT_MARGIN_PX = 10
@@ -27,6 +29,7 @@ class Renderer:
         player_names: Optional[Dict[str, str]] = None,
         side_panel_width_px: int = 0,
         max_visible_moves: int = MAX_VISIBLE_MOVES_PER_PANEL,
+        piece_state_machine: Optional[PieceStateMachine] = None,
     ):
         self._canvas = canvas
         self._move_log = move_log
@@ -34,6 +37,9 @@ class Renderer:
         self._player_names = player_names if player_names is not None else {WHITE: "White", BLACK: "Black"}
         self._side_panel_width_px = side_panel_width_px
         self._max_visible_moves = max_visible_moves
+        # Layers long_rest/short_rest onto GameEngine's idle/move/jump
+        # report, purely for display - see view/piece_state_machine.py.
+        self._piece_state_machine = piece_state_machine if piece_state_machine is not None else PieceStateMachine()
 
     def draw(self, snapshot: GameSnapshot) -> None:
         self._draw_grid(snapshot)
@@ -54,7 +60,9 @@ class Renderer:
     # the model only ever deals in board-relative row/col.
     def _draw_pieces(self, snapshot: GameSnapshot) -> None:
         for piece in snapshot.pieces:
-            key = f"{piece.id}:{piece.color}:{piece.kind}:{piece.state}"
+            code = piece_config.piece_code(piece.kind, piece.color)
+            animation_state = self._piece_state_machine.state_for(piece, code)
+            key = f"{piece.id}:{piece.color}:{piece.kind}:{animation_state}"
             x = int(piece.col * CELL_SIZE + CELL_SIZE // 2)
             y = int(piece.row * CELL_SIZE + CELL_SIZE // 2)
             self._canvas.draw_image(key, x=x, y=y)

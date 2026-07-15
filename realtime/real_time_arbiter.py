@@ -1,6 +1,5 @@
 from typing import List, Optional
 
-import piece_config
 from config import (
     AIRBORNE_BASE_DURATION_MS,
     AIRBORNE_DURATION_MULTIPLIER,
@@ -11,14 +10,10 @@ from config import (
 from model.board import BoardRepresentation
 from model.game_state import ArrivalEvent
 from model.piece import (
-    AIRBORNE,
     CAPTURED,
     IDLE,
-    LONG_REST,
     MOVING,
     PieceRepresentation,
-    SHORT_REST,
-    STATE_FOLDER,
     jump_availability,
     move_availability,
 )
@@ -47,10 +42,17 @@ class RealTimeArbiter:
     def get_airborne_pieces(self) -> List[PieceRepresentation]:
         return [airborne.piece for airborne in self._airborne_states]
 
-    # short_rest/long_rest are real piece.state values, not a separate
-    # flag, so this is just a state check.
+    # Airborne/resting are tracked here, out-of-band from piece.state (see
+    # model/piece.py) - a piece stays IDLE the whole time it's mid-jump or
+    # cooling down; only this arbiter's own bookkeeping knows which.
+    def is_airborne(self, piece: PieceRepresentation) -> bool:
+        return any(airborne.piece.id == piece.id for airborne in self._airborne_states)
+
     def is_in_cooldown(self, piece: PieceRepresentation) -> bool:
-        return piece.state in (SHORT_REST, LONG_REST)
+        return (
+            any(rest.piece.id == piece.id for rest in self._short_rests)
+            or any(rest.piece.id == piece.id for rest in self._long_rests)
+        )
 
     # True if the move would be altered at all by an in-flight motion -
     # blocked outright, or truncated short of a same-color race.
@@ -65,6 +67,8 @@ class RealTimeArbiter:
     def start_motion(self, piece: PieceRepresentation, source: Position, destination: Position) -> bool:
         if not move_availability(piece.state).allowed:
             return False
+        if self.is_airborne(piece) or self.is_in_cooldown(piece):
+            return False
 
         plan = self.plan_route(piece, source, destination)
         if plan.is_blocked:
@@ -77,10 +81,14 @@ class RealTimeArbiter:
     def start_jump(self, piece: PieceRepresentation) -> bool:
         if not jump_availability(piece.state).allowed:
             return False
+        if self.is_airborne(piece) or self.is_in_cooldown(piece):
+            return False
 
         duration_ms = round(AIRBORNE_BASE_DURATION_MS * AIRBORNE_DURATION_MULTIPLIER)
         self._airborne_states.append(TimedState(piece=piece, duration_ms=duration_ms))
-        piece.state = AIRBORNE
+        # piece.state stays IDLE for the whole jump - "airborne" only ever
+        # lives in self._airborne_states (see is_airborne()), never on the
+        # piece itself.
         return True
 
     def advance_time(self, ms: int) -> List[ArrivalEvent]:
@@ -90,8 +98,8 @@ class RealTimeArbiter:
         # Existing rests age first, before this tick can start any new ones
         # below - a rest that starts this tick shouldn't also be aged by
         # this same tick's ms.
-        self._short_rests = self._advance_rests(self._short_rests, ms, STATE_FOLDER[SHORT_REST])
-        self._long_rests = self._advance_rests(self._long_rests, ms, STATE_FOLDER[LONG_REST])
+        self._short_rests = self._advance_rests(self._short_rests, ms)
+        self._long_rests = self._advance_rests(self._long_rests, ms)
 
         for motion in self._active_motions:
             motion.elapsed_ms += ms
@@ -117,47 +125,35 @@ class RealTimeArbiter:
                 expired_airborne_states.append(airborne)
 
         for airborne in expired_airborne_states:
+            # A successful defense (see _resolve_arrival) already removed
+            # this same entry from self._airborne_states above, via
+            # _land_airborne_piece - so anything still here genuinely timed
+            # out unresolved and always lands into short_rest.
             self._airborne_states.remove(airborne)
-            # A successful defense already reset this piece to IDLE and
-            # dropped it from the list, so it won't be expired twice.
-            if airborne.piece.state == AIRBORNE:
-                self._enter_state(airborne.piece, self._next_state_folder(airborne.piece, STATE_FOLDER[AIRBORNE]))
+            self._start_short_rest(airborne.piece)
 
         return events
 
-    # next_state_when_finished lives in the piece's own config.json, not
-    # hardcoded here, so editing the JSON actually changes behavior.
-    def _next_state_folder(self, piece: PieceRepresentation, state_folder: str) -> str:
-        code = piece_config.piece_code(piece.kind, piece.color)
-        return piece_config.load(code, state_folder).next_state_when_finished
+    # A landed move always earns a long_rest, a landed jump always earns a
+    # short_rest, and either rest always finishes back at idle - a fixed
+    # game-design shape (see config.py's *_BASE_DURATION_MS), never derived
+    # from a piece's own animation config. piece.state itself never records
+    # short_rest/long_rest; it goes straight back to IDLE, and only
+    # is_in_cooldown()'s own bookkeeping below remembers the cooldown.
+    def _start_long_rest(self, piece: PieceRepresentation) -> None:
+        piece.state = IDLE
+        duration_ms = round(LONG_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
+        self._long_rests.append(TimedState(piece=piece, duration_ms=duration_ms))
 
-    # MOVING/AIRBORNE are only entered via start_motion/start_jump, never
-    # as next_state_when_finished, so they're not handled here.
-    def _enter_state(self, piece: PieceRepresentation, state_folder: str) -> None:
-        if state_folder == STATE_FOLDER[IDLE]:
-            piece.state = IDLE
-        elif state_folder == STATE_FOLDER[SHORT_REST]:
-            piece.state = SHORT_REST
-            duration_ms = round(SHORT_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
-            self._short_rests.append(TimedState(piece=piece, duration_ms=duration_ms))
-        elif state_folder == STATE_FOLDER[LONG_REST]:
-            piece.state = LONG_REST
-            duration_ms = round(LONG_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
-            self._long_rests.append(TimedState(piece=piece, duration_ms=duration_ms))
-        else:
-            raise ValueError(f"unsupported next_state_when_finished: {state_folder!r}")
+    def _start_short_rest(self, piece: PieceRepresentation) -> None:
+        piece.state = IDLE
+        duration_ms = round(SHORT_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
+        self._short_rests.append(TimedState(piece=piece, duration_ms=duration_ms))
 
-    def _advance_rests(self, rests: List[TimedState], ms: int, state_folder: str) -> List[TimedState]:
+    def _advance_rests(self, rests: List[TimedState], ms: int) -> List[TimedState]:
         for rest in rests:
             rest.elapsed_ms += ms
-
-        still_resting = []
-        for rest in rests:
-            if rest.is_expired():
-                self._enter_state(rest.piece, self._next_state_folder(rest.piece, state_folder))
-            else:
-                still_resting.append(rest)
-        return still_resting
+        return [rest for rest in rests if not rest.is_expired()]
 
     def _land_airborne_piece(self, piece: PieceRepresentation) -> None:
         self._airborne_states = [
@@ -187,7 +183,7 @@ class RealTimeArbiter:
         # the same-color race branch below instead. A successful defense
         # goes straight back to IDLE, not short_rest - defending doesn't
         # tire a piece the way completing a jump on its own does.
-        if defender is not None and defender.state == AIRBORNE and defender.color != motion.piece.color:
+        if defender is not None and self.is_airborne(defender) and defender.color != motion.piece.color:
             self._board.remove_piece(motion.source)
             motion.piece.state = CAPTURED
             defender.state = IDLE
@@ -201,7 +197,7 @@ class RealTimeArbiter:
             fallback = route_planner.retreat_cell(self._board, motion.source, motion.destination)
             self._board.remove_piece(motion.source)
             self._board.add_piece(fallback, motion.piece)
-            self._enter_state(motion.piece, self._next_state_folder(motion.piece, STATE_FOLDER[MOVING]))
+            self._start_long_rest(motion.piece)
             return ArrivalEvent(piece=motion.piece, captured_piece=None)
 
         captured_piece = defender
@@ -217,6 +213,6 @@ class RealTimeArbiter:
         # Promote before starting the rest, so a pawn reaching the last rank
         # earns its new kind's own long_rest timing, not the pawn's.
         self._promotion_rule.promote(motion.piece, self._board.height)
-        self._enter_state(motion.piece, self._next_state_folder(motion.piece, "move"))
+        self._start_long_rest(motion.piece)
 
         return ArrivalEvent(piece=motion.piece, captured_piece=captured_piece)

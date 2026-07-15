@@ -1,5 +1,3 @@
-import pytest
-
 from boardio.board_parser import parse
 from config import (
     AIRBORNE_BASE_DURATION_MS,
@@ -9,7 +7,7 @@ from config import (
     SHORT_REST_BASE_DURATION_MS,
 )
 from model.game_state import ArrivalEvent
-from model.piece import AIRBORNE, CAPTURED, IDLE, LONG_REST, MOVING, PAWN, QUEEN, SHORT_REST, WHITE, ROOK, Piece
+from model.piece import CAPTURED, IDLE, MOVING, PAWN, QUEEN, WHITE, ROOK, Piece
 from model.position import Position
 from physics.motion import move_cell_duration_ms
 from realtime.real_time_arbiter import RealTimeArbiter
@@ -80,8 +78,11 @@ def test_piece_arrives_and_enters_long_rest_for_a_one_cell_move():
     assert board.get_piece(Position(1, 1)) is None
     assert board.get_piece(Position(0, 1)) is piece
     # An ordinary arrival goes into long_rest, not straight to idle - see
-    # assets/pieces/*/states/move/config.json's next_state_when_finished.
-    assert piece.state == LONG_REST
+    # config.py's LONG_REST_BASE_DURATION_MS. piece.state itself goes
+    # straight back to IDLE (see model/piece.py) - only is_in_cooldown()'s
+    # own out-of-band bookkeeping remembers the cooldown.
+    assert piece.state == IDLE
+    assert arbiter.is_in_cooldown(piece) is True
     assert arbiter.has_active_motion() is False
 
 
@@ -92,10 +93,11 @@ def test_piece_returns_to_idle_once_its_long_rest_expires():
     arbiter.start_motion(piece, Position(1, 1), Position(0, 1))
 
     arbiter.advance_time(CELL_DURATION_MS)
-    assert piece.state == LONG_REST
+    assert arbiter.is_in_cooldown(piece) is True
 
     arbiter.advance_time(LONG_REST_DURATION_MS)
 
+    assert arbiter.is_in_cooldown(piece) is False
     assert piece.state == IDLE
 
 
@@ -205,7 +207,7 @@ def test_a_knight_that_arrives_to_find_a_teammate_already_there_stays_at_its_sou
     # completed a motion (even a zero-distance one), so it still earns a
     # long_rest like any other arrival.
     assert board.get_piece(Position(0, 0)) is knight
-    assert knight.state == LONG_REST
+    assert arbiter.is_in_cooldown(knight) is True
     assert board.get_piece(Position(1, 2)) is rook
     assert events == [ArrivalEvent(piece=knight, captured_piece=None)]
 
@@ -250,7 +252,7 @@ def test_start_motion_stops_a_same_color_piece_one_cell_short_of_a_crossing_path
 
     assert board.get_piece(Position(2, 1)) is horizontal_rook
     # Stopping short of a teammate still counts as completing a motion.
-    assert horizontal_rook.state == LONG_REST
+    assert arbiter.is_in_cooldown(horizontal_rook) is True
     assert events == [ArrivalEvent(piece=horizontal_rook, captured_piece=None)]
     # The already-active vertical motion is untouched by the other piece's
     # new command and keeps travelling toward its original destination.
@@ -311,11 +313,11 @@ def test_arrival_stops_short_instead_of_capturing_a_teammate_that_won_a_race_to_
     events = arbiter.advance_time(3 * CELL_DURATION_MS)
 
     assert board.get_piece(Position(2, 2)) is from_the_left
-    assert from_the_left.state == LONG_REST
+    assert arbiter.is_in_cooldown(from_the_left) is True
     # from_above loses the race and stops one cell short instead of
     # overwriting its teammate - it still completed a motion.
     assert board.get_piece(Position(1, 2)) is from_above
-    assert from_above.state == LONG_REST
+    assert arbiter.is_in_cooldown(from_above) is True
     assert ArrivalEvent(piece=from_above, captured_piece=None) in events
 
 
@@ -360,7 +362,7 @@ def test_a_piece_captured_while_resting_does_not_get_resurrected_when_its_stale_
 
     arbiter.start_motion(white_rook, Position(1, 1), Position(1, 0))
     arbiter.advance_time(CELL_DURATION_MS)
-    assert white_rook.state == LONG_REST
+    assert arbiter.is_in_cooldown(white_rook) is True
 
     arbiter.start_motion(black_rook, Position(2, 0), Position(1, 0))
     arbiter.advance_time(CELL_DURATION_MS)
@@ -461,7 +463,9 @@ def test_start_jump_marks_the_piece_airborne():
     accepted = arbiter.start_jump(king)
 
     assert accepted is True
-    assert king.state == AIRBORNE
+    assert arbiter.is_airborne(king) is True
+    # piece.state stays IDLE for the whole jump - see model/piece.py.
+    assert king.state == IDLE
 
 
 def test_start_jump_rejects_a_piece_that_is_currently_moving():
@@ -502,8 +506,8 @@ def test_two_pieces_can_be_airborne_at_the_same_time():
     assert white_king in airborne_pieces
     assert black_king in airborne_pieces
     assert len(airborne_pieces) == 2
-    assert white_king.state == AIRBORNE
-    assert black_king.state == AIRBORNE
+    assert arbiter.is_airborne(white_king) is True
+    assert arbiter.is_airborne(black_king) is True
 
 
 def test_each_airborne_piece_lands_independently_when_its_own_duration_elapses():
@@ -520,8 +524,9 @@ def test_each_airborne_piece_lands_independently_when_its_own_duration_elapses()
 
     # White's jump has now run its full duration and landed into
     # short_rest; black's jump only just started and is still airborne.
-    assert white_king.state == SHORT_REST
-    assert black_king.state == AIRBORNE
+    assert arbiter.is_airborne(white_king) is False
+    assert arbiter.is_in_cooldown(white_king) is True
+    assert arbiter.is_airborne(black_king) is True
     assert arbiter.get_airborne_pieces() == [black_king]
 
 
@@ -540,11 +545,12 @@ def test_one_airborne_pieces_defense_does_not_affect_another_airborne_piece():
     assert board.get_piece(Position(0, 0)) is white_king
     assert rook.state == CAPTURED
     # black_king's own, unrelated jump is untouched by white_king's defense.
-    assert black_king.state == AIRBORNE
+    assert arbiter.is_airborne(black_king) is True
 
     arbiter.advance_time(AIRBORNE_DURATION_MS - 2 * CELL_DURATION_MS)
 
-    assert black_king.state == SHORT_REST
+    assert arbiter.is_airborne(black_king) is False
+    assert arbiter.is_in_cooldown(black_king) is True
     assert arbiter.get_airborne_pieces() == []
 
 
@@ -556,7 +562,8 @@ def test_airborne_piece_lands_back_in_place_once_its_duration_elapses():
 
     arbiter.advance_time(AIRBORNE_DURATION_MS)
 
-    assert king.state == SHORT_REST
+    assert arbiter.is_airborne(king) is False
+    assert arbiter.is_in_cooldown(king) is True
     assert board.get_piece(Position(1, 1)) is king
 
 
@@ -594,8 +601,8 @@ def test_airborne_piece_does_not_capture_a_teammate_that_arrives_on_its_cell():
 
     assert board.get_piece(Position(1, 0)) is king
     assert board.get_piece(Position(1, 1)) is rook
-    assert rook.state == LONG_REST
-    assert king.state == AIRBORNE
+    assert arbiter.is_in_cooldown(rook) is True
+    assert arbiter.is_airborne(king) is True
     assert events == [ArrivalEvent(piece=rook, captured_piece=None)]
 
 
@@ -606,7 +613,7 @@ def test_airborne_protection_no_longer_applies_once_it_has_expired():
     rook = board.get_piece(Position(1, 3))
     arbiter.start_jump(king)
     arbiter.advance_time(AIRBORNE_DURATION_MS)
-    assert king.state == SHORT_REST
+    assert arbiter.is_in_cooldown(king) is True
 
     arbiter.start_motion(rook, Position(1, 3), Position(1, 0))
     events = arbiter.advance_time(3 * CELL_DURATION_MS)
@@ -629,7 +636,7 @@ def test_start_motion_rejects_a_piece_still_in_long_rest_right_after_finishing_a
     accepted = arbiter.start_motion(rook, Position(0, 1), Position(0, 0))
 
     assert accepted is False
-    assert rook.state == LONG_REST
+    assert arbiter.is_in_cooldown(rook) is True
 
 
 def test_start_motion_succeeds_again_once_the_long_rest_from_a_previous_move_expires():
@@ -658,7 +665,7 @@ def test_start_jump_rejects_a_piece_still_in_short_rest_right_after_its_jump_exp
     accepted = arbiter.start_jump(king)
 
     assert accepted is False
-    assert king.state == SHORT_REST
+    assert arbiter.is_in_cooldown(king) is True
 
 
 def test_start_jump_succeeds_again_once_the_short_rest_from_a_previous_jump_expires():
@@ -688,17 +695,3 @@ def test_cooldown_does_not_block_a_different_piece_from_acting():
     accepted = arbiter.start_motion(black_rook, Position(2, 0), Position(2, 1))
 
     assert accepted is True
-
-
-def test_enter_state_rejects_a_next_state_when_finished_value_it_does_not_recognize():
-    # This is a fail-fast guard against malformed asset config.json data -
-    # next_state_when_finished should only ever be "idle"/"short_rest"/
-    # "long_rest" (see model/piece.py's STATE_FOLDER and each state's own
-    # config.json). A typo or unsupported value in that file must not be
-    # silently ignored.
-    board = parse(". . .\n. wR .\n. . .")
-    arbiter = RealTimeArbiter(board)
-    rook = board.get_piece(Position(1, 1))
-
-    with pytest.raises(ValueError):
-        arbiter._enter_state(rook, "bogus_state")

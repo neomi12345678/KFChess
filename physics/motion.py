@@ -49,10 +49,12 @@ class Motion:
         return self.elapsed_ms >= self.duration_ms
 
 
-# A timed period a piece spends in one real-time state - airborne after a
-# jump, short_rest after landing from one, or long_rest after an ordinary
-# move - before automatically moving on to its next state. duration_ms is
-# resolved once, from that piece's own state config, when the period starts.
+# A timed, out-of-band period tracked for a piece - airborne after a jump,
+# short_rest after landing from one, or long_rest after an ordinary move -
+# before it's automatically cleared (see RealTimeArbiter.is_airborne()/
+# is_in_cooldown()). duration_ms is a fixed game-design constant
+# (config.py), resolved once when the period starts - never derived from
+# the piece's own animation config.
 @dataclass
 class TimedState:
     piece: PieceRepresentation

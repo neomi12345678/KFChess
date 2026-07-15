@@ -2,7 +2,7 @@ from engine.game_engine import GameEngine
 from boardio.board_parser import parse
 from config import AIRBORNE_BASE_DURATION_MS, AIRBORNE_DURATION_MULTIPLIER, LONG_REST_BASE_DURATION_MS, REST_DURATION_MULTIPLIER
 from model.game_state import ArrivalEvent, GameObserver, MoveLoggedEvent
-from model.piece import AIRBORNE, BLACK, CAPTURED, IDLE, KING, LONG_REST, MOVING, PAWN, ROOK, WHITE, Piece
+from model.piece import BLACK, CAPTURED, IDLE, KING, MOVING, PAWN, ROOK, WHITE, Piece
 from model.position import Position
 from physics.motion import move_cell_duration_ms
 from realtime.real_time_arbiter import RealTimeArbiter
@@ -152,7 +152,7 @@ def test_request_move_stops_a_same_color_piece_one_cell_short_of_a_crossing_path
     engine.wait(CELL_DURATION_MS)
     assert board.get_piece(Position(2, 1)) is horizontal_rook
     # Stopping short of a teammate still counts as completing a motion.
-    assert horizontal_rook.state == LONG_REST
+    assert arbiter.is_in_cooldown(horizontal_rook) is True
     assert vertical_rook.state == MOVING
 
 
@@ -222,7 +222,7 @@ def test_request_jump_marks_the_piece_airborne():
 
     assert result.is_accepted is True
     assert result.reason == "ok"
-    assert board.get_piece(Position(1, 1)).state == AIRBORNE
+    assert arbiter.is_airborne(board.get_piece(Position(1, 1))) is True
 
 
 def test_request_jump_rejects_an_empty_cell():
