@@ -1,6 +1,5 @@
 from typing import List, Optional
 
-from config import CELL_SIZE
 from model.board import BoardRepresentation
 from model.game_state import GameObserver, GameSnapshot, JumpResult, MoveLoggedEvent, MoveResult, PieceSnapshot
 from model.piece import jump_availability, move_availability
@@ -155,18 +154,18 @@ class GameEngine:
                 # Pieces mid-flight are still stored at their source cell
                 # on the board, so their on-screen position has to be
                 # interpolated rather than read straight off the grid.
-                pixel_x, pixel_y = _cell_center(row, col)
+                board_row, board_col = float(row), float(col)
                 motion = motion_by_piece_id.get(piece.id)
                 if motion is not None:
-                    pixel_x, pixel_y = _interpolated_pixels(motion)
+                    board_row, board_col = _interpolated_cell(motion)
 
                 pieces.append(
                     PieceSnapshot(
                         id=piece.id,
                         kind=piece.kind,
                         color=piece.color,
-                        pixel_x=pixel_x,
-                        pixel_y=pixel_y,
+                        row=board_row,
+                        col=board_col,
                         state=piece.state,
                     )
                 )
@@ -180,14 +179,10 @@ class GameEngine:
         )
 
 
-def _cell_center(row: int, col: int) -> tuple:
-    return col * CELL_SIZE + CELL_SIZE // 2, row * CELL_SIZE + CELL_SIZE // 2
-
-
 # Linear interpolation between source and destination based on how much of
 # the motion's total duration has elapsed.
-def _interpolated_pixels(motion) -> tuple:
+def _interpolated_cell(motion) -> tuple:
     progress = min(1.0, motion.elapsed_ms / motion.duration_ms) if motion.duration_ms else 1.0
     row = motion.source.row + (motion.destination.row - motion.source.row) * progress
     col = motion.source.col + (motion.destination.col - motion.source.col) * progress
-    return int(col * CELL_SIZE + CELL_SIZE // 2), int(row * CELL_SIZE + CELL_SIZE // 2)
+    return row, col

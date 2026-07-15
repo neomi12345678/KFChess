@@ -48,12 +48,16 @@ class Renderer:
             for col in range(snapshot.board_width):
                 self._canvas.draw_rect(x=col * CELL_SIZE, y=row * CELL_SIZE, width=CELL_SIZE, height=CELL_SIZE)
 
-    # pixel_x/pixel_y already account for in-flight interpolation - the
-    # renderer never needs to know whether a piece is moving.
+    # piece.row/piece.col already account for in-flight interpolation - the
+    # renderer never needs to know whether a piece is moving. Converting
+    # board coordinates to pixels is this layer's job, not the engine's -
+    # the model only ever deals in board-relative row/col.
     def _draw_pieces(self, snapshot: GameSnapshot) -> None:
         for piece in snapshot.pieces:
             key = f"{piece.id}:{piece.color}:{piece.kind}:{piece.state}"
-            self._canvas.draw_image(key, x=piece.pixel_x, y=piece.pixel_y)
+            x = int(piece.col * CELL_SIZE + CELL_SIZE // 2)
+            y = int(piece.row * CELL_SIZE + CELL_SIZE // 2)
+            self._canvas.draw_image(key, x=x, y=y)
 
     def _draw_selection(self, snapshot: GameSnapshot) -> None:
         if snapshot.selected_cell is not None:

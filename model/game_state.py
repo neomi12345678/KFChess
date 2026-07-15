@@ -85,8 +85,13 @@ class PieceSnapshot:
     id: str
     kind: str
     color: str
-    pixel_x: int
-    pixel_y: int
+    # Continuous board coordinates, not pixels - the model has no notion of
+    # screen space. A stationary piece sits at integer (row, col); a piece
+    # mid-motion is fractional, interpolated between source and destination.
+    # Converting these to pixels (multiplying by CELL_SIZE) is the view
+    # layer's job (see view/renderer.py), never the engine's.
+    row: float
+    col: float
     state: str
 
 

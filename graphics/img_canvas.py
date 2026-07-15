@@ -74,9 +74,9 @@ class ImgCanvas:
     def draw_rect(self, x: int, y: int, width: int, height: int) -> None:
         pass
 
-    # GameEngine.snapshot() reports each piece's pixel_x/pixel_y as its cell
-    # *center* (see engine/game_engine.py's _cell_center), but Img.draw_on
-    # takes a top-left corner - shift by half the sprite size to compensate.
+    # view/renderer.py resolves each piece's board row/col to its cell
+    # *center* in pixels before calling here, but Img.draw_on takes a
+    # top-left corner - shift by half the sprite size to compensate.
     #
     # key is "{piece_id}:{color}:{kind}:{state}" (see view/renderer.py) - the
     # id lets SpriteAnimator track how long this specific piece has been in

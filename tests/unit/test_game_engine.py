@@ -323,7 +323,7 @@ def test_snapshot_includes_the_selected_cell_when_given():
     assert snapshot.selected_cell == Position(0, 0)
 
 
-def test_snapshot_interpolates_pixels_for_a_piece_mid_motion():
+def test_snapshot_interpolates_board_position_for_a_piece_mid_motion():
     board, engine, arbiter = make_engine(". . .\n. . .\n. . .\nwR . .")
     engine.request_move(Position(3, 0), Position(1, 0))
     # A two-cell move's total duration is 2 * CELL_DURATION_MS, so waiting
@@ -334,11 +334,11 @@ def test_snapshot_interpolates_pixels_for_a_piece_mid_motion():
     snapshot = engine.snapshot()
 
     rook_snapshot = snapshot.pieces[0]
-    assert rook_snapshot.pixel_x == 50
-    assert rook_snapshot.pixel_y == 250
+    assert rook_snapshot.row == 2.0
+    assert rook_snapshot.col == 0.0
 
 
-def test_snapshot_interpolates_pixels_independently_for_two_concurrent_motions():
+def test_snapshot_interpolates_board_position_independently_for_two_concurrent_motions():
     board, engine, arbiter = make_engine("wR . .\n. . .\nbR . .")
     engine.request_move(Position(0, 0), Position(0, 2))
     engine.request_move(Position(2, 0), Position(2, 2))
@@ -348,10 +348,10 @@ def test_snapshot_interpolates_pixels_independently_for_two_concurrent_motions()
     snapshot = engine.snapshot()
     pieces_by_color = {piece.color: piece for piece in snapshot.pieces}
 
-    assert pieces_by_color[WHITE].pixel_x == 150
-    assert pieces_by_color[WHITE].pixel_y == 50
-    assert pieces_by_color[BLACK].pixel_x == 150
-    assert pieces_by_color[BLACK].pixel_y == 250
+    assert pieces_by_color[WHITE].row == 0.0
+    assert pieces_by_color[WHITE].col == 1.0
+    assert pieces_by_color[BLACK].row == 2.0
+    assert pieces_by_color[BLACK].col == 1.0
 
 
 def test_snapshot_reflects_game_over_flag():
