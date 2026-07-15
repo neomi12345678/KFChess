@@ -2,11 +2,12 @@ import time
 from dataclasses import dataclass
 
 import piece_config
-from model.piece import STATE_FOLDER
+from view.animation_states import STATE_FOLDER
 
-# A piece not covered by model.piece.STATE_FOLDER (captured, or a future
-# addition) falls back to "idle" - a piece that isn't one of the mapped
-# real-time states shouldn't be on the board to draw in the first place.
+# A piece not covered by view.animation_states.STATE_FOLDER (captured, or a
+# future addition) falls back to "idle" - a piece that isn't one of the
+# mapped real-time states shouldn't be on the board to draw in the first
+# place.
 
 
 @dataclass

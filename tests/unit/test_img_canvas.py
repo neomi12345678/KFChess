@@ -2,7 +2,7 @@ import numpy as np
 
 import piece_config
 from boardio.board_parser import parse
-from config import CELL_SIZE
+from display_config import CELL_SIZE
 from engine.game_engine import GameEngine
 from graphics.img_canvas import ImgCanvas
 from model.piece import COLOR_BY_LETTER, KIND_BY_LETTER

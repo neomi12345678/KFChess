@@ -1,6 +1,6 @@
 from typing import Optional
 
-from config import CELL_SIZE
+from display_config import CELL_SIZE
 from model.position import Position
 
 

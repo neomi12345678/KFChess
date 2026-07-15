@@ -2,7 +2,7 @@ from typing import List, Optional
 
 from model.board import BoardRepresentation
 from model.game_state import GameObserver, GameSnapshot, JumpResult, MoveLoggedEvent, MoveResult, PieceSnapshot
-from model.piece import ANIMATION_IDLE, ANIMATION_JUMP, ANIMATION_MOVE, MOVING, jump_availability, move_availability
+from model.piece import PHASE_IDLE, PHASE_JUMP, PHASE_MOVE, MOVING, jump_availability, move_availability
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import KingCaptureWinCondition, RuleEngine, WinCondition
@@ -181,7 +181,7 @@ class GameEngine:
                         row=board_row,
                         col=board_col,
                         state=piece.state,
-                        animation_state=self._animation_state(piece),
+                        motion_phase=self._motion_phase(piece),
                     )
                 )
 
@@ -193,16 +193,16 @@ class GameEngine:
             game_over=self.game_over,
         )
 
-    # Only ever IDLE/MOVE/JUMP - never SHORT_REST/LONG_REST, which are a
-    # purely cosmetic overlay view/piece_state_machine.py derives on top of
-    # this report (see its own docstring for why the engine itself has no
+    # Only ever PHASE_IDLE/MOVE/JUMP - never SHORT_REST/LONG_REST, which are
+    # a purely cosmetic overlay view/piece_state_machine.py derives on top
+    # of this report (see its own docstring for why the engine itself has no
     # notion that a "rest animation" exists).
-    def _animation_state(self, piece) -> str:
+    def _motion_phase(self, piece) -> str:
         if self._real_time_arbiter.is_airborne(piece):
-            return ANIMATION_JUMP
+            return PHASE_JUMP
         if piece.state == MOVING:
-            return ANIMATION_MOVE
-        return ANIMATION_IDLE
+            return PHASE_MOVE
+        return PHASE_IDLE
 
 
 # Linear interpolation between source and destination based on how much of

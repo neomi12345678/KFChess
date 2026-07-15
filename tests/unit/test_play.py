@@ -1,4 +1,4 @@
-from config import CELL_SIZE, SIDE_PANEL_WIDTH_PX
+from display_config import CELL_SIZE, SIDE_PANEL_WIDTH_PX
 from play import STARTING_BOARD, build_app
 
 

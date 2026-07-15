@@ -1,7 +1,7 @@
 from typing import Dict, Optional
 
 import piece_config
-from config import CELL_SIZE, MAX_VISIBLE_MOVES_PER_PANEL
+from display_config import CELL_SIZE, MAX_VISIBLE_MOVES_PER_PANEL
 from model.game_state import GameSnapshot
 from model.piece import BLACK, WHITE
 from view.observers import MoveLogObserver, ScoreObserver

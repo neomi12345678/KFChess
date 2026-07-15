@@ -1,24 +1,14 @@
-"""Central configuration for KFChess.
+"""Central configuration for game logic (rules/physics/realtime/boardio).
 
-All timing, sizing, and notation constants live here so game logic never
-hardcodes magic numbers - changing a duration or a token only requires
-editing this file, no other module should contain literal values like
-these.
+All timing, duration, and movement-shape constants live here so game logic
+never hardcodes magic numbers - changing a duration only requires editing
+this file, no other logic module should contain literal values like these.
+
+Pixel/panel/on-screen sizing constants live in display_config.py instead -
+game logic has no notion of pixels, so nothing in this file does either.
 """
 
-CELL_SIZE = 100
 EMPTY_TOKEN = "."
-
-# Width, in pixels, of each side panel (moves log/score/player name) the
-# board is flanked by - see graphics/img_canvas.py's side_panel_width_px.
-# 0 by default (ImgCanvas's own default) so anything that doesn't ask for
-# panels gets a frame sized exactly to the board, unchanged.
-SIDE_PANEL_WIDTH_PX = 260
-
-# How many of the most recent moves-log entries a side panel shows at once
-# (see view/renderer.py) - older entries still exist in
-# view.observers.MoveLogObserver, just scrolled out of what's drawn.
-MAX_VISIBLE_MOVES_PER_PANEL = 30
 
 # One square == one meter, not a natural distance - chosen so the assets'
 # physics.speed_m_per_sec produces a duration slow enough to see, instead

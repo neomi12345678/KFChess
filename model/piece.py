@@ -28,29 +28,18 @@ IDLE = "idle"
 MOVING = "moving"
 CAPTURED = "captured"
 
-# What a renderer should currently be playing - a piece's own state above
-# never takes these values. GameEngine.snapshot() only ever reports
-# ANIMATION_IDLE/ANIMATION_MOVE/ANIMATION_JUMP (see RealTimeArbiter.
-# is_airborne()); ANIMATION_LONG_REST/ANIMATION_SHORT_REST are only ever
-# produced by view/piece_state_machine.py, layered on top for display -
-# the engine itself has no notion that a "rest animation" exists.
-ANIMATION_IDLE = "idle"
-ANIMATION_MOVE = "move"
-ANIMATION_JUMP = "jump"
-ANIMATION_SHORT_REST = "short_rest"
-ANIMATION_LONG_REST = "long_rest"
-
-# Animation state -> assets/pieces/<code>/states/<folder> animation folder
-# name. The single source of truth for this mapping - graphics/animation.py
-# and view/piece_state_machine.py both read it, so the two can never drift
-# into disagreeing about what an animation state is called on disk.
-STATE_FOLDER = {
-    ANIMATION_IDLE: "idle",
-    ANIMATION_MOVE: "move",
-    ANIMATION_JUMP: "jump",
-    ANIMATION_SHORT_REST: "short_rest",
-    ANIMATION_LONG_REST: "long_rest",
-}
+# What real-time phase GameEngine.snapshot() reports a piece is currently
+# in (see RealTimeArbiter.is_airborne()) - a piece's own state above never
+# takes these values. This is the engine's own report vocabulary, nothing
+# about rendering: "resting" has no phase of its own here (a piece that just
+# landed reports back to PHASE_IDLE) - the cosmetic short_rest/long_rest
+# overlay a renderer plays instead is purely view/piece_state_machine.py's
+# business, layered on top of this report, and lives there instead of here
+# (see view/animation_states.py) - the engine itself has no notion that a
+# "rest animation" or an "animation folder" exists at all.
+PHASE_IDLE = "idle"
+PHASE_MOVE = "move"
+PHASE_JUMP = "jump"
 
 
 class PieceRepresentation(Protocol):

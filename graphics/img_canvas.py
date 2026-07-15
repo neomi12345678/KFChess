@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 
 import piece_config
-from config import CELL_SIZE
+from display_config import CELL_SIZE
 from graphics.animation import SpriteAnimator
 from graphics.img import Img
 
