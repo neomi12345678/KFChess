@@ -1,6 +1,6 @@
 from model.piece import KING, WHITE, Piece
 from model.position import Position
-from realtime.motion import Trajectory, is_straight_line, move_cell_duration_ms, motion_duration_ms, trajectories_collide
+from physics.motion import Trajectory, is_straight_line, move_cell_duration_ms, motion_duration_ms, trajectories_collide
 
 _piece = Piece(id="p", color=WHITE, kind=KING, cell=Position(0, 0))
 

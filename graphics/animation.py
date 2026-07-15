@@ -19,9 +19,11 @@ class SpriteAnimator:
     """Picks which sprite frame to show for a piece, driven by each
     animation folder's own config.json (frames_per_sec/is_loop, read via
     piece_config.py) - the same state machine the course's config format
-    describes, just read for its graphics half only. Real move/jump/rest
-    timing still comes from realtime/, which reads the same files' physics
-    half; this only decides which frame to paint.
+    describes, just read for its graphics half only. Real move timing
+    comes from physics/motion.py's speed_m_per_sec; jump/short_rest/
+    long_rest timing comes from config.py's fixed base-duration constants -
+    neither depends on this class's frame count/frames_per_sec, which only
+    ever affect which sprite gets painted, never how long a state lasts.
     """
 
     # clock is injectable so tests can control elapsed time deterministically

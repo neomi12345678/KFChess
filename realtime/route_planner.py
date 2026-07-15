@@ -5,7 +5,7 @@ from typing import List, Optional
 from model.board import BoardRepresentation
 from model.piece import PieceRepresentation
 from model.position import Position
-from realtime.motion import Motion, Trajectory, collision_time_ms, is_straight_line, motion_duration_ms, move_cell_duration_ms
+from physics.motion import Motion, Trajectory, collision_time_ms, is_straight_line, motion_duration_ms, move_cell_duration_ms
 
 # Tolerance, in ms, for treating a collision time as landing exactly on a
 # cell boundary despite floating-point drift from the trajectory math.

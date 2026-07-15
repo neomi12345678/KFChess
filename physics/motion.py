@@ -63,15 +63,6 @@ class TimedState:
         return self.elapsed_ms >= self.duration_ms
 
 
-# jump/short_rest/long_rest all have physics.speed_m_per_sec == 0.0 (they
-# don't cover distance), so there's no speed to derive a duration from -
-# one full pass through the state's own sprites is used as its real-time
-# duration instead (see piece_config.StateConfig.animation_cycle_ms).
-def animation_cycle_duration_ms(piece: PieceRepresentation, state_folder: str) -> int:
-    code = piece_config.piece_code(piece.kind, piece.color)
-    return piece_config.load(code, state_folder).animation_cycle_ms
-
-
 # A straight-line path through continuous space and time: at `source` when
 # `start_offset_ms` elapses (relative to "now"), at `destination` when
 # `start_offset_ms + duration_ms` elapses. A motion already in flight has

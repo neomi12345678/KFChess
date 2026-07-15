@@ -1,10 +1,10 @@
 from engine.game_engine import GameEngine
 from boardio.board_parser import parse
-from config import AIRBORNE_DURATION_MULTIPLIER, REST_DURATION_MULTIPLIER
+from config import AIRBORNE_BASE_DURATION_MS, AIRBORNE_DURATION_MULTIPLIER, LONG_REST_BASE_DURATION_MS, REST_DURATION_MULTIPLIER
 from model.game_state import ArrivalEvent, GameObserver, MoveLoggedEvent
 from model.piece import AIRBORNE, BLACK, CAPTURED, IDLE, KING, LONG_REST, MOVING, PAWN, ROOK, WHITE, Piece
 from model.position import Position
-from realtime.motion import animation_cycle_duration_ms, move_cell_duration_ms
+from physics.motion import move_cell_duration_ms
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
 
@@ -20,13 +20,14 @@ class RecordingObserver(GameObserver):
     def on_arrival(self, event: ArrivalEvent) -> None:
         self.arrivals.append(event)
 
-# All piece kinds currently share the same speed/animation numbers in the
-# provided asset configs, so one reference piece's derived durations are
-# valid for every piece used below.
+# All piece kinds currently share the same speed in the provided asset
+# configs, so one reference piece's derived move duration is valid for
+# every piece used below. Airborne/rest durations are fixed game-design
+# constants (config.py), not per-piece.
 _reference_piece = Piece(id="ref", color=WHITE, kind=ROOK, cell=Position(0, 0))
 CELL_DURATION_MS = move_cell_duration_ms(_reference_piece)
-AIRBORNE_DURATION_MS = round(animation_cycle_duration_ms(_reference_piece, "jump") * AIRBORNE_DURATION_MULTIPLIER)
-LONG_REST_DURATION_MS = round(animation_cycle_duration_ms(_reference_piece, "long_rest") * REST_DURATION_MULTIPLIER)
+AIRBORNE_DURATION_MS = round(AIRBORNE_BASE_DURATION_MS * AIRBORNE_DURATION_MULTIPLIER)
+LONG_REST_DURATION_MS = round(LONG_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
 
 
 def make_engine(board_text):

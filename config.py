@@ -25,6 +25,20 @@ MAX_VISIBLE_MOVES_PER_PANEL = 30
 # of the ~40ms a real ~5.7cm square would give at those speeds.
 METERS_PER_SQUARE = 1.0
 
+# Base real-time duration, in ms, for jump/short_rest/long_rest - states
+# with no physical speed to derive a duration from (their
+# physics.speed_m_per_sec is 0.0, they cover no distance). Game-design
+# values, not read from any asset - realtime/physics must never derive a
+# gameplay-affecting duration from how many sprite frames an animation
+# happens to have, or from its frames_per_sec (both graphics-only
+# concerns). These three numbers match this project's original
+# animation-cycle-derived timing (5 frames at 8fps = 625ms for jump/
+# short_rest, 5 frames at 6fps = 833ms for long_rest) at the point that
+# dependency was removed, so gameplay feel is unchanged.
+AIRBORNE_BASE_DURATION_MS = 625
+SHORT_REST_BASE_DURATION_MS = 625
+LONG_REST_BASE_DURATION_MS = 833
+
 # Raw short_rest/long_rest length was barely noticeable in a live playtest,
 # so it's scaled up here to make the "can't act yet" window perceptible -
 # gameplay-feel tuning, not derived from the assets.

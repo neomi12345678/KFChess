@@ -1,7 +1,13 @@
 from typing import List, Optional
 
 import piece_config
-from config import AIRBORNE_DURATION_MULTIPLIER, REST_DURATION_MULTIPLIER
+from config import (
+    AIRBORNE_BASE_DURATION_MS,
+    AIRBORNE_DURATION_MULTIPLIER,
+    LONG_REST_BASE_DURATION_MS,
+    REST_DURATION_MULTIPLIER,
+    SHORT_REST_BASE_DURATION_MS,
+)
 from model.board import BoardRepresentation
 from model.game_state import ArrivalEvent
 from model.piece import (
@@ -18,7 +24,7 @@ from model.piece import (
 )
 from model.position import Position
 from realtime import route_planner
-from realtime.motion import Motion, TimedState, animation_cycle_duration_ms
+from physics.motion import Motion, TimedState
 from realtime.route_planner import RoutePlan
 from rules.rule_engine import LastRankPromotion, PromotionRule
 
@@ -72,7 +78,7 @@ class RealTimeArbiter:
         if not jump_availability(piece.state).allowed:
             return False
 
-        duration_ms = round(animation_cycle_duration_ms(piece, STATE_FOLDER[AIRBORNE]) * AIRBORNE_DURATION_MULTIPLIER)
+        duration_ms = round(AIRBORNE_BASE_DURATION_MS * AIRBORNE_DURATION_MULTIPLIER)
         self._airborne_states.append(TimedState(piece=piece, duration_ms=duration_ms))
         piece.state = AIRBORNE
         return True
@@ -132,11 +138,11 @@ class RealTimeArbiter:
             piece.state = IDLE
         elif state_folder == STATE_FOLDER[SHORT_REST]:
             piece.state = SHORT_REST
-            duration_ms = round(animation_cycle_duration_ms(piece, STATE_FOLDER[SHORT_REST]) * REST_DURATION_MULTIPLIER)
+            duration_ms = round(SHORT_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
             self._short_rests.append(TimedState(piece=piece, duration_ms=duration_ms))
         elif state_folder == STATE_FOLDER[LONG_REST]:
             piece.state = LONG_REST
-            duration_ms = round(animation_cycle_duration_ms(piece, STATE_FOLDER[LONG_REST]) * REST_DURATION_MULTIPLIER)
+            duration_ms = round(LONG_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
             self._long_rests.append(TimedState(piece=piece, duration_ms=duration_ms))
         else:
             raise ValueError(f"unsupported next_state_when_finished: {state_folder!r}")

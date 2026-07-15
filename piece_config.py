@@ -1,7 +1,11 @@
 """Reads assets/pieces/<code>/states/<state>/config.json - the single
-source of truth both realtime/ (physics: speed, what state comes next) and
-graphics/ (frames_per_sec, is_loop) read from, so the two layers never
-maintain separate copies of the same per-piece-per-state data.
+source of truth physics/ (speed), realtime/ (what state comes next), and
+graphics/ (frames_per_sec, is_loop, frame count) all read from, so none of
+the three layers maintain separate copies of the same per-piece-per-state
+data. jump/short_rest/long_rest durations are NOT read from here -
+config.py's AIRBORNE_BASE_DURATION_MS/SHORT_REST_BASE_DURATION_MS/
+LONG_REST_BASE_DURATION_MS own those, so realtime/physics timing never
+depends on graphics-only fields like frame count or frames_per_sec.
 """
 
 import json
@@ -34,15 +38,6 @@ class StateConfig:
     frames_per_sec: int
     is_loop: bool
     frame_count: int
-
-    # How long one full pass through this state's sprites takes - used as
-    # this state's real-time duration for states with no physical speed to
-    # derive a duration from (jump/short_rest/long_rest all have
-    # speed_m_per_sec=0.0). is_loop only affects how the state is *drawn*
-    # once its duration is up, not how long it lasts.
-    @property
-    def animation_cycle_ms(self) -> int:
-        return round(1000 * self.frame_count / self.frames_per_sec)
 
 
 _cache: dict = {}

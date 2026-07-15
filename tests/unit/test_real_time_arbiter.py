@@ -1,21 +1,28 @@
 import pytest
 
 from boardio.board_parser import parse
-from config import AIRBORNE_DURATION_MULTIPLIER, REST_DURATION_MULTIPLIER
+from config import (
+    AIRBORNE_BASE_DURATION_MS,
+    AIRBORNE_DURATION_MULTIPLIER,
+    LONG_REST_BASE_DURATION_MS,
+    REST_DURATION_MULTIPLIER,
+    SHORT_REST_BASE_DURATION_MS,
+)
 from model.game_state import ArrivalEvent
 from model.piece import AIRBORNE, CAPTURED, IDLE, LONG_REST, MOVING, PAWN, QUEEN, SHORT_REST, WHITE, ROOK, Piece
 from model.position import Position
-from realtime.motion import animation_cycle_duration_ms, move_cell_duration_ms
+from physics.motion import move_cell_duration_ms
 from realtime.real_time_arbiter import RealTimeArbiter
 
-# All piece kinds currently share the same speed/animation numbers in the
-# provided asset configs, so one reference piece's derived durations are
-# valid for every piece used below (rooks, kings, knights, pawns).
+# All piece kinds currently share the same speed in the provided asset
+# configs, so one reference piece's derived move duration is valid for
+# every piece used below (rooks, kings, knights, pawns). Airborne/rest
+# durations are fixed game-design constants (config.py), not per-piece.
 _reference_piece = Piece(id="ref", color=WHITE, kind=ROOK, cell=Position(0, 0))
 CELL_DURATION_MS = move_cell_duration_ms(_reference_piece)
-AIRBORNE_DURATION_MS = round(animation_cycle_duration_ms(_reference_piece, "jump") * AIRBORNE_DURATION_MULTIPLIER)
-SHORT_REST_DURATION_MS = round(animation_cycle_duration_ms(_reference_piece, "short_rest") * REST_DURATION_MULTIPLIER)
-LONG_REST_DURATION_MS = round(animation_cycle_duration_ms(_reference_piece, "long_rest") * REST_DURATION_MULTIPLIER)
+AIRBORNE_DURATION_MS = round(AIRBORNE_BASE_DURATION_MS * AIRBORNE_DURATION_MULTIPLIER)
+SHORT_REST_DURATION_MS = round(SHORT_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
+LONG_REST_DURATION_MS = round(LONG_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
 
 
 def test_has_active_motion_false_when_nothing_moving():

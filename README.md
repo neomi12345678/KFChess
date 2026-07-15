@@ -88,13 +88,19 @@ swapped out without touching the others:
   Tests inject fakes (`NeverEndsWinCondition`, a no-op promotion rule) to
   prove a custom variant needs no changes to the engine itself.
 
-- **Real-time motion.** This is the hardest part of the assignment:
-  `realtime/motion.py` models each move as a `Trajectory` in continuous time
-  and computes the exact instant (`collision_time_ms`) two paths would
-  occupy the same point. `realtime/route_planner.py` uses this *before* a
-  motion starts — a move that would cross an opposing color's active path
-  is rejected outright; a same-color race is truncated to the last safe
-  cell short of the collision (falling back further still if a third piece
+- **Physics vs. real-time logic.** This is the hardest part of the
+  assignment, split across two layers: `physics/motion.py` owns everything
+  that depends on a piece's physical speed (`speed_m_per_sec`, read via
+  `piece_config.py`) — it models each move as a `Trajectory` in continuous
+  time, derives `move_cell_duration_ms`/`motion_duration_ms` from that
+  speed, and computes the exact instant (`collision_time_ms`) two paths
+  would occupy the same point. Nothing outside `physics/` ever reads
+  `speed_m_per_sec` or a meters constant directly — `realtime/` and
+  `engine/` only ever consume the millisecond durations physics hands back.
+  `realtime/route_planner.py` uses `collision_time_ms` *before* a motion
+  starts — a move that would cross an opposing color's active path is
+  rejected outright; a same-color race is truncated to the last safe cell
+  short of the collision (falling back further still if a third piece
   already occupies that cell). `realtime/real_time_arbiter.py` resolves
   arrivals (including a reversed capture when a jumping piece defends its
   square) and applies a cooldown after landing from a jump. See
@@ -110,7 +116,8 @@ swapped out without touching the others:
 ```
 model/      Domain types: Piece, Position, Board, shared game-state dataclasses
 rules/      Move legality (piece shapes + board rules), win/promotion conditions
-realtime/   Continuous-time motion, route/collision planning, the arbiter
+physics/    Speed/meters-derived durations and trajectory/collision math - the only layer that knows a piece has a physical speed
+realtime/   Route/collision planning and the arbiter's state machine, built on physics/ durations - never reads speed_m_per_sec itself
 engine/     GameEngine: ties rules + realtime together, exposes request_move/request_jump/wait/snapshot
 boardio/    Text notation <-> Board (parser/printer)
 input/      Pixel clicks -> board cells -> engine calls (Controller, BoardMapper)
