@@ -148,14 +148,26 @@ class RealTimeArbiter:
     # short_rest/long_rest; it goes straight back to IDLE, and only
     # is_in_cooldown()'s own bookkeeping below remembers the cooldown.
     def _start_long_rest(self, piece: PieceRepresentation) -> None:
-        piece.state = IDLE
+        self._mark_idle(piece)
         duration_ms = round(LONG_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
         self._long_rests.append(TimedState(piece=piece, duration_ms=duration_ms))
 
     def _start_short_rest(self, piece: PieceRepresentation) -> None:
-        piece.state = IDLE
+        self._mark_idle(piece)
         duration_ms = round(SHORT_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
         self._short_rests.append(TimedState(piece=piece, duration_ms=duration_ms))
+
+    # The only two places piece.state is ever written after start_motion's
+    # own MOVING assignment - every rest, every successful defense, and
+    # every capture routes through one of these, so a future addition to
+    # any of those call sites can't drift out of sync with the other's
+    # bookkeeping (_active_motions/_airborne_states/_short_rests/
+    # _long_rests) by simply forgetting to also flip piece.state.
+    def _mark_idle(self, piece: PieceRepresentation) -> None:
+        piece.state = IDLE
+
+    def _mark_captured(self, piece: PieceRepresentation) -> None:
+        piece.state = CAPTURED
 
     def _advance_rests(self, rests: List[TimedState], ms: int) -> List[TimedState]:
         for rest in rests:
@@ -192,8 +204,8 @@ class RealTimeArbiter:
         # tire a piece the way completing a jump on its own does.
         if defender is not None and self.is_airborne(defender) and defender.color != motion.piece.color:
             self._board.remove_piece(motion.source)
-            motion.piece.state = CAPTURED
-            defender.state = IDLE
+            self._mark_captured(motion.piece)
+            self._mark_idle(defender)
             self._land_airborne_piece(defender)
             return ArrivalEvent(piece=defender, captured_piece=motion.piece)
 
@@ -212,7 +224,7 @@ class RealTimeArbiter:
 
         if captured_piece is not None:
             self._board.remove_piece(motion.destination)
-            captured_piece.state = CAPTURED
+            self._mark_captured(captured_piece)
             self._clear_pending_rests(captured_piece)
             self._clear_pending_motion(captured_piece)
 
