@@ -1,20 +1,11 @@
 from dataclasses import dataclass
 from typing import Optional
 
-import piece_config
+from logic_config import MOVE_CELL_DURATION_MS
 from model.piece import PieceRepresentation
 from model.position import Position
 
 _EPSILON = 1e-9
-
-# One square == one meter, not a natural distance - chosen so the assets'
-# physics.speed_m_per_sec produces a duration slow enough to see, instead
-# of the ~40ms a real ~5.7cm square would give at those speeds. Lives here,
-# not in logic_config.py: the rules/model layer only ever deals in board
-# squares and never needs a physical distance unit - only physics/, which
-# converts a piece's real-world speed into an on-screen-relevant duration,
-# has any notion that a square "is" a meter.
-METERS_PER_SQUARE = 1.0
 
 
 # Anything that isn't a straight rank/file/diagonal line is treated as a
@@ -26,19 +17,9 @@ def is_straight_line(source: Position, destination: Position) -> bool:
     return row_diff == 0 or col_diff == 0 or abs(row_diff) == abs(col_diff)
 
 
-# How long this piece takes to cross one square while moving, derived from
-# its own "move" state's physics.speed_m_per_sec (assets/pieces/<code>/
-# states/move/config.json) - every piece kind currently shares the same
-# speed, but this reads each piece's own data rather than assuming that.
-def move_cell_duration_ms(piece: PieceRepresentation) -> int:
-    code = piece_config.piece_code(piece.kind, piece.color)
-    speed = piece_config.load_motion(code, "move").speed_m_per_sec
-    return round(1000 * METERS_PER_SQUARE / speed)
-
-
-def motion_duration_ms(source: Position, destination: Position, piece: PieceRepresentation) -> int:
+def motion_duration_ms(source: Position, destination: Position) -> int:
     cells = max(abs(destination.row - source.row), abs(destination.col - source.col))
-    return cells * move_cell_duration_ms(piece)
+    return cells * MOVE_CELL_DURATION_MS
 
 
 # A piece currently traveling from source to destination.
@@ -51,7 +32,7 @@ class Motion:
 
     @property
     def duration_ms(self) -> int:
-        return motion_duration_ms(self.source, self.destination, self.piece)
+        return motion_duration_ms(self.source, self.destination)
 
     def is_complete(self) -> bool:
         return self.elapsed_ms >= self.duration_ms

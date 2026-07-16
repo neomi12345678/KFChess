@@ -1,20 +1,11 @@
-"""Reads assets/pieces/<code>/states/<state>/config.json - the single
-source of truth physics/motion.py (speed) and the view/graphics side
-(what state comes next, frames_per_sec, is_loop, frame count) both read
-from, so the two never maintain separate copies of the same
-per-piece-per-state data. jump/short_rest/long_rest durations are NOT read
-from here - logic_config.py's AIRBORNE_BASE_DURATION_MS/SHORT_REST_BASE_DURATION_MS/
-LONG_REST_BASE_DURATION_MS own those, so realtime/physics timing never
-depends on graphics-only fields like frame count or frames_per_sec.
-
-load_motion/load_animation split the same underlying file into two
-narrow, layer-scoped shapes instead of one combined dataclass, so
-physics/motion.py's only import from here can never carry animation
-fields it has no business seeing (next_state_when_finished is filed
-under the JSON's own "physics" key, but is consumed only by
-view/piece_state_machine.py's animation-state transitions, never by
-physics/motion.py itself) - both loaders share the same cached raw read
-below, so there's still exactly one place that parses the file.
+"""Reads assets/pieces/<code>/states/<state>/config.json for the
+view/graphics side (what state comes next, frames_per_sec, is_loop, frame
+count). No realtime/physics module reads from here - every gameplay-
+affecting duration (move/jump/short_rest/long_rest) is a fixed game-design
+constant in logic_config.py instead, so realtime/physics timing never
+depends on this file's fields (frame count, frames_per_sec, or the
+speed_m_per_sec this asset format happens to define) or on an asset even
+existing.
 """
 
 import json
@@ -41,11 +32,6 @@ def piece_code(kind: str, color: str) -> str:
 
 
 @dataclass(frozen=True)
-class MotionConfig:
-    speed_m_per_sec: float
-
-
-@dataclass(frozen=True)
 class AnimationConfig:
     next_state_when_finished: str
     frames_per_sec: int
@@ -57,9 +43,8 @@ _cache: dict = {}
 
 
 # Parses+caches the raw config.json + on-disk frame count once per
-# (code, state_folder), regardless of which of load_motion/load_animation
-# asked for it first - the single place either loader touches the
-# filesystem, so the two can never drift into reading the file differently.
+# (code, state_folder) - the single place load_animation touches the
+# filesystem.
 def _load_raw(code: str, state_folder: str) -> dict:
     key = (code, state_folder)
     cached = _cache.get(key)
@@ -75,16 +60,9 @@ def _load_raw(code: str, state_folder: str) -> dict:
     return data
 
 
-# The only piece of this file physics/motion.py ever imports - never
-# carries next_state_when_finished/frames_per_sec/is_loop/frame_count,
-# fields it has no use for and no business seeing.
-def load_motion(code: str, state_folder: str) -> MotionConfig:
-    data = _load_raw(code, state_folder)
-    return MotionConfig(speed_m_per_sec=data["physics"]["speed_m_per_sec"])
-
-
 # What view/canvas/sprite_frames.py and view/piece_state_machine.py import -
-# never carries speed_m_per_sec, which is physics/motion.py's alone.
+# never carries speed_m_per_sec, which no layer reads anymore (see this
+# module's docstring for why realtime/physics never derives timing from it).
 def load_animation(code: str, state_folder: str) -> AnimationConfig:
     data = _load_raw(code, state_folder)
     return AnimationConfig(

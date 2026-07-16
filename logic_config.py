@@ -6,10 +6,10 @@ this file, no other logic module should contain literal values like these.
 
 Pixel/panel/on-screen sizing constants live in display_config.py instead -
 game logic has no notion of pixels, so nothing in this file does either.
-Physical-distance constants (meters) aren't here either, for the same
-reason - the logic layer only ever deals in board squares, never a
-physical unit, so physics/motion.py's METERS_PER_SQUARE lives there
-instead, the one place that actually needs it.
+No physical-distance unit (meters, m/s) appears anywhere in this file or
+in realtime/physics either - the logic layer only ever deals in board
+squares and plain millisecond durations, never a physical unit or an
+asset-derived speed.
 """
 
 EMPTY_TOKEN = "."
@@ -27,6 +27,16 @@ EMPTY_TOKEN = "."
 AIRBORNE_BASE_DURATION_MS = 625
 SHORT_REST_BASE_DURATION_MS = 625
 LONG_REST_BASE_DURATION_MS = 833
+
+# Base real-time duration, in ms, for crossing one board square while
+# moving. A game-design value, not derived from any asset or physical
+# unit - same reasoning as the three durations above. Every piece kind
+# happens to share this value today; a future kind with its own pace
+# would get its own constant here, not a physics/speed lookup. Matches
+# this project's original physics.speed_m_per_sec-derived timing (1.5 m/s
+# over a 1-meter square) at the point that dependency was removed, so
+# gameplay feel is unchanged.
+MOVE_CELL_DURATION_MS = 667
 
 # Raw short_rest/long_rest length was barely noticeable in a live playtest,
 # so it's scaled up here to make the "can't act yet" window perceptible -
