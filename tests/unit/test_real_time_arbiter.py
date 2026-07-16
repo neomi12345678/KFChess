@@ -136,27 +136,27 @@ def test_multiple_waits_accumulate_correctly_for_a_two_cell_move():
     assert board.get_piece(Position(2, 1)) is piece
 
 
-def test_has_route_conflict_is_false_for_non_overlapping_paths():
+def test_plan_route_is_not_blocked_for_non_overlapping_paths():
     board = parse("wR . .\n. . .\nbR . .")
     arbiter = RealTimeArbiter(board)
     rook = board.get_piece(Position(0, 0))
     other_rook = board.get_piece(Position(2, 0))
     arbiter.start_motion(rook, Position(0, 0), Position(0, 2))
 
-    assert arbiter.has_route_conflict(other_rook, Position(2, 0), Position(2, 2)) is False
+    assert arbiter.plan_route(other_rook, Position(2, 0), Position(2, 2)).is_blocked is False
 
 
-def test_has_route_conflict_is_true_when_paths_share_a_cell():
+def test_plan_route_is_blocked_when_paths_share_a_cell():
     board = parse("wR . . bR")
     arbiter = RealTimeArbiter(board)
     rook = board.get_piece(Position(0, 0))
     other_rook = board.get_piece(Position(0, 3))
     arbiter.start_motion(rook, Position(0, 0), Position(0, 3))
 
-    assert arbiter.has_route_conflict(other_rook, Position(0, 3), Position(0, 0)) is True
+    assert arbiter.plan_route(other_rook, Position(0, 3), Position(0, 0)).is_blocked is True
 
 
-def test_has_route_conflict_is_false_for_paths_that_cross_the_same_cell_at_different_times():
+def test_plan_route_is_not_blocked_for_paths_that_cross_the_same_cell_at_different_times():
     board = parse(". . wR . .\nbR . . . .\n. . . . .\n. . . . .")
     arbiter = RealTimeArbiter(board)
     rook = board.get_piece(Position(0, 2))
@@ -171,10 +171,10 @@ def test_has_route_conflict_is_false_for_paths_that_cross_the_same_cell_at_diffe
     # The vertical motion is almost done and long past (1, 2); a fresh
     # horizontal move through (1, 2) wouldn't arrive there for a while - no
     # real collision, even though the two paths share that grid cell.
-    assert arbiter.has_route_conflict(other_rook, Position(1, 0), Position(1, 4)) is False
+    assert arbiter.plan_route(other_rook, Position(1, 0), Position(1, 4)).is_blocked is False
 
 
-def test_has_route_conflict_is_false_for_a_knight_shaped_move_even_when_its_endpoint_crosses_another_path():
+def test_plan_route_is_not_blocked_for_a_knight_shaped_move_even_when_its_endpoint_crosses_another_path():
     board = parse("wR . .\n. . .\n. wN .")
     arbiter = RealTimeArbiter(board)
     rook = board.get_piece(Position(0, 0))
@@ -184,7 +184,7 @@ def test_has_route_conflict_is_false_for_a_knight_shaped_move_even_when_its_endp
     # (2, 1) -> (0, 0) is an L-shape, not a straight line, so it's exempt
     # from route-conflict checking even though its endpoint (0, 0) lies on
     # the rook's active path.
-    assert arbiter.has_route_conflict(knight, Position(2, 1), Position(0, 0)) is False
+    assert arbiter.plan_route(knight, Position(2, 1), Position(0, 0)).is_blocked is False
 
 
 def test_route_planning_ignores_an_active_knight_shaped_motion_as_a_potential_blocker():
@@ -197,7 +197,7 @@ def test_route_planning_ignores_an_active_knight_shaped_motion_as_a_potential_bl
     # A knight's in-flight motion has no continuous path to collide along,
     # so it must never be treated as a blocker for someone else's straight
     # move, even one that ends where the knight started.
-    assert arbiter.has_route_conflict(rook, Position(2, 0), Position(0, 0)) is False
+    assert arbiter.plan_route(rook, Position(2, 0), Position(0, 0)).is_blocked is False
 
 
 def test_a_knight_that_arrives_to_find_a_teammate_already_there_stays_at_its_source_cell():

@@ -18,9 +18,8 @@ from model.piece import (
     move_availability,
 )
 from model.position import Position
-from realtime import route_planner
 from physics.motion import Motion, TimedState
-from realtime.route_planner import RoutePlan
+from realtime.route_planner import RoutePlan, plan_route, retreat_cell
 from rules.rule_engine import LastRankPromotion, PromotionRule
 
 
@@ -61,15 +60,9 @@ class RealTimeArbiter:
     def is_in_long_rest(self, piece: PieceRepresentation) -> bool:
         return any(rest.piece.id == piece.id for rest in self._long_rests)
 
-    # True if the move would be altered at all by an in-flight motion -
-    # blocked outright, or truncated short of a same-color race.
-    def has_route_conflict(self, piece: PieceRepresentation, source: Position, destination: Position) -> bool:
-        plan = self.plan_route(piece, source, destination)
-        return plan.is_blocked or plan.destination != destination
-
     # Whoever is already moving has right of way - see route_planner.plan_route.
     def plan_route(self, piece: PieceRepresentation, source: Position, destination: Position) -> RoutePlan:
-        return route_planner.plan_route(self._active_motions, piece, source, destination)
+        return plan_route(self._active_motions, piece, source, destination)
 
     def start_motion(self, piece: PieceRepresentation, source: Position, destination: Position) -> bool:
         if not move_availability(piece.state).allowed:
@@ -213,7 +206,7 @@ class RealTimeArbiter:
         # started - stop short instead of overwriting a teammate. It still
         # completed a motion, so it still earns a long_rest.
         if defender is not None and defender.color == motion.piece.color:
-            fallback = route_planner.retreat_cell(self._board, motion.source, motion.destination)
+            fallback = retreat_cell(self._board, motion.source, motion.destination)
             self._board.remove_piece(motion.source)
             self._board.add_piece(fallback, motion.piece)
             self._start_long_rest(motion.piece)
