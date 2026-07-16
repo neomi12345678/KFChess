@@ -1,5 +1,5 @@
 """Manual visual check that mouse pixel coordinates map to the right board
-cell (input/board_mapper.py's BoardMapper, graphics/img_canvas.py's
+cell (input/board_mapper.py's BoardMapper, view/canvas/img_canvas.py's
 ImgCanvas) - not an automated test, a debug tool you run and eyeball.
 
 Hover highlights the cell currently under the cursor in yellow; clicking
@@ -10,9 +10,9 @@ is on the board, pixel->cell mapping is correct.
 Run directly: `python debug_mouse.py`. Esc or closing the window exits.
 """
 
-from graphics.img_canvas import ImgCanvas
-from graphics.window import GameWindow
 from input.board_mapper import BoardMapper
+from view.canvas.img_canvas import ImgCanvas
+from view.canvas.window import GameWindow
 
 BOARD_WIDTH = 8
 BOARD_HEIGHT = 8
@@ -21,7 +21,7 @@ HOVER_COLOR = (0, 255, 255)  # yellow
 CLICK_COLOR = (0, 0, 255)  # red
 
 
-# Opens a real window (see graphics/window.py) - not unit-tested for the
+# Opens a real window (see view/canvas/window.py) - not unit-tested for the
 # same reason GameWindow itself isn't.
 def main() -> None:  # pragma: no cover
     mapper = BoardMapper(width=BOARD_WIDTH, height=BOARD_HEIGHT)

@@ -83,7 +83,7 @@ def load_motion(code: str, state_folder: str) -> MotionConfig:
     return MotionConfig(speed_m_per_sec=data["physics"]["speed_m_per_sec"])
 
 
-# What graphics/animation.py and view/piece_state_machine.py import -
+# What view/canvas/sprite_frames.py and view/piece_state_machine.py import -
 # never carries speed_m_per_sec, which is physics/motion.py's alone.
 def load_animation(code: str, state_folder: str) -> AnimationConfig:
     data = _load_raw(code, state_folder)

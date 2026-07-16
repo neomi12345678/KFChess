@@ -3,8 +3,8 @@ import time
 from app import App, build_game
 from boardio.board_parser import parse as parse_board
 from display_config import SIDE_PANEL_WIDTH_PX
-from graphics.img_canvas import ImgCanvas
-from graphics.window import GameWindow
+from view.canvas.img_canvas import ImgCanvas
+from view.canvas.window import GameWindow
 from model.piece import BLACK, WHITE
 from view.observers import MoveLogObserver, ScoreObserver
 from view.renderer import Renderer

@@ -16,8 +16,8 @@ SHORT_REST = "short_rest"
 LONG_REST = "long_rest"
 
 # Animation state -> assets/pieces/<code>/states/<folder> animation folder
-# name. The single source of truth for this mapping - graphics/animation.py
-# and view/piece_state_machine.py both read it, so the two can never drift
+# name. The single source of truth for this mapping - view/canvas/
+# sprite_frames.py and view/piece_state_machine.py both read it, so the two can never drift
 # into disagreeing about what an animation state is called on disk.
 STATE_FOLDER = {
     PHASE_IDLE: "idle",

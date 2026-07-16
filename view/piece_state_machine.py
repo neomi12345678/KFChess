@@ -5,8 +5,8 @@ why the engine itself never produces long_rest/short_rest: it's a purely
 visual concern belonging to the view, not to game state.
 
 The transition table isn't hardcoded here - it's read from the same
-per-state config.json (via piece_config.py) graphics/animation.py already
-reads for frames_per_sec/is_loop, so both layers can never drift into
+per-state config.json (via piece_config.py) view/canvas/sprite_frames.py
+already reads for frames_per_sec/is_loop, so both layers can never drift into
 disagreeing about what comes next (move -> long_rest -> idle, jump ->
 short_rest -> idle, idle -> idle).
 """
@@ -25,8 +25,8 @@ class PieceStateMachine:
 
     No cv2 dependency - just piece_config lookups and bookkeeping - so it's
     unit testable without a display. clock is injectable (like
-    graphics/animation.py's SpriteAnimator) so tests can control elapsed
-    time deterministically instead of sleeping in real time.
+    view/canvas/sprite_frames.py's SpriteAnimator) so tests can control
+    elapsed time deterministically instead of sleeping in real time.
     """
 
     def __init__(self, clock=time.monotonic):

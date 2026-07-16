@@ -12,6 +12,10 @@ _PANEL_TEXT_MARGIN_PX = 10
 _PANEL_FONT_SIZE = 0.5
 
 
+# The counterpart text-only reader is boardio/board_printer.py's
+# print_board() - it deliberately does NOT share this class's data source
+# (GameSnapshot's interpolated positions have no honest ASCII-cell answer
+# mid-motion); see its own docstring for why that's by design, not drift.
 class Renderer:
     # move_log/score/player_names/side_panel_width_px are all optional and
     # default to "no panels" - a Renderer built with just a canvas behaves
@@ -75,7 +79,7 @@ class Renderer:
     # ScoreObserver have accumulated so far, at this frame's own pace. Drawn
     # in canvas-frame-absolute coordinates (unlike draw_rect/draw_image/
     # highlight_cell, which are board-relative and offset internally by
-    # graphics.img_canvas.ImgCanvas) since this text lives outside the board
+    # view.canvas.img_canvas.ImgCanvas) since this text lives outside the board
     # entirely. No-op when no panel data was given at construction.
     def _draw_side_panels(self, snapshot: GameSnapshot) -> None:
         if self._side_panel_width_px == 0:

@@ -11,8 +11,8 @@ from rules.rule_engine import RuleEngine
 #
 # board_offset_x defaults to 0 (main.py's script runner has no window, let
 # alone side panels) - play.py passes its actual SIDE_PANEL_WIDTH_PX so
-# clicks on the visually-inset board (see graphics/img_canvas.py) map back
-# to the right column instead of being read as raw, unshifted pixels.
+# clicks on the visually-inset board (see view/canvas/img_canvas.py) map
+# back to the right column instead of being read as raw, unshifted pixels.
 def build_game(board, board_offset_x: int = 0):
     real_time_arbiter = RealTimeArbiter(board)
     game_engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=real_time_arbiter)

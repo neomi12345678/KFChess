@@ -50,7 +50,7 @@ def test_board_offset_x_defaults_to_zero_and_behaves_like_before_side_panels_exi
 
 
 def test_board_offset_x_shifts_the_first_column_to_start_after_the_left_panel():
-    # A side-panel window (see graphics/img_canvas.py's own board_offset_x)
+    # A side-panel window (see view/canvas/img_canvas.py's own board_offset_x)
     # draws the actual board starting board_offset_x pixels in - a click at
     # raw x=0 now lands in the panel, not on the board's first column.
     mapper = BoardMapper(width=3, height=3, board_offset_x=260)

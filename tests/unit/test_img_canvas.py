@@ -4,7 +4,7 @@ import piece_config
 from boardio.board_parser import parse
 from display_config import CELL_SIZE
 from engine.game_engine import GameEngine
-from graphics.img_canvas import ImgCanvas
+from view.canvas.img_canvas import ImgCanvas
 from model.piece import COLOR_BY_LETTER, KIND_BY_LETTER
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
@@ -104,7 +104,7 @@ def test_draw_text_is_visible_within_the_frame_even_at_y_zero():
 
 def test_renderer_and_img_canvas_integrate_end_to_end_for_a_real_snapshot():
     # Renderer builds the draw_image key and ImgCanvas parses it back apart
-    # (graphics/img_canvas.py's key.split(":")) - exercised here with a key
+    # (view/canvas/img_canvas.py's key.split(":")) - exercised here with a key
     # Renderer actually produced, not one hand-written for a single method.
     board = parse("wK . .\n. . .\n. . bK")
     engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=RealTimeArbiter(board))

@@ -84,8 +84,8 @@ class GameObserver:
 # handle onto the real Piece - nothing downstream can mutate a field back
 # into GameEngine's own state through this. id is still a plain str, not a
 # reference to the real Piece object, kept only so a per-piece-id-keyed
-# consumer (view/piece_state_machine.py's PieceStateMachine, graphics/
-# animation.py's SpriteAnimator) can track how long *this* piece has been in
+# consumer (view/piece_state_machine.py's PieceStateMachine, view/canvas/
+# sprite_frames.py's SpriteAnimator) can track how long *this* piece has been in
 # its current visual state across frames - GameEngine itself never resolves
 # that duration (it has no notion of long_rest/short_rest, see motion_phase
 # below), so the view has to correlate frames by identity instead.

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from graphics.img import Img
+from view.canvas.img import Img
 from piece_config import ASSETS_DIR
 
 BOARD_PATH = ASSETS_DIR / "board.png"

@@ -5,8 +5,8 @@ import numpy as np
 
 import piece_config
 from display_config import CELL_SIZE
-from graphics.animation import SpriteAnimator
-from graphics.img import Img
+from view.canvas.img import Img
+from view.canvas.sprite_frames import SpriteAnimator
 
 _TEXT_FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -16,8 +16,12 @@ PIECES_DIR = piece_config.PIECES_DIR
 
 class ImgCanvas:
     """Implements the draw_rect/draw_image/highlight_cell/draw_text interface
-    that view/renderer.py expects, using only graphics/img.py (Img) as the
-    drawing backend.
+    that view/renderer.py expects, using only view/canvas/img.py (Img) as the
+    drawing backend. Lives under view/canvas/ rather than beside renderer.py
+    itself because it's the concrete cv2-backed implementation of the
+    canvas port Renderer only ever talks to through that abstract
+    draw_rect/draw_image/highlight_cell/draw_text interface - renderer.py
+    itself never imports this module, or cv2, at all.
     """
 
     # board.png's native resolution (828x822) doesn't divide evenly into

@@ -1,4 +1,4 @@
-from graphics.animation import SpriteAnimator
+from view.canvas.sprite_frames import SpriteAnimator
 from model.piece import CAPTURED, PHASE_IDLE, PHASE_JUMP, PHASE_MOVE
 from view.animation_states import LONG_REST, SHORT_REST
 

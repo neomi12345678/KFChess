@@ -10,7 +10,7 @@ class BoardMapper:
     # in pixel_to_cell - a caller (or a test) can supply a different value
     # without monkeypatching config.
     #
-    # board_offset_x mirrors graphics.img_canvas.ImgCanvas's own
+    # board_offset_x mirrors view.canvas.img_canvas.ImgCanvas's own
     # _board_offset_x - when the window has side panels (see config's
     # SIDE_PANEL_WIDTH_PX), the actual board is drawn inset by that many
     # pixels, so raw mouse x has to be shifted back before dividing into
