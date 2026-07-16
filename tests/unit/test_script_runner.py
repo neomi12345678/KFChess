@@ -12,12 +12,12 @@ def make_context(board_text):
     arbiter = RealTimeArbiter(board)
     game_engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=arbiter)
     mapper = BoardMapper(width=board.width, height=board.height)
-    controller = Controller(board_mapper=mapper, game_engine=game_engine)
-    return board, controller, game_engine
+    controller = Controller(game_engine=game_engine)
+    return board, controller, game_engine, mapper
 
 
 def test_run_commands_executes_click_and_wait_and_prints_the_result():
-    board, controller, game_engine = make_context("wR . .")
+    board, controller, game_engine, mapper = make_context("wR . .")
     printed = []
 
     run_commands(
@@ -25,6 +25,7 @@ def test_run_commands_executes_click_and_wait_and_prints_the_result():
         controller,
         game_engine,
         board,
+        mapper,
         print_fn=printed.append,
     )
 
@@ -32,7 +33,7 @@ def test_run_commands_executes_click_and_wait_and_prints_the_result():
 
 
 def test_run_commands_executes_a_jump_command():
-    board, controller, game_engine = make_context(". wK .")
+    board, controller, game_engine, mapper = make_context(". wK .")
     printed = []
 
     run_commands(
@@ -40,6 +41,7 @@ def test_run_commands_executes_a_jump_command():
         controller,
         game_engine,
         board,
+        mapper,
         print_fn=printed.append,
     )
 
@@ -47,7 +49,7 @@ def test_run_commands_executes_a_jump_command():
 
 
 def test_run_commands_ignores_blank_and_unrecognized_lines():
-    board, controller, game_engine = make_context("wR . .")
+    board, controller, game_engine, mapper = make_context("wR . .")
     printed = []
 
     run_commands(
@@ -55,6 +57,7 @@ def test_run_commands_ignores_blank_and_unrecognized_lines():
         controller,
         game_engine,
         board,
+        mapper,
         print_fn=printed.append,
     )
 

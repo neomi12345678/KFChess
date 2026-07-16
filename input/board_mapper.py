@@ -8,7 +8,12 @@ class BoardMapper:
     # cell_size defaults to the app's configured CELL_SIZE, but takes it as
     # a constructor argument rather than reading the config module directly
     # in pixel_to_cell - a caller (or a test) can supply a different value
-    # without monkeypatching config.
+    # without monkeypatching config. This is what makes pixel_to_cell work
+    # for any screen size, not just the fixed default: play.py's build_app
+    # picks a cell_size once at launch (see display_config.compute_cell_size,
+    # decided from the real screen resolution) and threads that same value
+    # into both this mapper and the renderer, so a click always lands on the
+    # cell it visually sits on regardless of what size was chosen.
     #
     # board_offset_x mirrors view.canvas.img_canvas.ImgCanvas's own
     # _board_offset_x - when the window has side panels (see config's

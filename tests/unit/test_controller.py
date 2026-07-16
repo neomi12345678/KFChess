@@ -1,5 +1,4 @@
 from engine.game_engine import GameEngine
-from input.board_mapper import BoardMapper
 from input.controller import Controller
 from boardio.board_parser import parse
 from model.piece import is_selectable
@@ -37,16 +36,15 @@ class FakeGameEngine:
 
 def make_controller(board_text):
     board = parse(board_text)
-    mapper = BoardMapper(width=board.width, height=board.height)
     engine = FakeGameEngine(board)
-    controller = Controller(board_mapper=mapper, game_engine=engine)
+    controller = Controller(game_engine=engine)
     return controller, engine
 
 
 def test_first_click_on_a_piece_sets_selected_cell():
     controller, engine = make_controller("wK . .\n. . .\n. . .")
 
-    result = controller.click(50, 50)
+    result = controller.click(Position(0, 0))
 
     assert controller.selected == Position(0, 0)
     assert result.selected == Position(0, 0)
@@ -57,26 +55,29 @@ def test_first_click_on_a_piece_sets_selected_cell():
 def test_first_click_on_an_empty_cell_leaves_selection_empty():
     controller, engine = make_controller(". . .\n. . .\n. . .")
 
-    controller.click(50, 50)
+    controller.click(Position(0, 0))
 
     assert controller.selected is None
     assert engine.requested_moves == []
 
 
-def test_click_outside_the_board_with_no_selection_does_nothing():
+def test_click_with_no_resolved_cell_and_no_selection_does_nothing():
+    # cell is None whenever the caller's own pixel->cell translation (see
+    # input/board_mapper.py) missed the board entirely - Controller itself
+    # never knows or cares why.
     controller, engine = make_controller(". . .\n. . .\n. . .")
 
-    controller.click(-10, 50)
+    controller.click(None)
 
     assert controller.selected is None
     assert engine.requested_moves == []
 
 
-def test_click_outside_the_board_with_selection_cancels_it():
+def test_click_with_no_resolved_cell_cancels_an_existing_selection():
     controller, engine = make_controller("wK . .\n. . .\n. . .")
-    controller.click(50, 50)
+    controller.click(Position(0, 0))
 
-    controller.click(-10, 50)
+    controller.click(None)
 
     assert controller.selected is None
     assert engine.requested_moves == []
@@ -84,9 +85,9 @@ def test_click_outside_the_board_with_selection_cancels_it():
 
 def test_second_in_board_click_sends_move_request_and_clears_selection():
     controller, engine = make_controller("wK . .\n. . .\n. . .")
-    controller.click(50, 50)
+    controller.click(Position(0, 0))
 
-    result = controller.click(250, 50)
+    result = controller.click(Position(0, 2))
 
     assert engine.requested_moves == [(Position(0, 0), Position(0, 2))]
     assert controller.selected is None
@@ -95,12 +96,11 @@ def test_second_in_board_click_sends_move_request_and_clears_selection():
 
 def test_selection_clears_after_second_click_even_when_the_engine_rejects_the_move():
     board = parse("wK . .\n. . .\n. . .")
-    mapper = BoardMapper(width=board.width, height=board.height)
     engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=RealTimeArbiter(board))
-    controller = Controller(board_mapper=mapper, game_engine=engine)
-    controller.click(50, 50)
+    controller = Controller(game_engine=engine)
+    controller.click(Position(0, 0))
 
-    result = controller.click(250, 250)
+    result = controller.click(Position(2, 2))
 
     assert controller.selected is None
     assert result.move_requested is True
@@ -110,9 +110,9 @@ def test_selection_clears_after_second_click_even_when_the_engine_rejects_the_mo
 
 def test_clicking_another_own_piece_switches_selection_instead_of_requesting_a_move():
     controller, engine = make_controller("wK . wR\n. . .\n. . .")
-    controller.click(50, 50)
+    controller.click(Position(0, 0))
 
-    result = controller.click(250, 50)
+    result = controller.click(Position(0, 2))
 
     assert controller.selected == Position(0, 2)
     assert result.selected == Position(0, 2)
@@ -122,14 +122,13 @@ def test_clicking_another_own_piece_switches_selection_instead_of_requesting_a_m
 
 def test_clicking_a_friendly_piece_that_is_moving_does_not_switch_selection():
     board = parse("wR . wK\n. . .")
-    mapper = BoardMapper(width=board.width, height=board.height)
     engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=RealTimeArbiter(board))
-    controller = Controller(board_mapper=mapper, game_engine=engine)
-    controller.click(50, 50)
-    controller.click(50, 150)
-    controller.click(250, 50)
+    controller = Controller(game_engine=engine)
+    controller.click(Position(0, 0))
+    controller.click(Position(1, 0))
+    controller.click(Position(0, 2))
 
-    result = controller.click(50, 50)
+    result = controller.click(Position(0, 0))
 
     assert controller.selected == Position(0, 2)
     assert result.selected == Position(0, 2)
@@ -138,27 +137,27 @@ def test_clicking_a_friendly_piece_that_is_moving_does_not_switch_selection():
 
 def test_clicking_an_enemy_piece_still_requests_a_move():
     controller, engine = make_controller("wK . bR\n. . .\n. . .")
-    controller.click(50, 50)
+    controller.click(Position(0, 0))
 
-    result = controller.click(250, 50)
+    result = controller.click(Position(0, 2))
 
     assert engine.requested_moves == [(Position(0, 0), Position(0, 2))]
     assert controller.selected is None
     assert result.move_requested is True
 
 
-def test_jump_forwards_the_mapped_cell_to_the_game_engine():
+def test_jump_forwards_the_cell_to_the_game_engine():
     controller, engine = make_controller("wK . .\n. . .\n. . .")
 
-    controller.jump(50, 50)
+    controller.jump(Position(0, 0))
 
     assert engine.requested_jumps == [Position(0, 0)]
 
 
-def test_jump_outside_the_board_is_ignored():
+def test_jump_with_no_resolved_cell_is_ignored():
     controller, engine = make_controller("wK . .\n. . .\n. . .")
 
-    controller.jump(-10, 50)
+    controller.jump(None)
 
     assert engine.requested_jumps == []
 
@@ -168,12 +167,12 @@ def test_jump_clears_a_leftover_selection_from_an_earlier_click():
     # one instead of completing the move) must not leave stale selection
     # state around to hijack the next click as a move request.
     controller, engine = make_controller("wK . bR\n. . .\n. . .")
-    controller.click(50, 50)  # selects the king
+    controller.click(Position(0, 0))  # selects the king
     assert controller.selected == Position(0, 0)
 
-    controller.jump(250, 50)  # jumps the rook instead
+    controller.jump(Position(0, 2))  # jumps the rook instead
 
     assert controller.selected is None
 
-    controller.click(150, 50)  # should select this cell, not request a move
+    controller.click(Position(0, 1))  # should select this cell, not request a move
     assert engine.requested_moves == []

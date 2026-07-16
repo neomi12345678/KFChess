@@ -49,10 +49,17 @@ class RealTimeArbiter:
         return any(airborne.piece.id == piece.id for airborne in self._airborne_states)
 
     def is_in_cooldown(self, piece: PieceRepresentation) -> bool:
-        return (
-            any(rest.piece.id == piece.id for rest in self._short_rests)
-            or any(rest.piece.id == piece.id for rest in self._long_rests)
-        )
+        return self.is_in_short_rest(piece) or self.is_in_long_rest(piece)
+
+    # Split out of is_in_cooldown() so GameEngine.snapshot() can report
+    # which of the two a piece is in (see model.piece.PHASE_SHORT_REST/
+    # PHASE_LONG_REST) - move/jump-availability checks only ever need the
+    # combined is_in_cooldown() above, never these individually.
+    def is_in_short_rest(self, piece: PieceRepresentation) -> bool:
+        return any(rest.piece.id == piece.id for rest in self._short_rests)
+
+    def is_in_long_rest(self, piece: PieceRepresentation) -> bool:
+        return any(rest.piece.id == piece.id for rest in self._long_rests)
 
     # True if the move would be altered at all by an in-flight motion -
     # blocked outright, or truncated short of a same-color race.

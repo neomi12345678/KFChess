@@ -2,7 +2,7 @@ import time
 
 from app import App, build_game
 from boardio.board_parser import parse as parse_board
-from display_config import SIDE_PANEL_WIDTH_PX
+from display_config import compute_cell_size, screen_resolution_px, side_panel_width_for
 from view.canvas.img_canvas import ImgCanvas
 from view.canvas.window import GameWindow
 from model.piece import BLACK, WHITE
@@ -26,9 +26,19 @@ wR wN wB wQ wK wB wN wR
 # cv2.namedWindow, an actual side effect on the screen, and the loop below
 # blocks on a real event queue - neither belongs in a test, real or faked;
 # this function is the rest of main()'s wiring, minus those two things.
-def build_app(white_name: str = "White", black_name: str = "Black"):
+#
+# screen_size is injectable (see display_config.compute_cell_size) so tests
+# can fix the "screen" instead of depending on whatever display this happens
+# to run on - it defaults to the real OS query, used once here to size the
+# whole board+panels layout for this launch (see view/canvas/window.py's
+# fixed-size WINDOW_AUTOSIZE - nothing here re-sizes mid-game).
+def build_app(white_name: str = "White", black_name: str = "Black", screen_size=screen_resolution_px):
     board = parse_board(STARTING_BOARD)
-    game_engine, controller = build_game(board, board_offset_x=SIDE_PANEL_WIDTH_PX)
+    cell_size = compute_cell_size(board.width, board.height, screen_size=screen_size)
+    side_panel_width_px = side_panel_width_for(cell_size)
+    game_engine, controller, board_mapper = build_game(
+        board, board_offset_x=side_panel_width_px, cell_size=cell_size
+    )
 
     # Registered as GameEngine observers (see engine/game_engine.py's
     # add_observer) rather than wired into build_game - this is the GUI's
@@ -39,15 +49,21 @@ def build_app(white_name: str = "White", black_name: str = "Black"):
     game_engine.add_observer(move_log)
     game_engine.add_observer(score)
 
-    canvas = ImgCanvas(board_width=board.width, board_height=board.height, side_panel_width_px=SIDE_PANEL_WIDTH_PX)
+    canvas = ImgCanvas(
+        board_width=board.width,
+        board_height=board.height,
+        side_panel_width_px=side_panel_width_px,
+        cell_size=cell_size,
+    )
     renderer = Renderer(
         canvas,
         move_log=move_log,
         score=score,
         player_names={WHITE: white_name, BLACK: black_name},
-        side_panel_width_px=SIDE_PANEL_WIDTH_PX,
+        side_panel_width_px=side_panel_width_px,
+        cell_size=cell_size,
     )
-    app = App(controller=controller, game_engine=game_engine, renderer=renderer)
+    app = App(controller=controller, game_engine=game_engine, renderer=renderer, board_mapper=board_mapper)
     return app, game_engine, canvas
 
 

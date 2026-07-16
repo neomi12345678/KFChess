@@ -59,10 +59,10 @@ def run_kfc_script(text: str) -> None:
     real_time_arbiter = RealTimeArbiter(board)
     game_engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=real_time_arbiter)
     board_mapper = BoardMapper(width=board.width, height=board.height)
-    controller = Controller(board_mapper=board_mapper, game_engine=game_engine)
+    controller = Controller(game_engine=game_engine)
 
     printed: List[str] = []
-    run_commands(command_lines, controller, game_engine, board, print_fn=printed.append)
+    run_commands(command_lines, controller, game_engine, board, board_mapper, print_fn=printed.append)
 
     expected = ["\n".join(block) for block in expected_blocks]
     if printed != expected:

@@ -1,11 +1,9 @@
 from typing import Dict, Optional
 
-import piece_config
 from display_config import CELL_SIZE, MAX_VISIBLE_MOVES_PER_PANEL
 from model.game_state import GameSnapshot
 from model.piece import BLACK, WHITE
 from view.observers import MoveLogObserver, ScoreObserver
-from view.piece_state_machine import PieceStateMachine
 
 _PANEL_LINE_HEIGHT_PX = 18
 _PANEL_TEXT_MARGIN_PX = 10
@@ -17,14 +15,15 @@ _PANEL_FONT_SIZE = 0.5
 # (GameSnapshot's interpolated positions have no honest ASCII-cell answer
 # mid-motion); see its own docstring for why that's by design, not drift.
 class Renderer:
-    # move_log/score/player_names/side_panel_width_px are all optional and
-    # default to "no panels" - a Renderer built with just a canvas behaves
-    # exactly as before panels existed. side_panel_width_px is a caller-
-    # supplied constructor argument rather than importing config directly
-    # (same reasoning as input.board_mapper.BoardMapper's cell_size) - the
-    # caller (see play.py) must construct its ImgCanvas with the same width,
-    # so passing it explicitly makes that pairing visible at the call site
-    # instead of two modules silently agreeing via a shared import.
+    # move_log/score/player_names/side_panel_width_px/cell_size are all
+    # optional and default to "no panels, the fixed default CELL_SIZE" - a
+    # Renderer built with just a canvas behaves exactly as before panels (or
+    # a screen-derived cell_size) existed. Both are caller-supplied
+    # constructor arguments rather than reading config directly (same
+    # reasoning as input.board_mapper.BoardMapper's cell_size) - the caller
+    # (see play.py) must construct its ImgCanvas with the same width and
+    # cell_size, so passing them explicitly makes that pairing visible at
+    # the call site instead of modules silently agreeing via a shared import.
     def __init__(
         self,
         canvas,
@@ -33,7 +32,7 @@ class Renderer:
         player_names: Optional[Dict[str, str]] = None,
         side_panel_width_px: int = 0,
         max_visible_moves: int = MAX_VISIBLE_MOVES_PER_PANEL,
-        piece_state_machine: Optional[PieceStateMachine] = None,
+        cell_size: int = CELL_SIZE,
     ):
         self._canvas = canvas
         self._move_log = move_log
@@ -41,9 +40,7 @@ class Renderer:
         self._player_names = player_names if player_names is not None else {WHITE: "White", BLACK: "Black"}
         self._side_panel_width_px = side_panel_width_px
         self._max_visible_moves = max_visible_moves
-        # Layers long_rest/short_rest onto GameEngine's idle/move/jump
-        # report, purely for display - see view/piece_state_machine.py.
-        self._piece_state_machine = piece_state_machine if piece_state_machine is not None else PieceStateMachine()
+        self._cell_size = cell_size
 
     def draw(self, snapshot: GameSnapshot) -> None:
         self._draw_grid(snapshot)
@@ -56,7 +53,9 @@ class Renderer:
     def _draw_grid(self, snapshot: GameSnapshot) -> None:
         for row in range(snapshot.board_height):
             for col in range(snapshot.board_width):
-                self._canvas.draw_rect(x=col * CELL_SIZE, y=row * CELL_SIZE, width=CELL_SIZE, height=CELL_SIZE)
+                self._canvas.draw_rect(
+                    x=col * self._cell_size, y=row * self._cell_size, width=self._cell_size, height=self._cell_size
+                )
 
     # piece.row/piece.col already account for in-flight interpolation - the
     # renderer never needs to know whether a piece is moving. Converting
@@ -64,11 +63,9 @@ class Renderer:
     # the model only ever deals in board-relative row/col.
     def _draw_pieces(self, snapshot: GameSnapshot) -> None:
         for piece in snapshot.pieces:
-            code = piece_config.piece_code(piece.kind, piece.color)
-            animation_state = self._piece_state_machine.state_for(piece, code)
-            key = f"{piece.id}:{piece.color}:{piece.kind}:{animation_state}"
-            x = int(piece.col * CELL_SIZE + CELL_SIZE // 2)
-            y = int(piece.row * CELL_SIZE + CELL_SIZE // 2)
+            key = f"{piece.id}:{piece.color}:{piece.kind}:{piece.motion_phase}"
+            x = int(piece.col * self._cell_size + self._cell_size // 2)
+            y = int(piece.row * self._cell_size + self._cell_size // 2)
             self._canvas.draw_image(key, x=x, y=y)
 
     def _draw_selection(self, snapshot: GameSnapshot) -> None:
@@ -85,7 +82,7 @@ class Renderer:
         if self._side_panel_width_px == 0:
             return
 
-        board_width_px = snapshot.board_width * CELL_SIZE
+        board_width_px = snapshot.board_width * self._cell_size
         right_panel_x = self._side_panel_width_px + board_width_px + _PANEL_TEXT_MARGIN_PX
 
         self._draw_panel(BLACK, x=_PANEL_TEXT_MARGIN_PX)

@@ -12,7 +12,22 @@ from logic_config import (
     REST_DURATION_MULTIPLIER,
 )
 from model.game_state import ArrivalEvent, GameObserver, MoveLoggedEvent
-from model.piece import BLACK, CAPTURED, IDLE, KING, MOVING, PAWN, ROOK, WHITE, Piece
+from model.piece import (
+    BLACK,
+    CAPTURED,
+    IDLE,
+    KING,
+    MOVING,
+    PAWN,
+    PHASE_IDLE,
+    PHASE_JUMP,
+    PHASE_LONG_REST,
+    PHASE_MOVE,
+    PHASE_SHORT_REST,
+    ROOK,
+    WHITE,
+    Piece,
+)
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
@@ -440,6 +455,65 @@ def test_snapshot_reflects_game_over_flag():
     snapshot = engine.snapshot()
 
     assert snapshot.game_over is True
+
+
+def test_snapshot_reports_idle_motion_phase_for_a_piece_that_has_not_acted():
+    board, engine, arbiter = make_engine("wK . .\n. . .\n. . .")
+
+    [piece_snapshot] = engine.snapshot().pieces
+
+    assert piece_snapshot.motion_phase == PHASE_IDLE
+
+
+def test_snapshot_reports_move_motion_phase_while_a_motion_is_in_flight():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    engine.request_move(Position(1, 1), Position(0, 1))
+
+    [piece_snapshot] = engine.snapshot().pieces
+
+    assert piece_snapshot.motion_phase == PHASE_MOVE
+
+
+def test_snapshot_reports_jump_motion_phase_while_a_piece_is_airborne():
+    board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
+    engine.request_jump(Position(1, 1))
+
+    [piece_snapshot] = engine.snapshot().pieces
+
+    assert piece_snapshot.motion_phase == PHASE_JUMP
+
+
+def test_snapshot_reports_long_rest_motion_phase_right_after_a_move_lands():
+    # Resting is a real report, not collapsed back to PHASE_IDLE - a piece
+    # on cooldown is blocked from acting just like a moving/airborne one.
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    engine.request_move(Position(1, 1), Position(0, 1))
+    engine.wait(CELL_DURATION_MS)
+
+    [piece_snapshot] = engine.snapshot().pieces
+
+    assert piece_snapshot.motion_phase == PHASE_LONG_REST
+
+
+def test_snapshot_reports_short_rest_motion_phase_right_after_a_jump_lands():
+    board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
+    engine.request_jump(Position(1, 1))
+    engine.wait(AIRBORNE_DURATION_MS)
+
+    [piece_snapshot] = engine.snapshot().pieces
+
+    assert piece_snapshot.motion_phase == PHASE_SHORT_REST
+
+
+def test_snapshot_reports_idle_motion_phase_once_long_rest_expires():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    engine.request_move(Position(1, 1), Position(0, 1))
+    engine.wait(CELL_DURATION_MS)
+    engine.wait(LONG_REST_DURATION_MS)
+
+    [piece_snapshot] = engine.snapshot().pieces
+
+    assert piece_snapshot.motion_phase == PHASE_IDLE
 
 
 def test_an_accepted_move_notifies_observers_with_the_move_facts():

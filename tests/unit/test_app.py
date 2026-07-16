@@ -1,5 +1,6 @@
 from app import App, build_game
 from boardio.board_parser import parse
+from input.board_mapper import BoardMapper
 from model.position import Position
 
 
@@ -9,11 +10,11 @@ class SpyController:
         self.jumps = []
         self.selected = None
 
-    def click(self, x, y):
-        self.clicks.append((x, y))
+    def click(self, cell):
+        self.clicks.append(cell)
 
-    def jump(self, x, y):
-        self.jumps.append((x, y))
+    def jump(self, cell):
+        self.jumps.append(cell)
 
 
 class FakeGameEngine:
@@ -34,22 +35,34 @@ class SpyRenderer:
         self.drawn.append(snapshot)
 
 
-def test_on_click_routes_to_controller_click():
+def test_on_click_routes_the_resolved_cell_to_controller_click():
     controller = SpyController()
-    app = App(controller=controller, game_engine=None, renderer=None)
+    board_mapper = BoardMapper(width=3, height=3)
+    app = App(controller=controller, game_engine=None, renderer=None, board_mapper=board_mapper)
 
     app.on_click(150, 250)
 
-    assert controller.clicks == [(150, 250)]
+    assert controller.clicks == [Position(2, 1)]
 
 
-def test_on_jump_routes_to_controller_jump():
+def test_on_jump_routes_the_resolved_cell_to_controller_jump():
     controller = SpyController()
-    app = App(controller=controller, game_engine=None, renderer=None)
+    board_mapper = BoardMapper(width=3, height=3)
+    app = App(controller=controller, game_engine=None, renderer=None, board_mapper=board_mapper)
 
     app.on_jump(150, 250)
 
-    assert controller.jumps == [(150, 250)]
+    assert controller.jumps == [Position(2, 1)]
+
+
+def test_on_click_outside_the_board_routes_none_to_controller_click():
+    controller = SpyController()
+    board_mapper = BoardMapper(width=3, height=3)
+    app = App(controller=controller, game_engine=None, renderer=None, board_mapper=board_mapper)
+
+    app.on_click(-10, 50)
+
+    assert controller.clicks == [None]
 
 
 def test_render_draws_a_snapshot_built_with_the_current_selection():
@@ -58,7 +71,8 @@ def test_render_draws_a_snapshot_built_with_the_current_selection():
     snapshot = object()
     game_engine = FakeGameEngine(snapshot)
     renderer = SpyRenderer()
-    app = App(controller=controller, game_engine=game_engine, renderer=renderer)
+    board_mapper = BoardMapper(width=3, height=3)
+    app = App(controller=controller, game_engine=game_engine, renderer=renderer, board_mapper=board_mapper)
 
     app.render()
 
@@ -68,9 +82,10 @@ def test_render_draws_a_snapshot_built_with_the_current_selection():
 
 def test_build_game_with_no_board_offset_selects_the_piece_at_the_raw_pixel():
     board = parse("wK . .\n. . .\n. . .")
-    game_engine, controller = build_game(board)
+    game_engine, controller, board_mapper = build_game(board)
+    app = App(controller=controller, game_engine=game_engine, renderer=None, board_mapper=board_mapper)
 
-    controller.click(50, 50)
+    app.on_click(50, 50)
 
     assert controller.selected == Position(0, 0)
 
@@ -82,10 +97,11 @@ def test_build_game_threads_board_offset_x_into_the_board_mapper_it_builds():
     # shifted pixel must hit instead. Losing this wiring is what broke every
     # click/move in the running game after side panels were added.
     board = parse("wK . .\n. . .\n. . .")
-    game_engine, controller = build_game(board, board_offset_x=260)
+    game_engine, controller, board_mapper = build_game(board, board_offset_x=260)
+    app = App(controller=controller, game_engine=game_engine, renderer=None, board_mapper=board_mapper)
 
-    controller.click(50, 50)
+    app.on_click(50, 50)
     assert controller.selected is None
 
-    controller.click(260 + 50, 50)
+    app.on_click(260 + 50, 50)
     assert controller.selected == Position(0, 0)

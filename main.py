@@ -17,12 +17,12 @@ def run(text: str) -> str:
     except BoardParseError as error:
         return f"ERROR {error.code}"
 
-    game_engine, controller = build_game(board)
+    game_engine, controller, board_mapper = build_game(board)
 
     # Same command dispatcher the .kfc integration tests use - one
     # implementation of click/jump/wait/print board, not two.
     outputs = []
-    run_commands(command_lines, controller, game_engine, board, print_fn=outputs.append)
+    run_commands(command_lines, controller, game_engine, board, board_mapper, print_fn=outputs.append)
 
     return "\n".join(outputs)
 

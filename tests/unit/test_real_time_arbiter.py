@@ -96,6 +96,18 @@ def test_piece_returns_to_idle_once_its_long_rest_expires():
     assert piece.state == IDLE
 
 
+def test_is_in_long_rest_is_true_and_is_in_short_rest_is_false_after_an_ordinary_move_arrival():
+    board = parse(". . .\n. wR .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    piece = board.get_piece(Position(1, 1))
+    arbiter.start_motion(piece, Position(1, 1), Position(0, 1))
+
+    arbiter.advance_time(CELL_DURATION_MS)
+
+    assert arbiter.is_in_long_rest(piece) is True
+    assert arbiter.is_in_short_rest(piece) is False
+
+
 def test_partial_wait_followed_by_remaining_wait_equals_one_full_wait():
     board = parse(". . .\n. wR .\n. . .")
     arbiter = RealTimeArbiter(board)
@@ -676,6 +688,18 @@ def test_start_jump_succeeds_again_once_the_short_rest_from_a_previous_jump_expi
     accepted = arbiter.start_jump(king)
 
     assert accepted is True
+
+
+def test_is_in_short_rest_is_true_and_is_in_long_rest_is_false_after_a_jump_lands():
+    board = parse(". . .\n. wK .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    king = board.get_piece(Position(1, 1))
+    arbiter.start_jump(king)
+
+    arbiter.advance_time(AIRBORNE_DURATION_MS)
+
+    assert arbiter.is_in_short_rest(king) is True
+    assert arbiter.is_in_long_rest(king) is False
 
 
 def test_cooldown_does_not_block_a_different_piece_from_acting():

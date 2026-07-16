@@ -19,27 +19,33 @@ PAWN = "pawn"
 # Deliberately just these three: whether a piece is currently airborne
 # (mid-jump) or resting (post-move/post-jump cooldown) is never encoded
 # here - those are realtime.real_time_arbiter.RealTimeArbiter's own
-# out-of-band bookkeeping (is_airborne()/is_in_cooldown()), tracked
-# per-piece-id independently of this field, so a captured/resurrected
-# identity mixup can never leave a piece stuck mid-air or mid-rest by
-# mistake. See ANIMATION_* below for the separate, purely cosmetic
-# vocabulary a renderer uses instead.
+# out-of-band bookkeeping (is_airborne()/is_in_short_rest()/
+# is_in_long_rest()), tracked per-piece-id independently of this field, so
+# a captured/resurrected identity mixup can never leave a piece stuck
+# mid-air or mid-rest by mistake. See PHASE_* below for the real-time
+# vocabulary GameEngine.snapshot() reports instead, built from that same
+# out-of-band bookkeeping.
 IDLE = "idle"
 MOVING = "moving"
 CAPTURED = "captured"
 
 # What real-time phase GameEngine.snapshot() reports a piece is currently
-# in (see RealTimeArbiter.is_airborne()) - a piece's own state above never
-# takes these values. This is the engine's own report vocabulary, nothing
-# about rendering: "resting" has no phase of its own here (a piece that just
-# landed reports back to PHASE_IDLE) - the cosmetic short_rest/long_rest
-# overlay a renderer plays instead is purely view/piece_state_machine.py's
-# business, layered on top of this report, and lives there instead of here
-# (see view/animation_states.py) - the engine itself has no notion that a
-# "rest animation" or an "animation folder" exists at all.
+# in (see RealTimeArbiter.is_airborne()/is_in_short_rest()/
+# is_in_long_rest()) - a piece's own state above never takes these values.
+# Resting gets its own two phases, not a collapse back to PHASE_IDLE: a
+# piece on cooldown is blocked from starting a new move/jump exactly like a
+# piece that's actually moving or airborne (see move_availability/
+# jump_availability and RealTimeArbiter.is_in_cooldown()), so it's as much
+# a real game-state fact as PHASE_MOVE/PHASE_JUMP are, not a rendering
+# invention. Short vs. long only matters because a landed jump and a landed
+# move earn different cooldown durations (see logic_config.py) - which
+# *sprite* a renderer shows for either is still entirely view/
+# animation_states.py's business, layered on top of this report.
 PHASE_IDLE = "idle"
 PHASE_MOVE = "move"
 PHASE_JUMP = "jump"
+PHASE_SHORT_REST = "short_rest"
+PHASE_LONG_REST = "long_rest"
 
 
 class PieceRepresentation(Protocol):

@@ -60,9 +60,9 @@ def _load_raw(code: str, state_folder: str) -> dict:
     return data
 
 
-# What view/canvas/sprite_frames.py and view/piece_state_machine.py import -
-# never carries speed_m_per_sec, which no layer reads anymore (see this
-# module's docstring for why realtime/physics never derives timing from it).
+# What view/canvas/sprite_frames.py imports - never carries speed_m_per_sec,
+# which no layer reads anymore (see this module's docstring for why
+# realtime/physics never derives timing from it).
 def load_animation(code: str, state_folder: str) -> AnimationConfig:
     data = _load_raw(code, state_folder)
     return AnimationConfig(

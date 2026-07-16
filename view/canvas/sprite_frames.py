@@ -5,9 +5,9 @@ import piece_config
 from view.animation_states import STATE_FOLDER
 
 # A piece not covered by view.animation_states.STATE_FOLDER (captured, or a
-# future addition) falls back to "idle" - a piece that isn't one of the
-# mapped real-time states shouldn't be on the board to draw in the first
-# place.
+# future addition) falls back to "idle" - a piece that isn't one of
+# GameEngine's reported real-time phases shouldn't be on the board to draw
+# in the first place.
 
 
 @dataclass

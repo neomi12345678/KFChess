@@ -25,8 +25,14 @@ class ImgCanvas:
     """
 
     # board.png's native resolution (828x822) doesn't divide evenly into
-    # CELL_SIZE-sized cells - resizing it to exactly width*height cells here
+    # cell_size-sized cells - resizing it to exactly width*height cells here
     # is what keeps every piece aligned to its square instead of drifting.
+    #
+    # cell_size defaults to display_config's fixed CELL_SIZE but takes it as
+    # a constructor argument - same reasoning as input.board_mapper.
+    # BoardMapper's own cell_size - so play.py can thread through whatever
+    # display_config.compute_cell_size decided for the actual screen at
+    # launch, without this class reaching into that decision itself.
     #
     # side_panel_width_px reserves blank margins left and right of the board
     # for view/renderer.py's moves-log/score/name panels - 0 by default, so
@@ -37,8 +43,15 @@ class ImgCanvas:
     # same amount; draw_text does not, since Renderer already computes
     # frame-absolute coordinates for anything it draws outside the board
     # (see view/renderer.py).
-    def __init__(self, board_width: int = 8, board_height: int = 8, side_panel_width_px: int = 0):
-        self._board = Img().read(BOARD_PATH, size=(board_width * CELL_SIZE, board_height * CELL_SIZE))
+    def __init__(
+        self,
+        board_width: int = 8,
+        board_height: int = 8,
+        side_panel_width_px: int = 0,
+        cell_size: int = CELL_SIZE,
+    ):
+        self._cell_size = cell_size
+        self._board = Img().read(BOARD_PATH, size=(board_width * cell_size, board_height * cell_size))
         self._board_offset_x = side_panel_width_px
         self._frame = None
         self._animator = SpriteAnimator()
@@ -93,19 +106,21 @@ class ImgCanvas:
 
         sprite = self._sprite_cache.get(path)
         if sprite is None:
-            # Sprites are natively smaller than CELL_SIZE (e.g. 64x64 ->
+            # Sprites are natively smaller than cell_size (e.g. 64x64 ->
             # 100x100) - this is an enlargement, not a shrink, so it needs
             # INTER_LINEAR (Img.read's own default, INTER_AREA, is meant
             # for shrinking and blurs when used to enlarge instead).
-            sprite = Img().read(path, size=(CELL_SIZE, CELL_SIZE), keep_aspect=True, interpolation=cv2.INTER_LINEAR)
+            sprite = Img().read(
+                path, size=(self._cell_size, self._cell_size), keep_aspect=True, interpolation=cv2.INTER_LINEAR
+            )
             self._sprite_cache[path] = sprite
 
         sprite_h, sprite_w = sprite.img.shape[:2]
         sprite.draw_on(self._frame, self._board_offset_x + x - sprite_w // 2, y - sprite_h // 2)
 
     def highlight_cell(self, row: int, col: int, color=(0, 255, 255), alpha: float = 0.35) -> None:
-        x, y = self._board_offset_x + col * CELL_SIZE, row * CELL_SIZE
-        region = self._frame.img[y:y + CELL_SIZE, x:x + CELL_SIZE]
+        x, y = self._board_offset_x + col * self._cell_size, row * self._cell_size
+        region = self._frame.img[y:y + self._cell_size, x:x + self._cell_size]
         overlay = region.copy()
         overlay[:, :, :3] = color
         region[:, :, :3] = (1 - alpha) * region[:, :, :3] + alpha * overlay[:, :, :3]

@@ -1,6 +1,5 @@
 from view.canvas.sprite_frames import SpriteAnimator
-from model.piece import CAPTURED, PHASE_IDLE, PHASE_JUMP, PHASE_MOVE
-from view.animation_states import LONG_REST, SHORT_REST
+from model.piece import CAPTURED, PHASE_IDLE, PHASE_JUMP, PHASE_LONG_REST, PHASE_MOVE, PHASE_SHORT_REST
 
 
 class FakeClock:
@@ -43,7 +42,7 @@ def test_sprite_path_maps_airborne_state_to_the_jump_folder():
 def test_sprite_path_maps_short_rest_state_to_the_short_rest_folder():
     animator, clock = make_animator()
 
-    path = animator.sprite_path("p1", "KW", SHORT_REST)
+    path = animator.sprite_path("p1", "KW", PHASE_SHORT_REST)
 
     assert path.parts[-3] == "short_rest"
 
@@ -51,7 +50,7 @@ def test_sprite_path_maps_short_rest_state_to_the_short_rest_folder():
 def test_sprite_path_maps_long_rest_state_to_the_long_rest_folder():
     animator, clock = make_animator()
 
-    path = animator.sprite_path("p1", "KW", LONG_REST)
+    path = animator.sprite_path("p1", "KW", PHASE_LONG_REST)
 
     assert path.parts[-3] == "long_rest"
 

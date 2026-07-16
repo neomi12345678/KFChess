@@ -84,11 +84,11 @@ class GameObserver:
 # handle onto the real Piece - nothing downstream can mutate a field back
 # into GameEngine's own state through this. id is still a plain str, not a
 # reference to the real Piece object, kept only so a per-piece-id-keyed
-# consumer (view/piece_state_machine.py's PieceStateMachine, view/canvas/
-# sprite_frames.py's SpriteAnimator) can track how long *this* piece has been in
-# its current visual state across frames - GameEngine itself never resolves
-# that duration (it has no notion of long_rest/short_rest, see motion_phase
-# below), so the view has to correlate frames by identity instead.
+# consumer (view/canvas/sprite_frames.py's SpriteAnimator) can track how
+# long *this* piece has been showing its current sprite across frames -
+# GameEngine reports *which* phase a piece is in (including long_rest/
+# short_rest, see motion_phase below) but never how long its sprite has
+# been playing, so the view has to correlate frames by identity instead.
 @dataclass(frozen=True)
 class PieceSnapshot:
     id: str
@@ -103,14 +103,15 @@ class PieceSnapshot:
     col: float
     state: str
     # The engine's own report of what real-time phase this piece is in -
-    # always one of model.piece.PHASE_IDLE/PHASE_MOVE/PHASE_JUMP (see
-    # GameEngine._animation_state). Never SHORT_REST/LONG_REST - those are a
-    # purely cosmetic overlay only view/piece_state_machine.py ever
-    # produces (see view/animation_states.py), layered on top of this
-    # report for display, with no bearing on game state. Named
-    # motion_phase, not "animation", so this DTO reads as a game-state fact
-    # rather than a rendering instruction - the model has no notion that
-    # "animation" is a thing.
+    # one of model.piece.PHASE_IDLE/PHASE_MOVE/PHASE_JUMP/PHASE_SHORT_REST/
+    # PHASE_LONG_REST (see GameEngine._motion_phase). Resting is a real
+    # game-state fact here, not a rendering invention - a piece on cooldown
+    # is blocked from a new move/jump the same way a moving/airborne piece
+    # is (see RealTimeArbiter.is_in_cooldown()). Named motion_phase, not
+    # "animation", so this DTO reads as a game-state fact rather than a
+    # rendering instruction - the model has no notion that "animation" is a
+    # thing; which sprite folder each phase maps to is view/
+    # animation_states.py's business alone.
     motion_phase: str
 
 

@@ -2,7 +2,17 @@ from typing import List, Optional
 
 from model.board import BoardRepresentation
 from model.game_state import GameObserver, GameSnapshot, JumpResult, MoveLoggedEvent, MoveResult, PieceSnapshot
-from model.piece import PHASE_IDLE, PHASE_JUMP, PHASE_MOVE, MOVING, is_selectable, jump_availability, move_availability
+from model.piece import (
+    PHASE_IDLE,
+    PHASE_JUMP,
+    PHASE_LONG_REST,
+    PHASE_MOVE,
+    PHASE_SHORT_REST,
+    MOVING,
+    is_selectable,
+    jump_availability,
+    move_availability,
+)
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import KingCaptureWinCondition, RuleEngine, WinCondition
@@ -220,15 +230,20 @@ class GameEngine:
             game_over=self.game_over,
         )
 
-    # Only ever PHASE_IDLE/MOVE/JUMP - never SHORT_REST/LONG_REST, which are
-    # a purely cosmetic overlay view/piece_state_machine.py derives on top
-    # of this report (see its own docstring for why the engine itself has no
-    # notion that a "rest animation" exists).
+    # Resting is reported as its own phase, not collapsed into PHASE_IDLE -
+    # is_in_short_rest()/is_in_long_rest() block a new move/jump exactly
+    # like is_airborne()/MOVING do, so it's as much a real report as those
+    # (see model/piece.py's PHASE_* comment). Which sprite a renderer shows
+    # for any of these is still view/animation_states.py's business.
     def _motion_phase(self, piece) -> str:
         if self._real_time_arbiter.is_airborne(piece):
             return PHASE_JUMP
         if piece.state == MOVING:
             return PHASE_MOVE
+        if self._real_time_arbiter.is_in_short_rest(piece):
+            return PHASE_SHORT_REST
+        if self._real_time_arbiter.is_in_long_rest(piece):
+            return PHASE_LONG_REST
         return PHASE_IDLE
 
 
