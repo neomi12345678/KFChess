@@ -1,5 +1,6 @@
 import time
 
+import piece_config
 from app import App, build_game
 from boardio.board_parser import parse as parse_board
 from display_config import compute_cell_size, screen_resolution_px, side_panel_width_for
@@ -32,7 +33,12 @@ wR wN wB wQ wK wB wN wR
 # to run on - it defaults to the real OS query, used once here to size the
 # whole board+panels layout for this launch (see view/canvas/window.py's
 # fixed-size WINDOW_AUTOSIZE - nothing here re-sizes mid-game).
-def build_app(white_name: str = "White", black_name: str = "Black", screen_size=screen_resolution_px):
+def build_app(
+    white_name: str = "White",
+    black_name: str = "Black",
+    screen_size=screen_resolution_px,
+    skin: piece_config.Skin = piece_config.DEFAULT_SKIN,
+):
     board = parse_board(STARTING_BOARD)
     cell_size = compute_cell_size(board.width, board.height, screen_size=screen_size)
     side_panel_width_px = side_panel_width_for(cell_size)
@@ -54,6 +60,7 @@ def build_app(white_name: str = "White", black_name: str = "Black", screen_size=
         board_height=board.height,
         side_panel_width_px=side_panel_width_px,
         cell_size=cell_size,
+        skin=skin,
     )
     renderer = Renderer(
         canvas,

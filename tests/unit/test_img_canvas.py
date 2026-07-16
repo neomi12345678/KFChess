@@ -79,6 +79,27 @@ def test_draw_image_paints_the_piece_sprite_onto_the_frame():
     assert not np.array_equal(region_before, region_after)
 
 
+# assets/pieces1_debug is a real, complete alternate piece set already on
+# disk - proves ImgCanvas(skin=...) actually threads the skin down through
+# SpriteAnimator to piece_config.load_animation end to end, not just that
+# the constructor accepts the argument.
+def test_draw_image_uses_the_given_skins_pieces_dir():
+    debug_skin = piece_config.Skin(
+        pieces_dir=piece_config.ASSETS_DIR / "pieces1_debug",
+        board_path=piece_config.DEFAULT_SKIN.board_path,
+    )
+    canvas = ImgCanvas(skin=debug_skin)
+    canvas.begin_frame()
+    before = canvas.frame().copy()
+
+    center_x, center_y = CELL_SIZE // 2, CELL_SIZE // 2
+    canvas.draw_image("p1:white:king:idle", x=center_x, y=center_y)
+
+    region_before = before[0:CELL_SIZE, 0:CELL_SIZE]
+    region_after = canvas.frame()[0:CELL_SIZE, 0:CELL_SIZE]
+    assert not np.array_equal(region_before, region_after)
+
+
 def test_draw_text_does_not_raise_and_changes_the_frame():
     canvas = ImgCanvas()
     canvas.begin_frame()

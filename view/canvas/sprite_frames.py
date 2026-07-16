@@ -28,15 +28,19 @@ class SpriteAnimator:
     """
 
     # clock is injectable so tests can control elapsed time deterministically
-    # instead of sleeping in real time.
-    def __init__(self, clock=time.monotonic):
+    # instead of sleeping in real time. skin defaults to DEFAULT_SKIN, same
+    # reasoning as every other cell_size-style constructor argument in
+    # view/ - a caller that wants a different skin passes a different
+    # piece_config.Skin in, everyone else is unaffected.
+    def __init__(self, clock=time.monotonic, skin: piece_config.Skin = piece_config.DEFAULT_SKIN):
         self._clock = clock
+        self._skin = skin
         self._entered_by_piece_id: dict[str, _EnteredState] = {}
 
     def sprite_path(self, piece_id: str, piece_code: str, state: str):
         folder = STATE_FOLDER.get(state, "idle")
         frame = self._current_frame(piece_id, piece_code, folder)
-        return piece_config.PIECES_DIR / piece_code / "states" / folder / "sprites" / f"{frame}.png"
+        return self._skin.pieces_dir / piece_code / "states" / folder / "sprites" / f"{frame}.png"
 
     def _current_frame(self, piece_id: str, piece_code: str, folder: str) -> int:
         now = self._clock()
@@ -45,7 +49,7 @@ class SpriteAnimator:
             entered = _EnteredState(folder=folder, entered_at=now)
             self._entered_by_piece_id[piece_id] = entered
 
-        state_config = piece_config.load_animation(piece_code, folder)
+        state_config = piece_config.load_animation(piece_code, folder, self._skin)
 
         elapsed_frames = int((now - entered.entered_at) * state_config.frames_per_sec)
         if state_config.is_loop:

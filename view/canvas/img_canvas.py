@@ -10,9 +10,6 @@ from view.canvas.sprite_frames import SpriteAnimator
 
 _TEXT_FONT = cv2.FONT_HERSHEY_SIMPLEX
 
-BOARD_PATH = piece_config.ASSETS_DIR / "board.png"
-PIECES_DIR = piece_config.PIECES_DIR
-
 
 class ImgCanvas:
     """Implements the draw_rect/draw_image/highlight_cell/draw_text interface
@@ -43,18 +40,24 @@ class ImgCanvas:
     # same amount; draw_text does not, since Renderer already computes
     # frame-absolute coordinates for anything it draws outside the board
     # (see view/renderer.py).
+    #
+    # skin defaults to piece_config.DEFAULT_SKIN (today's assets/board.png +
+    # assets/pieces), same reasoning as cell_size above - a caller that
+    # wants a different board/piece set passes a different piece_config.Skin
+    # in, everyone else is unaffected.
     def __init__(
         self,
         board_width: int = 8,
         board_height: int = 8,
         side_panel_width_px: int = 0,
         cell_size: int = CELL_SIZE,
+        skin: piece_config.Skin = piece_config.DEFAULT_SKIN,
     ):
         self._cell_size = cell_size
-        self._board = Img().read(BOARD_PATH, size=(board_width * cell_size, board_height * cell_size))
+        self._board = Img().read(skin.board_path, size=(board_width * cell_size, board_height * cell_size))
         self._board_offset_x = side_panel_width_px
         self._frame = None
-        self._animator = SpriteAnimator()
+        self._animator = SpriteAnimator(skin=skin)
         # Every (piece_code, state, frame) sprite file's pixels never change
         # once loaded - reading + resizing it fresh from disk on every
         # draw_image call (every piece, every rendered frame) would be pure

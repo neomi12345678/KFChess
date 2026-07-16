@@ -1,3 +1,4 @@
+import piece_config
 from view.canvas.sprite_frames import SpriteAnimator
 from model.piece import CAPTURED, PHASE_IDLE, PHASE_JUMP, PHASE_LONG_REST, PHASE_MOVE, PHASE_SHORT_REST
 
@@ -116,6 +117,23 @@ def test_frame_resets_to_one_when_the_same_piece_changes_state():
     path = animator.sprite_path("p1", "KW", PHASE_MOVE)
 
     assert path.name == "1.png"
+
+
+# assets/pieces1_debug is a real, complete alternate piece set already
+# sitting on disk (same folder layout as assets/pieces) with nothing
+# pointed at it - this proves the skin seam actually resolves against it,
+# not just against DEFAULT_SKIN's own assets/pieces.
+def test_sprite_path_resolves_under_a_non_default_skins_pieces_dir():
+    debug_skin = piece_config.Skin(
+        pieces_dir=piece_config.ASSETS_DIR / "pieces1_debug",
+        board_path=piece_config.DEFAULT_SKIN.board_path,
+    )
+    animator = SpriteAnimator(clock=FakeClock(), skin=debug_skin)
+
+    path = animator.sprite_path("p1", "KW", PHASE_IDLE)
+
+    assert debug_skin.pieces_dir in path.parents
+    assert path.is_file()
 
 
 def test_each_piece_id_tracks_its_own_animation_clock_independently():
