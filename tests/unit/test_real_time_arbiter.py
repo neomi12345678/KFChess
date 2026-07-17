@@ -429,6 +429,216 @@ def test_a_pieces_own_arrival_is_skipped_if_it_was_captured_earlier_in_the_same_
     assert board.get_piece(Position(0, 0)) is attacker
 
 
+def test_a_faster_enemy_piece_lands_in_a_slower_motions_path_and_intercepts_it_in_one_big_tick():
+    # White's motion (5 cells, 5*CELL_DURATION_MS) is still far from column 3
+    # when black's much shorter motion (1 cell) lands there - request-time
+    # plan_route sees no conflict (the two trajectories are never at (0,3)
+    # at the same instant), so without a mid-flight recheck white would
+    # sail straight through black's now-occupied square. White has right of
+    # way (it was already flying through this cell before black ever
+    # landed there - see route_planner.plan_route's own docstring) - it
+    # captures black and settles at (0, 3), not its farther original
+    # destination, the same as any other capture-and-stop in this game.
+    board = parse("wR . . . . .\n. . . bR . .")
+    arbiter = RealTimeArbiter(board)
+    white_rook = board.get_piece(Position(0, 0))
+    black_rook = board.get_piece(Position(1, 3))
+
+    arbiter.start_motion(white_rook, Position(0, 0), Position(0, 5))
+    arbiter.start_motion(black_rook, Position(1, 3), Position(0, 3))
+
+    # A single coarse wait spanning both completions - both motions are
+    # "complete" by CELL_DURATION_MS bookkeeping within this one call, so
+    # this also exercises the chronological (not insertion-order) sort.
+    events = arbiter.advance_time(5 * CELL_DURATION_MS + 100)
+
+    assert black_rook.state == CAPTURED
+    assert board.get_piece(Position(0, 3)) is white_rook
+    assert board.get_piece(Position(0, 5)) is None
+    assert board.get_piece(Position(0, 0)) is None
+    assert arbiter.is_in_cooldown(white_rook) is True
+    assert ArrivalEvent(piece=white_rook, captured_piece=black_rook) in events
+
+
+def test_a_faster_enemy_piece_lands_in_a_slower_motions_path_in_a_small_tick_loop():
+    # Same scenario as above, but driven by a real per-frame-sized loop
+    # instead of one coarse wait - the realistic path for interactive play.
+    board = parse("wR . . . . .\n. . . bR . .")
+    arbiter = RealTimeArbiter(board)
+    white_rook = board.get_piece(Position(0, 0))
+    black_rook = board.get_piece(Position(1, 3))
+
+    arbiter.start_motion(white_rook, Position(0, 0), Position(0, 5))
+    arbiter.start_motion(black_rook, Position(1, 3), Position(0, 3))
+
+    for _ in range(1000):
+        arbiter.advance_time(10)
+        if black_rook.state == CAPTURED:
+            break
+
+    assert black_rook.state == CAPTURED
+    assert board.get_piece(Position(0, 3)) is white_rook
+    assert board.get_piece(Position(0, 5)) is None
+    assert arbiter.is_in_cooldown(white_rook) is True
+
+
+def test_a_faster_same_color_piece_lands_in_a_slower_motions_path_and_stops_it_one_cell_short():
+    board = parse("wR . . . . .\n. . . wR . .")
+    arbiter = RealTimeArbiter(board)
+    slow_rook = board.get_piece(Position(0, 0))
+    fast_rook = board.get_piece(Position(1, 3))
+
+    arbiter.start_motion(slow_rook, Position(0, 0), Position(0, 5))
+    # A plain 1-cell vertical move to (0, 3) - not a route_planner conflict
+    # at request time (the two trajectories are never at (0, 3) at the same
+    # instant, same reasoning as the opposite-color repro above), but it
+    # still lands squarely on the rook's remaining path.
+    arbiter.start_motion(fast_rook, Position(1, 3), Position(0, 3))
+
+    # Only far enough for fast_rook's own 1-cell move to complete -
+    # slow_rook's full 5-cell motion (3335ms) is nowhere near done, so this
+    # isolates the interception from slow_rook's own eventual arrival.
+    events = arbiter.advance_time(CELL_DURATION_MS + 100)
+
+    assert board.get_piece(Position(0, 3)) is fast_rook
+    # Stopped one cell short instead of overwriting a teammate.
+    assert board.get_piece(Position(0, 2)) is slow_rook
+    assert slow_rook.state == IDLE
+    assert arbiter.is_in_cooldown(slow_rook) is True
+    assert ArrivalEvent(piece=slow_rook, captured_piece=None) in events
+
+
+def test_two_motions_completing_in_the_same_tick_on_non_crossing_paths_do_not_intercept_each_other():
+    board = parse("wR . . . . .\n. . . . . .\n. . . bR . .")
+    arbiter = RealTimeArbiter(board)
+    white_rook = board.get_piece(Position(0, 0))
+    black_rook = board.get_piece(Position(2, 3))
+
+    arbiter.start_motion(white_rook, Position(0, 0), Position(0, 2))
+    arbiter.start_motion(black_rook, Position(2, 3), Position(2, 1))
+
+    events = arbiter.advance_time(2 * CELL_DURATION_MS)
+
+    assert board.get_piece(Position(0, 2)) is white_rook
+    assert board.get_piece(Position(2, 1)) is black_rook
+    assert white_rook.state == IDLE
+    assert black_rook.state == IDLE
+    assert len(events) == 2
+
+
+def test_only_the_chronologically_earliest_same_tick_landing_is_captured_by_a_shared_target():
+    # target (6 cells, 4002ms) is nowhere near completing this tick, and
+    # has right of way over anything that lands in its path. Two enemies -
+    # requested in reverse-chronological order, the slower one first - both
+    # land within the same tick on cells along target's remaining path.
+    # Only the one that actually gets there first in real time
+    # (early_attacker, 1 cell/667ms) is found and captured when target's
+    # motion is checked; by the time the later one (late_attacker, 2
+    # cells/1334ms) lands, target's motion has already stopped short at
+    # (0, 3), so late_attacker lands normally instead of also being
+    # intercepted.
+    board = parse("wR . . . . . .\n. . . bR . . .\n. . . . . bR .")
+    arbiter = RealTimeArbiter(board)
+    target = board.get_piece(Position(0, 0))
+    late_attacker = board.get_piece(Position(2, 5))
+    early_attacker = board.get_piece(Position(1, 3))
+
+    arbiter.start_motion(target, Position(0, 0), Position(0, 6))
+    arbiter.start_motion(late_attacker, Position(2, 5), Position(0, 5))  # requested first, completes later
+    arbiter.start_motion(early_attacker, Position(1, 3), Position(0, 3))  # requested second, completes first
+
+    events = arbiter.advance_time(2 * CELL_DURATION_MS + 100)
+
+    assert early_attacker.state == CAPTURED
+    assert board.get_piece(Position(0, 3)) is target
+    assert board.get_piece(Position(0, 5)) is late_attacker
+    assert board.get_piece(Position(0, 6)) is None
+    # early_attacker's own (short-lived) arrival, target's capture of
+    # early_attacker, and late_attacker's own uneventful arrival - exactly
+    # one capture of early_attacker, no duplicate/erroneous second
+    # interception.
+    assert len(events) == 3
+    capture_events = [event for event in events if event.captured_piece is early_attacker]
+    assert len(capture_events) == 1
+    assert capture_events[0].piece is target
+
+
+def test_an_intercepted_motions_own_fallback_cell_can_itself_domino_into_a_third_motion():
+    # m1 (white, fast) lands at (0, 3), intercepting m2 (white, slow,
+    # still crossing that cell) into a same-color truncation - m2 stops
+    # short at (0, 2). That fallback cell (0, 2) is itself on the
+    # remaining path of m3 (black, also still in flight, already heading
+    # there before m2 ever retreated onto it) - a domino one step removed
+    # from the original trigger, which only a recursive re-check (not a
+    # single one-shot intercept pass) can catch. m3 has right of way over
+    # m2's incidental landing there, exactly like any other interception -
+    # it captures m2 and settles at (0, 2) itself.
+    board = parse(
+        "wR . . . . . .\n"
+        ". . . wR . . .\n"
+        ". . . . . . .\n"
+        ". . . . . . .\n"
+        ". . . . . . .\n"
+        ". . bR . . . .\n"
+    )
+    arbiter = RealTimeArbiter(board)
+    m2_slow_rook = board.get_piece(Position(0, 0))
+    m1_fast_rook = board.get_piece(Position(1, 3))
+    m3_black_rook = board.get_piece(Position(5, 2))
+
+    arbiter.start_motion(m2_slow_rook, Position(0, 0), Position(0, 6))  # 6 cells
+    arbiter.start_motion(m1_fast_rook, Position(1, 3), Position(0, 3))  # 1 cell
+    arbiter.start_motion(m3_black_rook, Position(5, 2), Position(0, 2))  # 5 cells
+
+    # Only far enough for m1's 1-cell move to complete this tick.
+    events = arbiter.advance_time(CELL_DURATION_MS + 100)
+
+    assert board.get_piece(Position(0, 3)) is m1_fast_rook
+    assert board.get_piece(Position(0, 2)) is m3_black_rook  # m3 had right of way, captured m2 there
+    assert m2_slow_rook.state == CAPTURED
+    assert board.get_piece(Position(0, 0)) is None
+    assert board.get_piece(Position(5, 2)) is None
+    assert arbiter.is_in_cooldown(m3_black_rook) is True
+
+    capture_events = [event for event in events if event.captured_piece is m2_slow_rook]
+    assert len(capture_events) == 1
+    assert capture_events[0].piece is m3_black_rook
+
+
+def test_two_same_tick_interceptions_of_the_same_target_are_broken_by_request_order():
+    # attacker_a and attacker_b both land, in the same tick, on different
+    # cells that each independently lie on target's remaining path, at the
+    # exact same chronological instant (identical 1-cell travel time - a
+    # true tie, not just "both within the same coarse wait()"). target has
+    # right of way over whichever one it's checked against first; only the
+    # one requested first (attacker_a) is actually found and captured - by
+    # the time attacker_b is checked, target's motion has already stopped
+    # short at (0, 2), so attacker_b lands normally instead of also being
+    # intercepted. This pins down that deterministic, request-order tie-
+    # break as intentional behavior, not an accident of whichever order a
+    # future refactor happens to iterate motions in.
+    board = parse("bR . . . . . . .\n. . wR . wR . . .\n")
+    arbiter = RealTimeArbiter(board)
+    target = board.get_piece(Position(0, 0))
+    attacker_a = board.get_piece(Position(1, 2))
+    attacker_b = board.get_piece(Position(1, 4))
+
+    arbiter.start_motion(target, Position(0, 0), Position(0, 6))  # 6 cells
+    arbiter.start_motion(attacker_a, Position(1, 2), Position(0, 2))  # 1 cell, requested first
+    arbiter.start_motion(attacker_b, Position(1, 4), Position(0, 4))  # 1 cell, requested second
+
+    events = arbiter.advance_time(CELL_DURATION_MS + 100)
+
+    assert attacker_a.state == CAPTURED
+    assert board.get_piece(Position(0, 2)) is target
+    assert board.get_piece(Position(0, 4)) is attacker_b
+    assert board.get_piece(Position(0, 6)) is None
+
+    capture_events = [event for event in events if event.captured_piece is attacker_a]
+    assert len(capture_events) == 1
+    assert capture_events[0].piece is target
+
+
 def test_white_pawn_promotes_to_queen_on_arrival_at_row_zero():
     board = parse(". . .\n. wP .")
     arbiter = RealTimeArbiter(board)

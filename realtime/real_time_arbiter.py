@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from logic_config import (
     AIRBORNE_BASE_DURATION_MS,
@@ -106,6 +106,17 @@ class RealTimeArbiter:
             if motion.is_complete():
                 completed_motions.append(motion)
 
+        # Multiple motions can complete within one tick - process them in
+        # the order they actually finished in real time (not request/
+        # insertion order), so a short move that chronologically landed
+        # first is already reflected on the board before a still-in-flight
+        # longer motion is checked against it (see _completion_offset_ms /
+        # _intercept_motions_crossing) - otherwise a single coarse wait()
+        # spanning both completions could resolve them in the wrong order
+        # and miss an interception a per-frame-sized wait() would have
+        # caught correctly.
+        completed_motions.sort(key=lambda motion: self._completion_offset_ms(motion, ms))
+
         # Resolve arrivals before expiring airborne protection below, so a
         # piece landing exactly as its jump window ends is still defended.
         for motion in completed_motions:
@@ -115,8 +126,11 @@ class RealTimeArbiter:
             if motion.piece.state != MOVING:
                 continue
             self._active_motions.remove(motion)
-            event = self._resolve_arrival(motion)
+            completion_offset_ms = self._completion_offset_ms(motion, ms)
+            event, landed_cell = self._resolve_arrival(motion)
             events.append(event)
+            if landed_cell is not None:
+                events.extend(self._intercept_motions_crossing(landed_cell, ms, completion_offset_ms))
 
         expired_airborne_states = []
         for airborne in self._airborne_states:
@@ -186,7 +200,14 @@ class RealTimeArbiter:
             motion for motion in self._active_motions if motion.piece.id != piece.id
         ]
 
-    def _resolve_arrival(self, motion: Motion) -> ArrivalEvent:
+    # Second element of the return value is whichever cell this call's own
+    # add_piece just filled - None for the reversed-airborne-capture branch,
+    # which never calls add_piece (the defender never left its own cell).
+    # advance_time feeds that cell into _intercept_motions_crossing right
+    # after, to catch a still-in-flight motion this new occupant now stands
+    # in the way of (see that method's docstring for why request-time
+    # plan_route alone can't already cover this).
+    def _resolve_arrival(self, motion: Motion) -> Tuple[ArrivalEvent, Optional[Position]]:
         defender = self._board.get_piece(motion.destination)
 
         # Reversed capture: an airborne enemy defender survives and captures
@@ -200,7 +221,7 @@ class RealTimeArbiter:
             self._mark_captured(motion.piece)
             self._mark_idle(defender)
             self._land_airborne_piece(defender)
-            return ArrivalEvent(piece=defender, captured_piece=motion.piece)
+            return ArrivalEvent(piece=defender, captured_piece=motion.piece), None
 
         # A same-color piece won a race to this cell since this motion
         # started - stop short instead of overwriting a teammate. It still
@@ -210,7 +231,7 @@ class RealTimeArbiter:
             self._board.remove_piece(motion.source)
             self._board.add_piece(fallback, motion.piece)
             self._start_long_rest(motion.piece)
-            return ArrivalEvent(piece=motion.piece, captured_piece=None)
+            return ArrivalEvent(piece=motion.piece, captured_piece=None), fallback
 
         captured_piece = defender
         self._board.remove_piece(motion.source)
@@ -227,4 +248,94 @@ class RealTimeArbiter:
         self._promotion_rule.promote(motion.piece, self._board.height)
         self._start_long_rest(motion.piece)
 
-        return ArrivalEvent(piece=motion.piece, captured_piece=captured_piece)
+        return ArrivalEvent(piece=motion.piece, captured_piece=captured_piece), motion.destination
+
+    # How far into the current tick (0..ms) a motion that completes this
+    # tick actually finished, in true chronological terms - advance_time
+    # bulk-ages every active motion by the whole tick up front, so this is
+    # what lets completed_motions be processed in the order they really
+    # happened instead of insertion order, and lets
+    # _intercept_motions_crossing ask a still-in-flight motion how far it
+    # had actually gotten at that instant.
+    def _completion_offset_ms(self, motion: Motion, ms: int) -> int:
+        elapsed_before_tick = motion.elapsed_ms - ms
+        return motion.duration_ms - elapsed_before_tick
+
+    # Closes a gap route_planner.plan_route's request-time check can't see:
+    # a motion granted before some other, separately-requested motion even
+    # existed has no way to know that motion will later land on one of its
+    # own remaining path cells. Called right after each add_piece inside
+    # _resolve_arrival (both the same-color-race fallback and the normal-
+    # arrival branch) and, recursively, right after _intercept_motion's own
+    # same-color fallback add_piece - a domino: an intercepted motion's new
+    # resting cell can itself sit on a third motion's remaining path,
+    # exactly the same shape of gap this whole mechanism exists to close,
+    # just one step removed. Called immediately rather than deferred in
+    # every case, so a motion this same tick's own later completions
+    # haven't been processed yet is still found, and so an already-
+    # intercepted motion is gone from self._active_motions before any
+    # later, chronologically-later trigger this same tick can double-hit
+    # it.
+    #
+    # The state guard mirrors advance_time's own "already captured earlier
+    # this same tick" guard: list(self._active_motions) is a snapshot taken
+    # once at the top of this call, but an earlier iteration's own
+    # recursive cascade (via _intercept_motion's domino call below) can
+    # already have resolved a *later* entry in that same snapshot before
+    # this loop reaches it - without this check, re-processing it would
+    # call self._active_motions.remove() on a motion no longer in the list.
+    def _intercept_motions_crossing(self, landed_cell: Position, ms: int, completion_offset_ms: int) -> List[ArrivalEvent]:
+        events: List[ArrivalEvent] = []
+        for motion in list(self._active_motions):
+            if motion.piece.state != MOVING:
+                continue
+            effective_elapsed_ms = motion.elapsed_ms - ms + completion_offset_ms
+            if landed_cell in motion.remaining_cells(as_of_elapsed_ms=effective_elapsed_ms):
+                events.extend(self._intercept_motion(motion, landed_cell, ms, completion_offset_ms))
+        return events
+
+    # The same two outcomes a request-time route conflict already
+    # establishes (see route_planner.plan_route), applied after the fact to
+    # a motion already granted and mid-flight instead of before
+    # start_motion. Same color means it stops one cell short instead of
+    # overwriting a teammate, reusing retreat_cell exactly as a normal
+    # same-color arrival does - it still counts as having completed a
+    # motion, so it still earns a long_rest, and its own new fallback cell
+    # is immediately re-checked against every other still-active motion.
+    #
+    # Opposite color means motion.piece - already flying toward or through
+    # this cell before occupant ever landed there - has right of way (see
+    # plan_route's own docstring: "whoever is already moving has right of
+    # way"), exactly like every other capture in this game: the piece that
+    # arrives at an occupied enemy square is the one that survives and
+    # settles there, the occupant is the one removed (see rules.
+    # piece_rules._slide's "capture and stop", and _resolve_arrival's own
+    # generic capture branch) - not the reverse. motion.piece settles at
+    # `cell` itself, not its own farther, originally-requested destination,
+    # earning the same promotion check and long_rest a normal arrival does.
+    #
+    # ms/completion_offset_ms are threaded through unchanged in both
+    # branches - a domino this triggers happens at the exact same simulated
+    # instant as the trigger that caused it, not later in the tick.
+    def _intercept_motion(self, motion: Motion, cell: Position, ms: int, completion_offset_ms: int) -> List[ArrivalEvent]:
+        self._active_motions.remove(motion)
+        occupant = self._board.get_piece(cell)
+
+        if occupant.color == motion.piece.color:
+            fallback = retreat_cell(self._board, motion.source, cell)
+            self._board.remove_piece(motion.source)
+            self._board.add_piece(fallback, motion.piece)
+            self._start_long_rest(motion.piece)
+            events = [ArrivalEvent(piece=motion.piece, captured_piece=None)]
+            events.extend(self._intercept_motions_crossing(fallback, ms, completion_offset_ms))
+            return events
+
+        self._board.remove_piece(motion.source)
+        self._board.remove_piece(cell)
+        self._mark_captured(occupant)
+        self._board.add_piece(cell, motion.piece)
+        self._promotion_rule.promote(motion.piece, self._board.height)
+        self._start_long_rest(motion.piece)
+        events = [ArrivalEvent(piece=motion.piece, captured_piece=occupant)]
+        events.extend(self._intercept_motions_crossing(cell, ms, completion_offset_ms))
+        return events

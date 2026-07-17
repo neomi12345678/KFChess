@@ -1,11 +1,15 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 from logic_config import MOVE_CELL_DURATION_MS
 from model.piece import PieceRepresentation
 from model.position import Position
 
 _EPSILON = 1e-9
+
+
+def _sign(value: int) -> int:
+    return (value > 0) - (value < 0)
 
 
 # Anything that isn't a straight rank/file/diagonal line is treated as a
@@ -36,6 +40,42 @@ class Motion:
 
     def is_complete(self) -> bool:
         return self.elapsed_ms >= self.duration_ms
+
+    # The cells this motion's piece has yet to reach - from the next
+    # not-yet-crossed cell through destination, inclusive, in travel order.
+    # Never includes source or a cell already crossed. Used by
+    # RealTimeArbiter to catch a piece that lands mid-flight on a cell this
+    # motion hasn't reached yet, even though this motion was already
+    # granted before that piece's own move was even requested (see
+    # RealTimeArbiter._intercept_motions_crossing).
+    #
+    # as_of_elapsed_ms lets a caller ask "how far had this motion actually
+    # gotten at some earlier instant" instead of this motion's own current
+    # elapsed_ms - RealTimeArbiter.advance_time bulk-ages every active
+    # motion by a whole tick up front, before it knows the true
+    # chronological instant, within that same tick, that a *different*
+    # motion actually completed.
+    #
+    # A knight-shaped motion (see is_straight_line) has no continuous path
+    # to walk - only its own arrival-time defender lookup can ever
+    # intercept one - so this returns no candidates at all for one.
+    def remaining_cells(self, as_of_elapsed_ms: Optional[int] = None) -> List[Position]:
+        if not is_straight_line(self.source, self.destination):
+            return []
+
+        total_cells = max(abs(self.destination.row - self.source.row), abs(self.destination.col - self.source.col))
+        if total_cells == 0:
+            return []
+
+        elapsed_ms = self.elapsed_ms if as_of_elapsed_ms is None else as_of_elapsed_ms
+        cells_traveled = max(0, min(total_cells, elapsed_ms // MOVE_CELL_DURATION_MS))
+
+        row_step = _sign(self.destination.row - self.source.row)
+        col_step = _sign(self.destination.col - self.source.col)
+        return [
+            Position(self.source.row + row_step * i, self.source.col + col_step * i)
+            for i in range(cells_traveled + 1, total_cells + 1)
+        ]
 
 
 # A timed, out-of-band period tracked for a piece - airborne after a jump,
