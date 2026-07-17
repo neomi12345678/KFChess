@@ -1,7 +1,7 @@
 from engine.game_engine import GameEngine
 from input.controller import Controller
 from boardio.board_parser import parse
-from model.piece import is_selectable
+from model.piece import Piece, ROOK, WHITE, is_selectable
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
@@ -9,9 +9,10 @@ from rules.rule_engine import RuleEngine
 
 class FakeGameEngine:
     """Stands in for GameEngine's query surface only (can_select/
-    is_same_color/request_move/request_jump) - a real object, not a mock,
-    reading the same Board a real GameEngine would hold internally (see
-    engine/game_engine.py's own can_select/is_same_color)."""
+    is_same_color/piece_id_at/request_move/request_jump) - a real object,
+    not a mock, reading the same Board a real GameEngine would hold
+    internally (see engine/game_engine.py's own can_select/is_same_color/
+    piece_id_at)."""
 
     def __init__(self, board):
         self._board = board
@@ -26,6 +27,10 @@ class FakeGameEngine:
         piece_a = self._board.get_piece(position_a)
         piece_b = self._board.get_piece(position_b)
         return piece_a is not None and piece_b is not None and piece_a.color == piece_b.color
+
+    def piece_id_at(self, position):
+        piece = self._board.get_piece(position)
+        return piece.id if piece is not None else None
 
     def request_move(self, source, destination):
         self.requested_moves.append((source, destination))
@@ -144,6 +149,26 @@ def test_clicking_an_enemy_piece_still_requests_a_move():
     assert engine.requested_moves == [(Position(0, 0), Position(0, 2))]
     assert controller.selected is None
     assert result.move_requested is True
+
+
+def test_second_click_is_ignored_when_a_different_piece_now_occupies_the_selected_cell():
+    # Real wall-clock time passes between two clicks in interactive play -
+    # the originally selected piece may have been captured, with an
+    # unrelated piece's motion since landing on that same cell, before the
+    # second click arrives. Position alone can't tell the two pieces apart;
+    # only identity can (see Controller._selected_piece_id).
+    controller, engine = make_controller("wK . .\n. . .\n. . .")
+    controller.click(Position(0, 0))
+    assert controller.selected == Position(0, 0)
+
+    engine._board.remove_piece(Position(0, 0))
+    engine._board.add_piece(Position(0, 0), Piece(id="impostor", color=WHITE, kind=ROOK, cell=Position(0, 0)))
+
+    result = controller.click(Position(0, 2))
+
+    assert controller.selected is None
+    assert result.move_requested is False
+    assert engine.requested_moves == []
 
 
 def test_jump_forwards_the_cell_to_the_game_engine():

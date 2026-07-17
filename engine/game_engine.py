@@ -71,6 +71,16 @@ class GameEngine:
         piece_b = self._board.get_piece(position_b)
         return piece_a is not None and piece_b is not None and piece_a.color == piece_b.color
 
+    # Lets Controller reconfirm, right before acting on a second click, that
+    # whatever piece it selected on the first click is still the one sitting
+    # there - the original piece may since have been captured, or its cell
+    # taken over by an unrelated piece landing there in the meantime.
+    # Position alone can't tell those apart across two clicks separated by
+    # real wall-clock time; only identity can.
+    def piece_id_at(self, position: Position) -> Optional[str]:
+        piece = self._board.get_piece(position)
+        return piece.id if piece is not None else None
+
     def request_move(self, source: Position, destination: Position) -> MoveResult:
         if self.game_over:
             return MoveResult(is_accepted=False, reason="game_over")
