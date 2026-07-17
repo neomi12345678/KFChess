@@ -33,7 +33,7 @@ SIDE_PANEL_WIDTH_PX = 260
 
 # How many of the most recent moves-log entries a side panel shows at once
 # (see view/renderer.py) - older entries still exist in
-# view.observers.MoveLogObserver, just scrolled out of what's drawn.
+# events.observers.MoveLogObserver, just scrolled out of what's drawn.
 MAX_VISIBLE_MOVES_PER_PANEL = 30
 
 # compute_cell_size fits the board (plus both side panels, at their usual

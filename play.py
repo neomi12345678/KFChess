@@ -7,7 +7,7 @@ from display_config import compute_cell_size, screen_resolution_px, side_panel_w
 from view.canvas.img_canvas import ImgCanvas
 from view.canvas.window import GameWindow
 from model.piece import BLACK, WHITE
-from view.observers import MoveLogObserver, ScoreObserver
+from events.observers import MoveLogObserver, ScoreObserver
 from view.renderer import Renderer
 
 STARTING_BOARD = """

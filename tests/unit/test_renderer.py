@@ -8,7 +8,7 @@ from model.piece import BLACK, PAWN, WHITE
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
-from view.observers import MoveLogObserver, ScoreObserver
+from events.observers import MoveLogObserver, ScoreObserver
 from view.renderer import Renderer
 
 

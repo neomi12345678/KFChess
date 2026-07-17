@@ -520,7 +520,7 @@ def test_an_accepted_move_notifies_observers_with_the_move_facts():
     # GameEngine reports raw facts (color/kind/source/destination/
     # is_capture), never notation text - see model/game_state.py's
     # MoveLoggedEvent docstring for why building "Rb3"-style strings is
-    # view/observers.py's job, not the engine's.
+    # events/observers.py's job, not the engine's.
     board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
     observer = RecordingObserver()
     engine.add_observer(observer)

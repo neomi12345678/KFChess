@@ -3,7 +3,7 @@ from typing import Dict, Optional
 from display_config import CELL_SIZE, MAX_VISIBLE_MOVES_PER_PANEL
 from model.game_state import GameSnapshot
 from model.piece import BLACK, WHITE
-from view.observers import MoveLogObserver, ScoreObserver
+from events.observers import MoveLogObserver, ScoreObserver
 
 _PANEL_LINE_HEIGHT_PX = 18
 _PANEL_TEXT_MARGIN_PX = 10
@@ -72,7 +72,7 @@ class Renderer:
         if snapshot.selected_cell is not None:
             self._canvas.highlight_cell(row=snapshot.selected_cell.row, col=snapshot.selected_cell.col)
 
-    # Purely cosmetic - reads back whatever view.observers.MoveLogObserver/
+    # Purely cosmetic - reads back whatever events.observers.MoveLogObserver/
     # ScoreObserver have accumulated so far, at this frame's own pace. Drawn
     # in canvas-frame-absolute coordinates (unlike draw_rect/draw_image/
     # highlight_cell, which are board-relative and offset internally by

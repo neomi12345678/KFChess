@@ -5,7 +5,7 @@ from model.position import Position
 
 def test_game_observer_default_hooks_are_no_ops_a_bare_instance_can_receive():
     # A concrete observer only overrides the hook(s) it cares about (see
-    # view/observers.py) - the base class itself must tolerate being
+    # events/observers.py) - the base class itself must tolerate being
     # notified of both events and simply do nothing.
     observer = GameObserver()
     piece = Piece(id="p1", color=WHITE, kind=PAWN, cell=Position(0, 0))

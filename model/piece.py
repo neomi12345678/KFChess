@@ -123,7 +123,7 @@ COLOR_BY_LETTER = {"w": WHITE, "b": BLACK}
 KIND_BY_LETTER = {"K": KING, "Q": QUEEN, "R": ROOK, "B": BISHOP, "N": KNIGHT, "P": PAWN}
 
 # Standard chess piece values, used to turn a capture into a score delta
-# (view/observers.py's ScoreObserver) - display-only, this has no bearing on
+# (events/observers.py's ScoreObserver) - display-only, this has no bearing on
 # game rules or the win condition. KING is 0 since capturing it already ends
 # the game via KingCaptureWinCondition rather than merely scoring a point.
 PIECE_VALUES = {PAWN: 1, KNIGHT: 3, BISHOP: 3, ROOK: 5, QUEEN: 9, KING: 0}

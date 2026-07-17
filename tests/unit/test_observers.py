@@ -1,7 +1,7 @@
 from model.game_state import ArrivalEvent, MoveLoggedEvent
 from model.piece import BLACK, KING, KNIGHT, PAWN, Piece, QUEEN, ROOK, WHITE
 from model.position import Position
-from view.observers import MoveLogObserver, ScoreObserver
+from events.observers import MoveLogObserver, ScoreObserver
 
 
 def make_piece(color, kind, row=0, col=0):

@@ -1,5 +1,5 @@
 """Turns a move/jump into display text for the moves-log side panel
-(view/observers.py's MoveLogObserver) - purely cosmetic, never read back by
+(events/observers.py's MoveLogObserver) - purely cosmetic, never read back by
 any game logic.
 
 Deliberately simplified compared to standard chess SAN: no check/checkmate

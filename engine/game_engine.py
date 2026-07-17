@@ -39,7 +39,7 @@ class GameEngine:
         self._elapsed_ms = 0
 
     # GameEngine never needs to know a moves log or scoreboard exist - it
-    # just notifies whoever is registered (view/observers.py) and moves on,
+    # just notifies whoever is registered (events/observers.py) and moves on,
     # so the move/jump pipeline never waits on them.
     def add_observer(self, observer: GameObserver) -> None:
         self._observers.append(observer)

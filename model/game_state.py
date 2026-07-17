@@ -40,7 +40,7 @@ class MoveLoggedEvent:
     request_jump's entire contribution to the moves log. It deliberately
     carries no display text: turning these facts into notation (e.g. "Nf3",
     "exd5", "Nb1^") is boardio.algebraic_notation's job, invoked only by
-    view/observers.py's MoveLogObserver - GameEngine (business/game-rule
+    events/observers.py's MoveLogObserver - GameEngine (business/game-rule
     logic) has no business knowing that "notation" or a "moves log" exist
     at all, only that something worth reporting happened.
 
@@ -64,7 +64,7 @@ class MoveLoggedEvent:
 # arrival being resolved (on_arrival, reusing ArrivalEvent so score-keeping
 # always reflects what actually happened on the board, not what looked
 # likely to happen when the request was made). Both are no-ops by default
-# so a concrete observer (view/observers.py) only overrides the hook(s) it
+# so a concrete observer (events/observers.py) only overrides the hook(s) it
 # actually cares about, instead of implementing a full interface for events
 # it ignores.
 #

@@ -3,6 +3,11 @@ engine.game_engine.GameEngine's move/jump pipeline itself - GameEngine
 notifies these (see GameEngine.add_observer), and view/renderer.py reads
 their accumulated state back at its own pace, once per frame. Neither
 observer here can slow down or block a move/jump request.
+
+Lives under events/, not view/: move-logging and score-keeping are
+derived application state, not rendering - view/renderer.py is just one
+reader of what accumulates here, so this stays a peer of view/, not a
+submodule of it.
 """
 
 from dataclasses import dataclass
