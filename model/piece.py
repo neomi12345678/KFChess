@@ -80,22 +80,25 @@ class ActionAvailability:
     reason_if_blocked: Optional[str] = None
 
 
-# From each of piece.state's three real values, whether a "move" or "jump"
-# may be *started*, and the reason to report back when it can't. Whether a
-# piece is airborne or resting is a separate, out-of-band question this
-# table has no notion of at all - see RealTimeArbiter.is_airborne()/
-# is_in_cooldown(), which GameEngine and RealTimeArbiter consult directly
-# for those, alongside this table, before starting a new move/jump.
+# From each of piece.state's two *reachable* values, whether a "move" or
+# "jump" may be *started*, and the reason to report back when it can't.
+# CAPTURED is deliberately not a key here: a piece is always removed from
+# the Board (see RealTimeArbiter._mark_captured's call sites) in the same
+# operation that marks it CAPTURED, so GameEngine can never look one up via
+# board.get_piece() and reach this table with it - a state.py Piece read
+# straight off the board is always IDLE or MOVING. Whether a piece is
+# airborne or resting is a separate, out-of-band question this table has no
+# notion of at all - see RealTimeArbiter.is_airborne()/is_in_cooldown(),
+# which GameEngine and RealTimeArbiter consult directly for those,
+# alongside this table, before starting a new move/jump.
 _MOVE_AVAILABILITY = {
     IDLE: ActionAvailability(allowed=True),
     MOVING: ActionAvailability(allowed=False, reason_if_blocked="motion_in_progress"),
-    CAPTURED: ActionAvailability(allowed=False, reason_if_blocked="piece_in_cooldown"),
 }
 
 _JUMP_AVAILABILITY = {
     IDLE: ActionAvailability(allowed=True),
     MOVING: ActionAvailability(allowed=False, reason_if_blocked="piece_is_moving"),
-    CAPTURED: ActionAvailability(allowed=False, reason_if_blocked="piece_in_cooldown"),
 }
 
 
@@ -110,9 +113,13 @@ def jump_availability(state: str) -> ActionAvailability:
 # A piece mid-motion can't be (re)selected as a new move's source - its cell
 # is already committed elsewhere. Resting/airborne pieces stay selectable:
 # selecting one doesn't fail by itself, only a subsequent move/jump request
-# against it does (see move_availability/jump_availability above).
+# against it does (see move_availability/jump_availability above). Checked
+# against IDLE directly, not "!= MOVING" - a piece read straight off the
+# board is always IDLE or MOVING (see _MOVE_AVAILABILITY's own comment on
+# why CAPTURED never reaches here), so this stays correct even if some
+# future caller passes CAPTURED in directly instead of through the board.
 def is_selectable(state: str) -> bool:
-    return state != MOVING
+    return state == IDLE
 
 
 # Single source of truth for board notation: which one-letter token stands
