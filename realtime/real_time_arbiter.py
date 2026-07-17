@@ -333,6 +333,7 @@ class RealTimeArbiter:
         self._board.remove_piece(motion.source)
         self._board.remove_piece(cell)
         self._mark_captured(occupant)
+        self._clear_pending_rests(occupant)
         self._board.add_piece(cell, motion.piece)
         self._promotion_rule.promote(motion.piece, self._board.height)
         self._start_long_rest(motion.piece)

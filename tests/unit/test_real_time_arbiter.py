@@ -460,6 +460,34 @@ def test_a_faster_enemy_piece_lands_in_a_slower_motions_path_and_intercepts_it_i
     assert ArrivalEvent(piece=white_rook, captured_piece=black_rook) in events
 
 
+def test_an_intercepted_piece_captured_right_after_landing_does_not_leave_a_stale_rest_entry():
+    # Same setup as the interception test above, but black_rook is captured
+    # via _intercept_motion (mid-flight interception) rather than
+    # _resolve_arrival's own direct-arrival capture branch - the same
+    # "resting gives no protection against capture" invariant
+    # (_clear_pending_rests) has to hold on both paths, not just the direct
+    # one already covered by
+    # test_a_piece_captured_while_resting_does_not_get_resurrected_when_its_stale_rest_timer_expires.
+    board = parse("wR . . . . .\n. . . bR . .")
+    arbiter = RealTimeArbiter(board)
+    white_rook = board.get_piece(Position(0, 0))
+    black_rook = board.get_piece(Position(1, 3))
+
+    arbiter.start_motion(white_rook, Position(0, 0), Position(0, 5))
+    arbiter.start_motion(black_rook, Position(1, 3), Position(0, 3))
+
+    arbiter.advance_time(5 * CELL_DURATION_MS + 100)
+
+    assert black_rook.state == CAPTURED
+    # No public accessor reports individual rest entries (only
+    # is_in_cooldown() for a live piece still on the board) - the whole
+    # point of _clear_pending_rests is that a captured piece leaves no
+    # trace here at all, so this has to look at the arbiter's own
+    # bookkeeping directly.
+    assert all(rest.piece is not black_rook for rest in arbiter._long_rests)
+    assert all(rest.piece is not black_rook for rest in arbiter._short_rests)
+
+
 def test_a_faster_enemy_piece_lands_in_a_slower_motions_path_in_a_small_tick_loop():
     # Same scenario as above, but driven by a real per-frame-sized loop
     # instead of one coarse wait - the realistic path for interactive play.
