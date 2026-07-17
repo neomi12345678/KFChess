@@ -10,7 +10,7 @@ def test_game_observer_default_hooks_are_no_ops_a_bare_instance_can_receive():
     observer = GameObserver()
     piece = Piece(id="p1", color=WHITE, kind=PAWN, cell=Position(0, 0))
     event = MoveLoggedEvent(
-        color=WHITE, kind=PAWN, source=Position(1, 0), destination=Position(0, 0),
+        piece_id="p1", color=WHITE, kind=PAWN, source=Position(1, 0), destination=Position(0, 0),
         is_capture=False, is_jump=False, elapsed_ms=0,
     )
 

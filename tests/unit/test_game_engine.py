@@ -4,6 +4,7 @@ import pytest
 
 from engine.game_engine import GameEngine
 from boardio.board_parser import parse
+from events.observers import MoveLogObserver
 from logic_config import (
     AIRBORNE_BASE_DURATION_MS,
     AIRBORNE_DURATION_MULTIPLIER,
@@ -619,6 +620,33 @@ def test_wait_notifies_observers_of_a_captures_event_with_the_captured_piece():
 
     [event] = observer.arrivals
     assert event.captured_piece.kind == PAWN
+
+
+def test_move_log_reflects_where_a_move_actually_lands_after_a_mid_flight_interception():
+    # End-to-end version of events/observers.py's own
+    # test_move_log_observer_corrects_a_moves_notation_once_it_actually_lands_short_and_captures -
+    # driven through the real request_move/wait pipeline (matching
+    # test_real_time_arbiter.py's own
+    # test_a_faster_enemy_piece_lands_in_a_slower_motions_path_and_intercepts_it_in_one_big_tick),
+    # to prove GameEngine/RealTimeArbiter actually thread a real piece id
+    # through far enough for MoveLogObserver to reconcile it.
+    board, engine, arbiter = make_engine("wR . . . . .\n. . . bR . .")
+    move_log = MoveLogObserver(board_height=board.height)
+    engine.add_observer(move_log)
+
+    engine.request_move(Position(0, 0), Position(0, 5))  # white: requests 5 cells
+    engine.request_move(Position(1, 3), Position(0, 3))  # black: 1 cell, lands in white's path
+
+    engine.wait(5 * CELL_DURATION_MS + 100)
+
+    # White never reached its requested f-file square - it captured black
+    # three cells in and stopped there instead (see RealTimeArbiter's own
+    # test above for the full mechanics).
+    assert [entry.notation for entry in move_log.entries_for(WHITE)] == ["Rxd2"]
+    # Black's own move had already genuinely completed (landed, no capture)
+    # before white's interception reached it a moment later - that earlier,
+    # accurate entry is untouched, not dropped as if it never happened.
+    assert [entry.notation for entry in move_log.entries_for(BLACK)] == ["Rd2"]
 
 
 def test_multiple_observers_are_all_notified_of_the_same_move():

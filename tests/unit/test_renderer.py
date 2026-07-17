@@ -142,8 +142,9 @@ def test_renderer_draws_player_names_and_score_from_the_given_observers():
     assert "Score: 1" in canvas.texts
 
 
-def _pawn_move_event(color, source, destination, elapsed_ms=0):
+def _pawn_move_event(color, source, destination, elapsed_ms=0, piece_id="mover"):
     return MoveLoggedEvent(
+        piece_id=piece_id,
         color=color,
         kind=PAWN,
         source=source,

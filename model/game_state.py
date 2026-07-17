@@ -48,6 +48,16 @@ class MoveLoggedEvent:
     start_jump) - destination is set equal to source for a jump, so this
     stays a single uniform shape instead of an Optional field only one of
     the two call sites ever leaves unset.
+
+    destination/is_capture are only a request-time guess for a move (never
+    for a jump, which is already final the instant it's requested) - a
+    route conflict or a mid-flight interception (see RealTimeArbiter's
+    plan_route/_intercept_motion) can still shorten where the piece actually
+    lands or turn a quiet move into a capture. piece_id is carried only so
+    a later ArrivalEvent for the same identity can be matched back to
+    correct that guess (see events/observers.py's MoveLogObserver) - a raw
+    identity fact, not a notation concept, so this stays true to this
+    event's own "no display text" rule above.
     """
 
     color: str
@@ -57,6 +67,7 @@ class MoveLoggedEvent:
     is_capture: bool
     is_jump: bool
     elapsed_ms: int
+    piece_id: str
 
 
 # A GameEngine notifies every registered GameObserver of these two hooks -

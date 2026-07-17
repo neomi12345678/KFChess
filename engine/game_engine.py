@@ -124,6 +124,7 @@ class GameEngine:
             return MoveResult(is_accepted=False, reason="route_conflict")
 
         self._notify_move(
+            piece_id=piece.id,
             color=piece.color,
             kind=piece.kind,
             source=source,
@@ -163,6 +164,7 @@ class GameEngine:
         # piece's own current cell stands in for both source and
         # destination in the event this produces.
         self._notify_move(
+            piece_id=piece.id,
             color=piece.color,
             kind=piece.kind,
             source=position,
@@ -186,9 +188,18 @@ class GameEngine:
                 self.game_over = True
 
     def _notify_move(
-        self, *, color: str, kind: str, source: Position, destination: Position, is_capture: bool, is_jump: bool
+        self,
+        *,
+        piece_id: str,
+        color: str,
+        kind: str,
+        source: Position,
+        destination: Position,
+        is_capture: bool,
+        is_jump: bool,
     ) -> None:
         event = MoveLoggedEvent(
+            piece_id=piece_id,
             color=color,
             kind=kind,
             source=source,

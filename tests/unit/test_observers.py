@@ -8,8 +8,12 @@ def make_piece(color, kind, row=0, col=0):
     return Piece(id=f"{color}-{kind}-{row}{col}", color=color, kind=kind, cell=Position(row, col))
 
 
-def make_move_event(color, kind=PAWN, source=Position(1, 1), destination=Position(0, 1), is_capture=False, elapsed_ms=0):
+def make_move_event(
+    color, kind=PAWN, source=Position(1, 1), destination=Position(0, 1), is_capture=False, elapsed_ms=0,
+    piece_id="mover",
+):
     return MoveLoggedEvent(
+        piece_id=piece_id,
         color=color,
         kind=kind,
         source=source,
@@ -56,6 +60,7 @@ def test_move_log_observer_builds_a_capture_notation():
 def test_move_log_observer_builds_jump_notation_with_no_destination_travel():
     observer = MoveLogObserver(board_height=8)
     event = MoveLoggedEvent(
+        piece_id="king",
         color=WHITE,
         kind=KING,
         source=Position(4, 4),
@@ -69,6 +74,75 @@ def test_move_log_observer_builds_jump_notation_with_no_destination_travel():
 
     [entry] = observer.entries_for(WHITE)
     assert entry.notation == "Ke4^"
+
+
+def test_move_log_observer_corrects_a_moves_notation_once_it_actually_lands_short_and_captures():
+    # A route conflict or a mid-flight interception (see
+    # RealTimeArbiter.plan_route/_intercept_motion) can leave a piece
+    # landing somewhere other than its originally requested destination,
+    # turning a quiet move into a capture - on_move_logged alone can't know
+    # that yet (see MoveLoggedEvent's own docstring), only the later
+    # on_arrival tells the truth.
+    observer = MoveLogObserver(board_height=8)
+    mover = make_piece(WHITE, ROOK, row=4, col=0)
+    victim = make_piece(BLACK, PAWN, row=4, col=3)
+
+    observer.on_move_logged(
+        make_move_event(
+            WHITE, kind=ROOK, source=Position(4, 0), destination=Position(4, 5), piece_id=mover.id,
+        )
+    )
+    assert [entry.notation for entry in observer.entries_for(WHITE)] == ["Rf4"]
+
+    mover.cell = Position(4, 3)  # where it actually stopped, not the requested (4, 5)
+    observer.on_arrival(ArrivalEvent(piece=mover, captured_piece=victim))
+
+    # Still a single entry - patched in place, not appended a second time.
+    [entry] = observer.entries_for(WHITE)
+    assert entry.notation == "Rxd4"
+
+
+def test_move_log_observer_drops_a_pending_moves_entry_if_its_own_piece_is_captured_before_arriving():
+    # RealTimeArbiter._resolve_arrival's reversed-capture defense: an
+    # airborne piece can survive and capture the very attacker that was
+    # mid-flight toward it, so the attacker's own requested move never
+    # actually completes - it shouldn't leave a phantom "moved to X" line
+    # behind for an action that never happened.
+    observer = MoveLogObserver(board_height=8)
+    attacker = make_piece(WHITE, ROOK, row=4, col=0)
+    defender = make_piece(BLACK, KNIGHT, row=4, col=5)
+
+    observer.on_move_logged(
+        make_move_event(
+            WHITE, kind=ROOK, source=Position(4, 0), destination=Position(4, 5), piece_id=attacker.id,
+        )
+    )
+    assert len(observer.entries_for(WHITE)) == 1
+
+    observer.on_arrival(ArrivalEvent(piece=defender, captured_piece=attacker))
+
+    assert observer.entries_for(WHITE) == []
+
+
+def test_move_log_observer_leaves_an_already_resolved_victims_own_entry_alone():
+    # The captured piece in a normal (non-reversed) capture already landed
+    # and completed its own, separate move earlier - event.captured_piece
+    # here is not "still pending" the way the reversed-capture-defense
+    # victim above is, so its own already-correct entry must survive.
+    observer = MoveLogObserver(board_height=8)
+    victim = make_piece(BLACK, PAWN, row=4, col=3)
+    observer.on_move_logged(
+        make_move_event(
+            BLACK, kind=PAWN, source=Position(3, 3), destination=Position(4, 3), piece_id=victim.id,
+        )
+    )
+    observer.on_arrival(ArrivalEvent(piece=victim, captured_piece=None))  # victim's own arrival resolves first
+    assert len(observer.entries_for(BLACK)) == 1
+
+    attacker = make_piece(WHITE, ROOK, row=4, col=0)
+    observer.on_arrival(ArrivalEvent(piece=attacker, captured_piece=victim))
+
+    assert len(observer.entries_for(BLACK)) == 1
 
 
 def test_move_log_observer_records_the_events_elapsed_time():
