@@ -32,6 +32,16 @@ class JumpResult:
 class ArrivalEvent:
     piece: PieceRepresentation
     captured_piece: Optional[PieceRepresentation]
+    # False for a capture resolved while `piece` itself is still mid-flight
+    # (see RealTimeArbiter._capture_blocked_mover and the opposite-color
+    # branch of _intercept_motion): whoever had right of way keeps flying
+    # toward its own original destination instead of stopping at the
+    # collision, so `piece.cell`/`piece.state` at the moment of this event
+    # do not yet reflect where it actually ends up - a later ArrivalEvent
+    # for the same piece, with has_landed True, reports that once it's
+    # actually known. True for every other capture/arrival, where `piece`
+    # really has just settled at its current cell.
+    has_landed: bool = True
 
 
 @dataclass(frozen=True)

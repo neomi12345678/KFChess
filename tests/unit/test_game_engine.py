@@ -146,13 +146,51 @@ def test_request_move_is_rejected_when_it_would_cross_an_active_opposing_motion(
     assert second.is_accepted is False
     assert second.reason == "route_conflict"
 
+    # White had right of way (already moving first) - black is captured
+    # immediately for trying to cross its path, not left alive to be
+    # captured later on arrival.
+    assert black_rook.state == CAPTURED
+    assert board.get_piece(Position(0, 3)) is None
+
     engine.wait(3000)
 
-    # White's motion is untouched by the rejected request and captures
-    # black normally on arrival - black never left its square.
+    # White's motion is untouched by the rejected request and lands on the
+    # now-empty cell black used to occupy.
     assert board.get_piece(Position(0, 3)) is white_rook
     assert board.get_piece(Position(0, 0)) is None
     assert black_rook.state == CAPTURED
+
+
+def test_request_move_route_conflict_capture_notifies_observers_immediately():
+    board, engine, arbiter = make_engine("wR . . bR")
+    white_rook = board.get_piece(Position(0, 0))
+    black_rook = board.get_piece(Position(0, 3))
+    observer = RecordingObserver()
+    engine.add_observer(observer)
+
+    engine.request_move(Position(0, 0), Position(0, 3))
+    engine.request_move(Position(0, 3), Position(0, 0))
+
+    # Reported the moment the conflict resolves, not deferred until white's
+    # motion later completes on wait() - white itself hasn't landed yet.
+    assert observer.arrivals == [
+        ArrivalEvent(piece=white_rook, captured_piece=black_rook, has_landed=False)
+    ]
+
+
+def test_request_move_route_conflict_capture_of_a_king_ends_the_game_immediately():
+    # Black king starts off white rook's row entirely - its own one-square
+    # move is what steps into the rook's already-active path, so this isn't
+    # just a blocked slide (a king in the rook's own path would make the
+    # first move itself illegal, not a route conflict).
+    board, engine, arbiter = make_engine("wR . . .\n. bK . .")
+
+    engine.request_move(Position(0, 0), Position(0, 3))
+    engine.request_move(Position(1, 1), Position(0, 1))
+
+    # No need to wait() for white's motion to land - the king already died
+    # at request time, the instant it tried to cross white's active path.
+    assert engine.game_over is True
 
 
 def test_request_move_stops_a_same_color_piece_one_cell_short_of_a_crossing_path():
@@ -639,10 +677,16 @@ def test_move_log_reflects_where_a_move_actually_lands_after_a_mid_flight_interc
 
     engine.wait(5 * CELL_DURATION_MS + 100)
 
-    # White never reached its requested f-file square - it captured black
-    # three cells in and stopped there instead (see RealTimeArbiter's own
-    # test above for the full mechanics).
-    assert [entry.notation for entry in move_log.entries_for(WHITE)] == ["Rxd2"]
+    # White reaches its originally requested f-file square after all -
+    # capturing black three cells in no longer stops it there (see
+    # RealTimeArbiter's own test above for the full mechanics). The mid-
+    # flight capture event has has_landed=False, so MoveLogObserver leaves
+    # the entry pending until white's own later, genuine arrival - which
+    # finds nothing left at (0, 5) to capture, so the notation shows the
+    # true final destination without an "x" (a known simplification: this
+    # display-only notation has no way to also mark a capture that happened
+    # partway through a move that didn't end there).
+    assert [entry.notation for entry in move_log.entries_for(WHITE)] == ["Rf2"]
     # Black's own move had already genuinely completed (landed, no capture)
     # before white's interception reached it a moment later - that earlier,
     # accurate entry is untouched, not dropped as if it never happened.

@@ -90,15 +90,23 @@ class MoveLogObserver(GameObserver):
     # conflict/interception that changes where a piece actually lands is
     # still matched back to the right entry.
     def on_arrival(self, event: ArrivalEvent) -> None:
-        pending = self._pending_by_piece_id.pop(event.piece.id, None)
-        if pending is not None:
-            pending.entry.notation = move_notation(
-                pending.kind,
-                pending.source,
-                event.piece.cell,
-                self._board_height,
-                is_capture=event.captured_piece is not None,
-            )
+        # A mid-flight capture where event.piece keeps flying toward its own
+        # farther destination instead of landing here (see ArrivalEvent's
+        # own has_landed docstring) - event.piece.cell is still wherever it
+        # started from, not where this move will actually end up, so
+        # reconciling now would freeze the wrong (or a stale, later-
+        # overwritten) notation. Leave it pending; a later ArrivalEvent for
+        # the same piece, once it truly lands, corrects it then.
+        if event.has_landed:
+            pending = self._pending_by_piece_id.pop(event.piece.id, None)
+            if pending is not None:
+                pending.entry.notation = move_notation(
+                    pending.kind,
+                    pending.source,
+                    event.piece.cell,
+                    self._board_height,
+                    is_capture=event.captured_piece is not None,
+                )
 
         if event.captured_piece is None:
             return

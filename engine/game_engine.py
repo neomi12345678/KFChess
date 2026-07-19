@@ -1,7 +1,7 @@
 from typing import List, Optional
 
 from model.board import BoardRepresentation
-from model.game_state import GameObserver, GameSnapshot, JumpResult, MoveLoggedEvent, MoveResult, PieceSnapshot
+from model.game_state import ArrivalEvent, GameObserver, GameSnapshot, JumpResult, MoveLoggedEvent, MoveResult, PieceSnapshot
 from model.piece import (
     PHASE_IDLE,
     PHASE_JUMP,
@@ -120,7 +120,14 @@ class GameEngine:
 
         # start_motion may shorten or refuse this move if it collides with
         # an in-flight motion - piece.state is already IDLE here.
-        if not self._real_time_arbiter.start_motion(piece, source, destination):
+        started = self._real_time_arbiter.start_motion(piece, source, destination)
+        # A crossing-an-active-enemy-path rejection captures the rejected
+        # piece on the spot (see RealTimeArbiter._capture_blocked_mover) -
+        # that capture never goes through advance_time/wait(), so it has to
+        # be drained and reported here instead, win condition included,
+        # regardless of whether started ended up True or False.
+        self._handle_arrival_events(self._real_time_arbiter.take_pending_events())
+        if not started:
             return MoveResult(is_accepted=False, reason="route_conflict")
 
         self._notify_move(
@@ -180,7 +187,13 @@ class GameEngine:
 
         # advance_time may resolve several arrivals in one call (concurrent
         # motions can complete on the same tick) - check every one of them.
-        events = self._real_time_arbiter.advance_time(ms)
+        self._handle_arrival_events(self._real_time_arbiter.advance_time(ms))
+
+    # Shared by wait() (advance_time's own arrivals) and request_move (a
+    # route-conflict capture resolved synchronously by start_motion) - both
+    # report to observers and check the win condition identically, so
+    # there's exactly one place that does either.
+    def _handle_arrival_events(self, events: List[ArrivalEvent]) -> None:
         for event in events:
             for observer in self._observers:
                 observer.on_arrival(event)

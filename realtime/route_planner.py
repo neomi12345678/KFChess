@@ -24,6 +24,13 @@ class RoutePlan:
     destination: Position
     # True if this move must be rejected outright instead of starting it.
     is_blocked: bool
+    # The already-active enemy piece this request collided with, set only
+    # when is_blocked is True *because* of an opposing-color conflict (never
+    # for the same-color "no safe cell" case) - RealTimeArbiter.start_motion
+    # uses this to capture the rejected mover in place: whoever started
+    # moving first has right of way and wins the collision outright, not
+    # just a free pass to keep flying while the loser survives untouched.
+    blocking_enemy: Optional[PieceRepresentation] = None
 
 
 # The nearest open cell backing away from destination toward source - used
@@ -49,10 +56,12 @@ def retreat_cell(board: BoardRepresentation, source: Position, destination: Posi
 
 # Whoever is already moving has right of way: a new move that would cross
 # an opposing color's active path is rejected outright, and the active
-# motion continues untouched to its own original destination - it captures
-# normally on arrival if the piece that tried to cross it never moved. A
-# same-color conflict isn't a rejection, just a race - the new mover stops
-# one cell short instead of overwriting a teammate.
+# motion continues untouched to its own original destination -
+# RealTimeArbiter.start_motion uses blocking_enemy to capture the rejected
+# mover on the spot, since it lost the race by trying to cross a path an
+# enemy already committed to first. A same-color conflict isn't a
+# rejection, just a race - the new mover stops one cell short instead of
+# overwriting a teammate, and is never captured for it.
 def plan_route(
     active_motions: List[Motion], piece: PieceRepresentation, source: Position, destination: Position
 ) -> RoutePlan:
@@ -80,7 +89,7 @@ def plan_route(
         return RoutePlan(destination=destination, is_blocked=False)
 
     if blocking_motion.piece.color != piece.color:
-        return RoutePlan(destination=source, is_blocked=True)
+        return RoutePlan(destination=source, is_blocked=True, blocking_enemy=blocking_motion.piece)
 
     row_step = _sign(destination.row - source.row)
     col_step = _sign(destination.col - source.col)

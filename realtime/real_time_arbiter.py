@@ -1,9 +1,11 @@
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from logic_config import (
     AIRBORNE_BASE_DURATION_MS,
     AIRBORNE_DURATION_MULTIPLIER,
     LONG_REST_BASE_DURATION_MS,
+    MOVE_CELL_DURATION_MS,
     REST_DURATION_MULTIPLIER,
     SHORT_REST_BASE_DURATION_MS,
 )
@@ -23,6 +25,19 @@ from realtime.route_planner import RoutePlan, plan_route, retreat_cell
 from rules.rule_engine import LastRankPromotion, PromotionRule
 
 
+# A capture scheduled for the future, not resolved the instant it's
+# discovered - see _intercept_motion's opposite-color branch. motion keeps
+# flying untouched; whatever is standing on `cell` only actually dies once
+# motion's own elapsed_ms genuinely reaches it, matching how far its sprite
+# has visually gotten instead of vanishing the moment the game logic merely
+# predicts the collision.
+@dataclass
+class _PendingInterception:
+    motion: Motion
+    cell: Position
+    trigger_elapsed_ms: int
+
+
 class RealTimeArbiter:
     def __init__(self, board: BoardRepresentation, promotion_rule: Optional[PromotionRule] = None):
         self._board = board
@@ -31,6 +46,13 @@ class RealTimeArbiter:
         self._airborne_states: List[TimedState] = []
         self._short_rests: List[TimedState] = []
         self._long_rests: List[TimedState] = []
+        # Captures resolved synchronously inside start_motion (see
+        # blocking_enemy below) - unlike every other capture, there's no
+        # advance_time tick to hand the resulting ArrivalEvent back through,
+        # so callers (GameEngine.request_move) pull them via
+        # take_pending_events() right after calling start_motion.
+        self._pending_events: List[ArrivalEvent] = []
+        self._pending_interceptions: List[_PendingInterception] = []
 
     def has_active_motion(self) -> bool:
         return len(self._active_motions) > 0
@@ -72,11 +94,38 @@ class RealTimeArbiter:
 
         plan = self.plan_route(piece, source, destination)
         if plan.is_blocked:
+            if plan.blocking_enemy is not None:
+                self._capture_blocked_mover(loser=piece, loser_cell=source, winner=plan.blocking_enemy)
             return False
 
         self._active_motions.append(Motion(piece=piece, source=source, destination=plan.destination))
         piece.state = MOVING
         return True
+
+    # The already-moving enemy (winner) had right of way over this cell/path
+    # first - loser tried to cross it later and loses outright, captured on
+    # the spot at its own current cell instead of merely being denied the
+    # move. winner's own motion is left completely untouched here - it was
+    # never diverted or stopped, so nothing about it needs updating. winner
+    # is typically still mid-flight itself at this instant (its own motion
+    # hasn't completed yet), so has_landed=False - see ArrivalEvent.
+    def _capture_blocked_mover(self, loser: PieceRepresentation, loser_cell: Position, winner: PieceRepresentation) -> None:
+        self._board.remove_piece(loser_cell)
+        self._mark_captured(loser)
+        self._clear_pending_rests(loser)
+        self._clear_pending_motion(loser)
+        self._pending_events.append(ArrivalEvent(piece=winner, captured_piece=loser, has_landed=False))
+
+    # Drains captures resolved synchronously by start_motion (see
+    # _capture_blocked_mover) - called by GameEngine.request_move right
+    # after start_motion, regardless of whether it returned True or False,
+    # so a capture that happens on an otherwise-rejected request still
+    # reaches observers and the win condition the same way any other
+    # ArrivalEvent does.
+    def take_pending_events(self) -> List[ArrivalEvent]:
+        events = self._pending_events
+        self._pending_events = []
+        return events
 
     def start_jump(self, piece: PieceRepresentation) -> bool:
         if not jump_availability(piece.state).allowed:
@@ -131,6 +180,14 @@ class RealTimeArbiter:
             events.append(event)
             if landed_cell is not None:
                 events.extend(self._intercept_motions_crossing(landed_cell, ms, completion_offset_ms))
+
+        # Anything scheduled above (this tick or an earlier one) whose
+        # trigger has now genuinely been reached - checked after this
+        # tick's own new obstacles are already scheduled, so a single
+        # coarse wait() spanning both "obstacle lands" and "attacker's own
+        # flight reaches it" still resolves at the right elapsed_ms instead
+        # of missing it until some future call.
+        events.extend(self._resolve_due_interceptions())
 
         expired_airborne_states = []
         for airborne in self._airborne_states:
@@ -306,22 +363,36 @@ class RealTimeArbiter:
     # Opposite color means motion.piece - already flying toward or through
     # this cell before occupant ever landed there - has right of way (see
     # plan_route's own docstring: "whoever is already moving has right of
-    # way"), exactly like every other capture in this game: the piece that
-    # arrives at an occupied enemy square is the one that survives and
-    # settles there, the occupant is the one removed (see rules.
-    # piece_rules._slide's "capture and stop", and _resolve_arrival's own
-    # generic capture branch) - not the reverse. motion.piece settles at
-    # `cell` itself, not its own farther, originally-requested destination,
-    # earning the same promotion check and long_rest a normal arrival does.
+    # way"), exactly like the request-time equivalent in start_motion's own
+    # _capture_blocked_mover. But occupant doesn't die the instant this is
+    # merely predicted - it's only genuinely in motion.piece's way once
+    # motion.piece's own elapsed_ms actually reaches `cell`, matching where
+    # its sprite has really gotten to, not the moment the game logic
+    # happens to notice the future collision (which, for a still-distant
+    # `cell`, can be far earlier). So this only schedules the capture (see
+    # _resolve_due_interceptions, checked every advance_time tick) instead
+    # of resolving it here - motion.piece itself is left completely
+    # untouched either way, still flying toward its own farther, originally
+    # -requested destination, not diverted to settle at `cell`. If `cell`
+    # happens to equal motion's own destination, no scheduling is needed at
+    # all: _resolve_arrival already checks for (and captures) whatever's
+    # standing at a motion's own destination the moment it naturally
+    # arrives - the exact same "wait until it's really there" behavior,
+    # for free.
     #
-    # ms/completion_offset_ms are threaded through unchanged in both
-    # branches - a domino this triggers happens at the exact same simulated
-    # instant as the trigger that caused it, not later in the tick.
+    # ms/completion_offset_ms are still threaded through to the same-color
+    # branch's own domino - a cascade that branch triggers happens at the
+    # exact same simulated instant as the trigger that caused it, not later
+    # in the tick.
     def _intercept_motion(self, motion: Motion, cell: Position, ms: int, completion_offset_ms: int) -> List[ArrivalEvent]:
-        self._active_motions.remove(motion)
+        # landed_cell is always freshly occupied here - either by whatever
+        # _resolve_arrival (or this same method's own same-color branch,
+        # below) just placed there, immediately before this call - so
+        # there's always a real occupant to check against.
         occupant = self._board.get_piece(cell)
 
         if occupant.color == motion.piece.color:
+            self._active_motions.remove(motion)
             fallback = retreat_cell(self._board, motion.source, cell)
             self._board.remove_piece(motion.source)
             self._board.add_piece(fallback, motion.piece)
@@ -330,13 +401,66 @@ class RealTimeArbiter:
             events.extend(self._intercept_motions_crossing(fallback, ms, completion_offset_ms))
             return events
 
-        self._board.remove_piece(motion.source)
-        self._board.remove_piece(cell)
-        self._mark_captured(occupant)
-        self._clear_pending_rests(occupant)
-        self._board.add_piece(cell, motion.piece)
-        self._promotion_rule.promote(motion.piece, self._board.height)
-        self._start_long_rest(motion.piece)
-        events = [ArrivalEvent(piece=motion.piece, captured_piece=occupant)]
-        events.extend(self._intercept_motions_crossing(cell, ms, completion_offset_ms))
+        if cell == motion.destination:
+            return []
+
+        self._schedule_interception(motion, cell)
+        return []
+
+    def _elapsed_ms_to_reach(self, motion: Motion, cell: Position) -> int:
+        cell_index = max(abs(cell.row - motion.source.row), abs(cell.col - motion.source.col))
+        return cell_index * MOVE_CELL_DURATION_MS
+
+    def _schedule_interception(self, motion: Motion, cell: Position) -> None:
+        trigger_elapsed_ms = self._elapsed_ms_to_reach(motion, cell)
+        already_scheduled = any(
+            pending.motion is motion and pending.cell == cell for pending in self._pending_interceptions
+        )
+        if not already_scheduled:
+            self._pending_interceptions.append(
+                _PendingInterception(motion=motion, cell=cell, trigger_elapsed_ms=trigger_elapsed_ms)
+            )
+
+    # Resolves every scheduled interception (see _schedule_interception)
+    # whose trigger has actually been reached - called once per
+    # advance_time tick, after that same tick's own new obstacles have
+    # already had their own chance to schedule, so a single coarse wait()
+    # spanning both "obstacle lands" and "attacker's own flight reaches it"
+    # still resolves at the right elapsed_ms instead of only catching up on
+    # some later tick. Sorted by trigger so a shared cell's earliest claim
+    # wins deterministically, same tie-break spirit as completed_motions'
+    # own chronological sort.
+    def _resolve_due_interceptions(self) -> List[ArrivalEvent]:
+        due = sorted(
+            (
+                pending
+                for pending in self._pending_interceptions
+                if pending.motion.elapsed_ms >= pending.trigger_elapsed_ms
+            ),
+            key=lambda pending: pending.trigger_elapsed_ms,
+        )
+        events: List[ArrivalEvent] = []
+        for pending in due:
+            self._pending_interceptions.remove(pending)
+
+            # motion.piece was itself captured before ever genuinely
+            # reaching `cell` (e.g. run over by an earlier interception, or
+            # blocked at request time) - it never actually got there, so
+            # there's nothing left to enforce. Landing normally (state
+            # IDLE) does NOT cancel this: elapsed_ms already proves motion
+            # passed through `cell` before it landed, chronologically
+            # earlier than its own arrival regardless of processing order
+            # within this tick.
+            if pending.motion.piece.state == CAPTURED:
+                continue
+
+            occupant = self._board.get_piece(pending.cell)
+            if occupant is None or occupant.color == pending.motion.piece.color:
+                continue
+
+            self._board.remove_piece(pending.cell)
+            self._mark_captured(occupant)
+            self._clear_pending_rests(occupant)
+            self._clear_pending_motion(occupant)
+            events.append(ArrivalEvent(piece=pending.motion.piece, captured_piece=occupant, has_landed=False))
         return events
