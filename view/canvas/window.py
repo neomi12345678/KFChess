@@ -93,5 +93,11 @@ class GameWindow:  # pragma: no cover
             return False
         return True
 
+    # If the user already closed the window via its own [X] button (not
+    # Esc), cv2 already destroyed it internally - show() already treats
+    # that same getWindowProperty check as "gone" (see above); calling
+    # destroyWindow again on an already-gone window raises a NULL window
+    # cv2.error, so this must check first rather than destroy unconditionally.
     def close(self) -> None:
-        cv2.destroyWindow(self._title)
+        if cv2.getWindowProperty(self._title, cv2.WND_PROP_VISIBLE) >= 1:
+            cv2.destroyWindow(self._title)
