@@ -98,6 +98,37 @@ def test_renderer_shows_game_over_message():
     assert canvas.texts == ["Game Over"]
 
 
+def test_renderer_draws_a_status_message_when_given_one():
+    board, engine = make_engine("wK . .\n. . .\n. . .")
+    snapshot = engine.snapshot()
+    canvas = FakeCanvas()
+
+    Renderer(canvas).draw(snapshot, status_message="Opponent disconnected - resigning in 5s unless they return")
+
+    assert "Opponent disconnected - resigning in 5s unless they return" in canvas.texts
+
+
+def test_renderer_draws_no_status_message_by_default():
+    board, engine = make_engine("wK . .\n. . .\n. . .")
+    snapshot = engine.snapshot()
+    canvas = FakeCanvas()
+
+    Renderer(canvas).draw(snapshot)
+
+    assert canvas.texts == []
+
+
+def test_renderer_draws_game_over_and_status_message_on_separate_lines():
+    board, engine = make_engine("wK . .\n. . .\n. . .")
+    engine.game_over = True
+    snapshot = engine.snapshot()
+    canvas = FakeCanvas()
+
+    Renderer(canvas).draw(snapshot, status_message="Opponent disconnected - resigning in 0s unless they return")
+
+    assert canvas.texts == ["Game Over", "Opponent disconnected - resigning in 0s unless they return"]
+
+
 def test_renderer_draws_no_panel_text_when_side_panels_are_not_configured():
     # side_panel_width_px defaults to 0 - a Renderer that never asked for
     # panels must behave exactly as it did before panels existed, even if

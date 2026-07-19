@@ -42,12 +42,21 @@ class Renderer:
         self._max_visible_moves = max_visible_moves
         self._cell_size = cell_size
 
-    def draw(self, snapshot: GameSnapshot) -> None:
+    # status_message is a one-line overlay for transient state the snapshot
+    # itself carries no field for (e.g. play_online.py's own opponent-
+    # disconnect countdown) - drawn below "Game Over" rather than instead of
+    # it, since a disconnect countdown that just crossed into a resignation
+    # can legitimately show both on the same frame.
+    def draw(self, snapshot: GameSnapshot, status_message: Optional[str] = None) -> None:
         self._draw_grid(snapshot)
         self._draw_pieces(snapshot)
         self._draw_selection(snapshot)
+        next_overlay_y = 0
         if snapshot.game_over:
-            self._canvas.draw_text("Game Over", x=self._side_panel_width_px, y=0)
+            self._canvas.draw_text("Game Over", x=self._side_panel_width_px, y=next_overlay_y)
+            next_overlay_y += _PANEL_LINE_HEIGHT_PX
+        if status_message:
+            self._canvas.draw_text(status_message, x=self._side_panel_width_px, y=next_overlay_y)
         self._draw_side_panels(snapshot)
 
     def _draw_grid(self, snapshot: GameSnapshot) -> None:
