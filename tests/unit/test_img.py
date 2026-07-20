@@ -61,14 +61,25 @@ def test_draw_on_converts_a_3_channel_source_to_match_a_4_channel_target():
     assert source.img.shape[2] == 4
 
 
-def test_draw_on_converts_a_4_channel_source_to_match_a_3_channel_target():
+def test_draw_on_converts_a_3_channel_target_to_match_a_4_channel_source():
     source = make_img(4, 4, 4)
     source.img[:, :, 3] = 255
     target = make_img(10, 10, 3)
 
     source.draw_on(target, 2, 2)
 
-    assert source.img.shape[2] == 3
+    assert target.img.shape[2] == 4
+
+
+def test_draw_on_preserves_source_transparency_against_a_3_channel_target():
+    source = make_img(2, 2, 4)
+    source.img[:, :] = (10, 20, 30, 0)  # fully transparent
+    target = make_img(4, 4, 3)
+    target.img[:, :] = (100, 110, 120)
+
+    source.draw_on(target, 1, 1)
+
+    assert np.array_equal(target.img[1:3, 1:3, :3], np.full((2, 2, 3), (100, 110, 120), dtype=np.uint8))
 
 
 def test_draw_on_raises_if_the_source_does_not_fit_at_the_given_position():
