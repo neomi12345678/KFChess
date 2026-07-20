@@ -3,6 +3,7 @@ from engine.game_engine import GameEngine
 from input.controller_builder import build_controller
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
+from view.ui_snapshot import build_ui_snapshot
 
 
 # Builds the engine + input layers for a parsed board - the one place both
@@ -33,11 +34,17 @@ def build_game(board, board_offset_x: int = 0, cell_size: int = CELL_SIZE):
 # translates them into board cells before Controller ever sees them, so
 # Controller itself never has any notion of pixels (see input/controller.py).
 class App:
-    def __init__(self, controller, game_engine, renderer, board_mapper):
+    # move_log/score default to None (no side panels), the same default
+    # view/renderer.py's Renderer used to hold itself - now App is the one
+    # place that reaches into them, once per frame, to build the UiSnapshot
+    # Renderer.draw actually consumes (see view/ui_snapshot.py).
+    def __init__(self, controller, game_engine, renderer, board_mapper, move_log=None, score=None):
         self._controller = controller
         self._game_engine = game_engine
         self._renderer = renderer
         self._board_mapper = board_mapper
+        self._move_log = move_log
+        self._score = score
 
     def on_click(self, x: int, y: int) -> None:
         self._controller.click(self._board_mapper.pixel_to_cell(x, y))
@@ -47,4 +54,5 @@ class App:
 
     def render(self) -> None:
         snapshot = self._game_engine.snapshot(selected=self._controller.selected)
-        self._renderer.draw(snapshot)
+        ui_snapshot = build_ui_snapshot(snapshot, move_log=self._move_log, score=self._score)
+        self._renderer.draw(ui_snapshot)

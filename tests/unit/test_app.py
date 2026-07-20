@@ -2,6 +2,7 @@ from app import App, build_game
 from boardio.board_parser import parse
 from input.board_mapper import BoardMapper
 from model.position import Position
+from view.ui_snapshot import build_ui_snapshot
 
 
 class SpyController:
@@ -31,8 +32,8 @@ class SpyRenderer:
     def __init__(self):
         self.drawn = []
 
-    def draw(self, snapshot):
-        self.drawn.append(snapshot)
+    def draw(self, ui_snapshot):
+        self.drawn.append(ui_snapshot)
 
 
 def test_on_click_routes_the_resolved_cell_to_controller_click():
@@ -77,7 +78,7 @@ def test_render_draws_a_snapshot_built_with_the_current_selection():
     app.render()
 
     assert game_engine.snapshot_calls == ["some-cell"]
-    assert renderer.drawn == [snapshot]
+    assert renderer.drawn == [build_ui_snapshot(snapshot)]
 
 
 def test_build_game_with_no_board_offset_selects_the_piece_at_the_raw_pixel():

@@ -32,6 +32,7 @@ from server.protocol import PanelState, snapshot_from_json
 from view.canvas.img_canvas import ImgCanvas
 from view.canvas.window import GameWindow
 from view.renderer import Renderer
+from view.ui_snapshot import build_ui_snapshot
 
 HOST = "localhost"
 PORT = 8765
@@ -114,8 +115,6 @@ def main() -> None:  # pragma: no cover
     )
     renderer = Renderer(
         canvas,
-        move_log=panel_state,
-        score=panel_state,
         player_names={WHITE: "White", BLACK: "Black"},
         side_panel_width_px=side_panel_width_px,
         cell_size=cell_size,
@@ -177,8 +176,11 @@ def main() -> None:  # pragma: no cover
         # rendering the highlight, the same role GameEngine.snapshot's own
         # selected argument plays for the local GUI (see app.py's App.render).
         display_snapshot = dataclasses.replace(latest_snapshot, selected_cell=controller.selected)
+        ui_snapshot = build_ui_snapshot(
+            display_snapshot, move_log=panel_state, score=panel_state, status_message=disconnect_countdown_text
+        )
         canvas.begin_frame()
-        renderer.draw(display_snapshot, status_message=disconnect_countdown_text)
+        renderer.draw(ui_snapshot)
         running = window.show(canvas.frame())
         time.sleep(0.01)
 

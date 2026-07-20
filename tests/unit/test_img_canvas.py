@@ -10,6 +10,7 @@ from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
 from view.renderer import Renderer
+from view.ui_snapshot import build_ui_snapshot
 
 
 def test_piece_code_covers_every_kind_and_color_and_points_at_a_real_asset_folder():
@@ -132,7 +133,7 @@ def test_renderer_and_img_canvas_integrate_end_to_end_for_a_real_snapshot():
     canvas = ImgCanvas(board_width=board.width, board_height=board.height)
     canvas.begin_frame()
 
-    Renderer(canvas).draw(engine.snapshot(selected=Position(0, 0)))
+    Renderer(canvas).draw(build_ui_snapshot(engine.snapshot(selected=Position(0, 0))))
 
     assert canvas.frame() is not None
 

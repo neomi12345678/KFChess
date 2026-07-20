@@ -78,11 +78,12 @@ def build_app(
     )
     renderer = Renderer(
         canvas,
-        move_log=move_log,
-        score=score,
         player_names={WHITE: white_name, BLACK: black_name},
         side_panel_width_px=side_panel_width_px,
         cell_size=cell_size,
     )
-    app = App(controller=controller, game_engine=game_engine, renderer=renderer, board_mapper=board_mapper)
+    app = App(
+        controller=controller, game_engine=game_engine, renderer=renderer, board_mapper=board_mapper,
+        move_log=move_log, score=score,
+    )
     return app, game_engine, canvas

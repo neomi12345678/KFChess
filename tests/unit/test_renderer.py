@@ -10,6 +10,7 @@ from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
 from events.observers import MoveLogObserver, ScoreObserver
 from view.renderer import Renderer
+from view.ui_snapshot import build_ui_snapshot
 
 
 @dataclass
@@ -47,7 +48,7 @@ def test_renderer_draws_the_board_grid_and_pieces_without_mutating_state():
     snapshot = engine.snapshot()
     canvas = FakeCanvas()
 
-    Renderer(canvas).draw(snapshot)
+    Renderer(canvas).draw(build_ui_snapshot(snapshot))
 
     assert len(canvas.rects) == 9
     assert len(canvas.images) == 2
@@ -60,7 +61,7 @@ def test_renderer_encodes_piece_id_color_kind_and_state_in_the_draw_image_key():
     snapshot = engine.snapshot()
     canvas = FakeCanvas()
 
-    Renderer(canvas).draw(snapshot)
+    Renderer(canvas).draw(build_ui_snapshot(snapshot))
 
     king = board.get_piece(Position(0, 0))
     [(key, _, _)] = canvas.images
@@ -72,7 +73,7 @@ def test_renderer_highlights_the_selected_cell():
     snapshot = engine.snapshot(selected=Position(0, 0))
     canvas = FakeCanvas()
 
-    Renderer(canvas).draw(snapshot)
+    Renderer(canvas).draw(build_ui_snapshot(snapshot))
 
     assert canvas.highlighted_cells == [(0, 0)]
 
@@ -82,7 +83,7 @@ def test_renderer_draws_no_highlight_without_a_selection():
     snapshot = engine.snapshot()
     canvas = FakeCanvas()
 
-    Renderer(canvas).draw(snapshot)
+    Renderer(canvas).draw(build_ui_snapshot(snapshot))
 
     assert canvas.highlighted_cells == []
 
@@ -93,7 +94,7 @@ def test_renderer_shows_game_over_message():
     snapshot = engine.snapshot()
     canvas = FakeCanvas()
 
-    Renderer(canvas).draw(snapshot)
+    Renderer(canvas).draw(build_ui_snapshot(snapshot))
 
     assert canvas.texts == ["Game Over"]
 
@@ -103,7 +104,9 @@ def test_renderer_draws_a_status_message_when_given_one():
     snapshot = engine.snapshot()
     canvas = FakeCanvas()
 
-    Renderer(canvas).draw(snapshot, status_message="Opponent disconnected - resigning in 5s unless they return")
+    Renderer(canvas).draw(
+        build_ui_snapshot(snapshot, status_message="Opponent disconnected - resigning in 5s unless they return")
+    )
 
     assert "Opponent disconnected - resigning in 5s unless they return" in canvas.texts
 
@@ -113,7 +116,7 @@ def test_renderer_draws_no_status_message_by_default():
     snapshot = engine.snapshot()
     canvas = FakeCanvas()
 
-    Renderer(canvas).draw(snapshot)
+    Renderer(canvas).draw(build_ui_snapshot(snapshot))
 
     assert canvas.texts == []
 
@@ -124,7 +127,9 @@ def test_renderer_draws_game_over_and_status_message_on_separate_lines():
     snapshot = engine.snapshot()
     canvas = FakeCanvas()
 
-    Renderer(canvas).draw(snapshot, status_message="Opponent disconnected - resigning in 0s unless they return")
+    Renderer(canvas).draw(
+        build_ui_snapshot(snapshot, status_message="Opponent disconnected - resigning in 0s unless they return")
+    )
 
     assert canvas.texts == ["Game Over", "Opponent disconnected - resigning in 0s unless they return"]
 
@@ -132,12 +137,13 @@ def test_renderer_draws_game_over_and_status_message_on_separate_lines():
 def test_renderer_draws_no_panel_text_when_side_panels_are_not_configured():
     # side_panel_width_px defaults to 0 - a Renderer that never asked for
     # panels must behave exactly as it did before panels existed, even if
-    # (mistakenly) given observers/names anyway.
+    # (mistakenly) given a UiSnapshot with move_log/score data anyway.
     board, engine = make_engine("wK . .\n. . .\n. . .")
     snapshot = engine.snapshot()
     canvas = FakeCanvas()
+    ui_snapshot = build_ui_snapshot(snapshot, move_log=MoveLogObserver(board_height=3), score=ScoreObserver())
 
-    Renderer(canvas, move_log=MoveLogObserver(board_height=3), score=ScoreObserver()).draw(snapshot)
+    Renderer(canvas).draw(ui_snapshot)
 
     assert canvas.texts == []
 
@@ -147,7 +153,7 @@ def test_renderer_draws_default_name_and_zero_score_when_no_observers_are_given(
     snapshot = engine.snapshot()
     canvas = FakeCanvas()
 
-    Renderer(canvas, side_panel_width_px=200).draw(snapshot)
+    Renderer(canvas, side_panel_width_px=200).draw(build_ui_snapshot(snapshot))
 
     assert "White" in canvas.texts
     assert "Black" in canvas.texts
@@ -163,10 +169,9 @@ def test_renderer_draws_player_names_and_score_from_the_given_observers():
 
     Renderer(
         canvas,
-        score=score,
         player_names={WHITE: "Musti Shusti", BLACK: "Chicko Miko"},
         side_panel_width_px=200,
-    ).draw(snapshot)
+    ).draw(build_ui_snapshot(snapshot, score=score))
 
     assert "Musti Shusti" in canvas.texts
     assert "Chicko Miko" in canvas.texts
@@ -195,7 +200,7 @@ def test_renderer_draws_move_log_entries_for_each_color_with_formatted_time():
     move_log = MoveLogObserver(board_height=8)
     move_log.on_move_logged(_pawn_move_event(WHITE, Position(6, 4), Position(4, 4), elapsed_ms=4105))
 
-    Renderer(canvas, move_log=move_log, side_panel_width_px=200).draw(snapshot)
+    Renderer(canvas, side_panel_width_px=200).draw(build_ui_snapshot(snapshot, move_log=move_log))
 
     assert "00:04.105  e4" in canvas.texts
 
@@ -208,7 +213,7 @@ def test_renderer_only_shows_the_most_recent_moves_up_to_the_configured_limit():
     for i in range(5):
         move_log.on_move_logged(_pawn_move_event(WHITE, Position(6, i), Position(4, i), elapsed_ms=i))
 
-    Renderer(canvas, move_log=move_log, side_panel_width_px=200, max_visible_moves=2).draw(snapshot)
+    Renderer(canvas, side_panel_width_px=200, max_visible_moves=2).draw(build_ui_snapshot(snapshot, move_log=move_log))
 
     shown = [text for text in canvas.texts if text.startswith("00:00.00") and len(text) > len("00:00.000")]
     assert shown == ["00:00.003  d4", "00:00.004  e4"]
@@ -222,7 +227,7 @@ def test_renderer_draws_blacks_panel_on_the_left_and_whites_on_the_right():
     move_log.on_move_logged(_pawn_move_event(BLACK, Position(1, 4), Position(3, 4)))
     move_log.on_move_logged(_pawn_move_event(WHITE, Position(6, 4), Position(4, 4)))
 
-    Renderer(canvas, move_log=move_log, side_panel_width_px=200).draw(snapshot)
+    Renderer(canvas, side_panel_width_px=200).draw(build_ui_snapshot(snapshot, move_log=move_log))
 
     black_x = dict(canvas.text_positions)["00:00.000  e5"]
     white_x = dict(canvas.text_positions)["00:00.000  e4"]
