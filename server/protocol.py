@@ -16,6 +16,16 @@ Command grammar:
     "PLAY"                  requests matchmaking (see server/matchmaking.py)
                             - no arguments, since the connection's own
                             identity/rating are already known from LOGIN.
+    "CREATE_ROOM"            opens a new room (see server/rooms.py) - no
+                            arguments; the room's id comes back in the ack,
+                            not chosen by the caller.
+    "JOIN_ROOM <id>"        joins an existing room by id - the first joiner
+                            becomes the opponent, every joiner after that a
+                            spectator (see server/rooms.py's RoomRegistry).
+    "CANCEL_ROOM"           withdraws the caller's own still-pending
+                            (no opponent yet) room - no arguments, since
+                            a connection is only ever the creator of at
+                            most one room at a time.
 where <square> is a file letter ("a".."h"-range, board-width-dependent) plus
 a rank number, the same square-name shape as boardio.algebraic_notation's
 square_name, just inverted.
@@ -124,6 +134,35 @@ def parse_login(text: str) -> Optional[LoginRequest]:
 
 def is_play_command(text: str) -> bool:
     return text.strip() == PLAY_COMMAND
+
+
+CREATE_ROOM_COMMAND = "CREATE_ROOM"
+CANCEL_ROOM_COMMAND = "CANCEL_ROOM"
+_JOIN_ROOM_PREFIX = "JOIN_ROOM "
+
+
+def is_create_room_command(text: str) -> bool:
+    return text.strip() == CREATE_ROOM_COMMAND
+
+
+def is_cancel_room_command(text: str) -> bool:
+    return text.strip() == CANCEL_ROOM_COMMAND
+
+
+# Returns the room id for a "JOIN_ROOM <id>" message, or None for any other
+# text - the same "was this one of my message shapes at all" role
+# parse_login plays for LOGIN. Still raises ProtocolError for a
+# recognized-but-empty id, rather than silently treating it as "not a
+# JOIN_ROOM message".
+def parse_join_room(text: str) -> Optional[str]:
+    if not text.startswith(_JOIN_ROOM_PREFIX):
+        return None
+
+    room_id = text[len(_JOIN_ROOM_PREFIX):].strip()
+    if not room_id:
+        raise ProtocolError("JOIN_ROOM requires a room id")
+
+    return room_id
 
 
 def _position_to_json(position: Optional[Position]) -> Optional[dict]:

@@ -1,9 +1,11 @@
 """Minimal shell client for the KFChess server: prompts for a username and
 password in the terminal (the Home screen's own "do it in a shell, not via
 GUI" login step - see server/ws_server.py's LOGIN handling, checked against
-server/accounts.py's SQLite-backed accounts), then type "play" to enter
-matchmaking and, once matched, moves by hand. A stand-in until the real GUI
-talks to the server directly, not a replacement for it.
+server/accounts.py's SQLite-backed accounts), then either type "play" to
+enter ELO matchmaking or "create room"/"join room <id>"/"cancel room" for
+the section-6 room flow (see server/rooms.py) - moves by hand once seated.
+A stand-in until the real GUI talks to the server directly, not a
+replacement for it.
 
 Run: python -m server.client_cli
 """
@@ -20,6 +22,9 @@ from server.main import HOST, PORT
 
 _SEAT_LETTER = {WHITE: "W", BLACK: "B"}
 _PLAY_INPUT = "play"
+_CREATE_ROOM_INPUT = "create room"
+_CANCEL_ROOM_INPUT = "cancel room"
+_JOIN_ROOM_PREFIX = "join room "
 
 
 class InputError(Exception):
@@ -71,6 +76,18 @@ def build_play() -> str:
     return "PLAY"
 
 
+def build_create_room() -> str:
+    return "CREATE_ROOM"
+
+
+def build_cancel_room() -> str:
+    return "CANCEL_ROOM"
+
+
+def build_join_room(room_id: str) -> str:
+    return f"JOIN_ROOM {room_id}"
+
+
 # A connection's own reply to something it just sent (login_ack, play_ack,
 # ack) and the tick loop's periodic broadcast/countdown are written by two
 # independent tasks on the server (see server/ws_server.py) - either can
@@ -96,13 +113,30 @@ async def _read_commands(websocket, state: _ClientState) -> None:
     while True:
         raw = await loop.run_in_executor(None, input, "> ")
         text = raw.strip()
+        lowered = text.lower()
 
-        if text.lower() == _PLAY_INPUT:
+        if lowered == _PLAY_INPUT:
             await websocket.send(build_play())
             continue
 
+        if lowered == _CREATE_ROOM_INPUT:
+            await websocket.send(build_create_room())
+            continue
+
+        if lowered == _CANCEL_ROOM_INPUT:
+            await websocket.send(build_cancel_room())
+            continue
+
+        if lowered.startswith(_JOIN_ROOM_PREFIX):
+            room_id = text[len(_JOIN_ROOM_PREFIX):].strip()
+            if not room_id:
+                print("(usage: 'join room <id>')")
+                continue
+            await websocket.send(build_join_room(room_id))
+            continue
+
         if state.seat is None:
-            print("(not seated yet - type 'play' to find a match)")
+            print("(not seated yet - type 'play', 'create room', or 'join room <id>')")
             continue
 
         try:

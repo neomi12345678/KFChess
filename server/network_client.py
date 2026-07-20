@@ -29,6 +29,14 @@ class NetworkClientError(Exception):
     wait_for_seat) times out waiting for its expected reply."""
 
 
+class MatchmakingTimeoutError(NetworkClientError):
+    """Raised by wait_for_seat when the server itself reports
+    matchmaking_timeout (see server/matchmaking.py's TIMEOUT_MS) - distinct
+    from the base class's plain "nothing arrived in time" meaning, since
+    here the server actively gave up on finding an opponent rather than us
+    simply having stopped listening too soon."""
+
+
 class NetworkGameClient:
     def __init__(self, host: str, port: int, connect_timeout: float = 5.0):
         self._incoming: "queue.Queue[dict]" = queue.Queue()
@@ -98,15 +106,38 @@ class NetworkGameClient:
         self.send_command("PLAY")
         return self._wait_for_type("play_ack", timeout)
 
+    # timeout is a defensive upper bound, not the expected path - the server
+    # gives up and reports matchmaking_timeout on its own after
+    # server/matchmaking.py's TIMEOUT_MS (60s by default), which
+    # _wait_for_type's stop_types below reacts to immediately rather than
+    # this call silently discarding it and waiting out its own timeout too.
     def wait_for_seat(self, timeout: float = 65.0) -> dict:
-        return self._wait_for_type("seat", timeout)
+        return self._wait_for_type("seat", timeout, stop_types={"matchmaking_timeout": MatchmakingTimeoutError})
+
+    # The section-6 room flow (see server/rooms.py) - create_room's own
+    # reply carries the room id (nothing to wait_for_seat for yet, since a
+    # freshly created room has no opponent); join_room's carries "role"
+    # instead (opponent vs spectator, see play_online.py's own handling of
+    # each), decided by the server, not requested by the caller.
+    def create_room(self, timeout: float = 10.0) -> dict:
+        self.send_command("CREATE_ROOM")
+        return self._wait_for_type("create_room_ack", timeout)
+
+    def join_room(self, room_id: str, timeout: float = 10.0) -> dict:
+        self.send_command(f"JOIN_ROOM {room_id}")
+        return self._wait_for_type("join_room_ack", timeout)
 
     # Loops past any interleaved message of a different type rather than
     # raising on the first mismatch - mirrors server/client_cli.py's own
     # _recv_of_type, for the same reason: a reply to something just sent
     # and a periodic broadcast are written by independent tasks server-
-    # side, so either can land first on the wire.
-    def _wait_for_type(self, message_type: str, timeout: float) -> dict:
+    # side, so either can land first on the wire. stop_types names message
+    # types that should abort the wait immediately with a specific error
+    # instead of being silently discarded like any other non-matching
+    # message - wait_for_seat's own matchmaking_timeout being the only
+    # current use (see above).
+    def _wait_for_type(self, message_type: str, timeout: float, stop_types: Optional[dict] = None) -> dict:
+        stop_types = stop_types or {}
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -118,6 +149,9 @@ class NetworkGameClient:
                 raise NetworkClientError(f"timed out waiting for a '{message_type}' message")
             if message.get("type") == message_type:
                 return message
+            stop_error = stop_types.get(message.get("type"))
+            if stop_error is not None:
+                raise stop_error(f"server reported '{message['type']}' while waiting for a '{message_type}' message")
 
     def close(self) -> None:
         if self._websocket is not None and self._loop is not None:

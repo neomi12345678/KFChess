@@ -16,9 +16,12 @@ import math
 from typing import Dict, Optional, Union
 
 from app import build_game
+from events.bus import Bus
+from events.bus_bridge import BusBridge
+from events.game_events import GameStartedEvent
 from events.observers import MoveLogObserver, ScoreObserver
 from model.board import BoardRepresentation
-from model.game_state import ArrivalEvent, GameObserver, JumpResult, MoveResult
+from model.game_state import ArrivalEvent, GameObserver, JumpResult, MoveLoggedEvent, MoveResult
 from model.piece import ActionResultReason, BLACK, KING, WHITE
 from model.position import Position
 from server.accounts import AccountStore
@@ -32,11 +35,12 @@ _OTHER_SEAT = {WHITE: BLACK, BLACK: WHITE}
 DISCONNECT_GRACE_MS = 20_000
 
 
-# Watches GameEngine's own on_arrival stream (see model/game_state.py's
-# GameObserver, the same hook events/observers.py's MoveLogObserver/
-# ScoreObserver use) purely to learn *which color's king* was captured -
-# GameEngine.game_over is already True by the time the same wait() call
-# returns, but it never says who lost, only that the game ended.
+# Subscribes to the bus's ArrivalEvent stream (see GameSession.__init__ and
+# model/game_state.py's GameObserver, the same on_arrival hook
+# events/observers.py's MoveLogObserver/ScoreObserver use) purely to learn
+# *which color's king* was captured - GameEngine.game_over is already True
+# by the time the same wait() call returns, but it never says who lost,
+# only that the game ended.
 class _KingCaptureWatcher(GameObserver):
     def __init__(self):
         self.loser_color: Optional[str] = None
@@ -62,16 +66,25 @@ class GameSession:
         self.game_engine, _controller, _board_mapper = build_game(board)
         self._account_store = account_store
         self._usernames: Dict[str, str] = {WHITE: white_username, BLACK: black_username}
+
+        # Same Bus/BusBridge wiring game_builder.py's build_app uses for the
+        # local GUI's sound/animation cues - the king-capture watcher, move
+        # log, and score are subscribers here too, not GameEngine observers
+        # in their own right. GameEngine itself only ever sees BusBridge
+        # (see events/bus_bridge.py); server/ws_server.py still has no
+        # notion of any of this, only of forwarding whatever move_log/score
+        # accumulate to the client (see server/protocol.py's panel_to_json).
+        self._bus = Bus()
         self._king_capture_watcher = _KingCaptureWatcher()
-        self.game_engine.add_observer(self._king_capture_watcher)
-        # Registered directly, not via events/bus.py's Bus like play.py's
-        # sound/animation cues - server/ws_server.py has no notion of those,
-        # only of forwarding whatever these two accumulate to the client
-        # (see server/protocol.py's panel_to_json).
+        self._bus.subscribe(ArrivalEvent, self._king_capture_watcher.on_arrival)
         self.move_log = MoveLogObserver(board_height=board.height)
         self.score = ScoreObserver()
-        self.game_engine.add_observer(self.move_log)
-        self.game_engine.add_observer(self.score)
+        self._bus.subscribe(MoveLoggedEvent, self.move_log.on_move_logged)
+        self._bus.subscribe(ArrivalEvent, self.move_log.on_arrival)
+        self._bus.subscribe(ArrivalEvent, self.score.on_arrival)
+        self.game_engine.add_observer(BusBridge(self._bus))
+        self._bus.publish(GameStartedEvent())
+
         self._ratings_finalized = False
         self._disconnect_grace_ms = disconnect_grace_ms
         # Only present while a seat's connection is currently disconnected -

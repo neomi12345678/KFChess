@@ -1,7 +1,16 @@
 import pytest
 
 from model.piece import BLACK, WHITE
-from server.client_cli import InputError, _ClientState, build_command, build_login, build_play
+from server.client_cli import (
+    InputError,
+    _ClientState,
+    build_cancel_room,
+    build_command,
+    build_create_room,
+    build_join_room,
+    build_login,
+    build_play,
+)
 
 
 def test_build_command_prefixes_a_move_with_the_seats_own_color_letter():
@@ -40,6 +49,18 @@ def test_build_login_wraps_the_username_and_password():
 
 def test_build_play_is_the_bare_keyword():
     assert build_play() == "PLAY"
+
+
+def test_build_create_room_is_the_bare_keyword():
+    assert build_create_room() == "CREATE_ROOM"
+
+
+def test_build_cancel_room_is_the_bare_keyword():
+    assert build_cancel_room() == "CANCEL_ROOM"
+
+
+def test_build_join_room_wraps_the_room_id():
+    assert build_join_room("ab12cd") == "JOIN_ROOM ab12cd"
 
 
 def test_client_state_starts_with_no_seat_by_default():

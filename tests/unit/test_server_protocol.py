@@ -10,9 +10,12 @@ from server.protocol import (
     LoginRequest,
     PanelState,
     ProtocolError,
+    is_cancel_room_command,
+    is_create_room_command,
     is_play_command,
     panel_to_json,
     parse_command,
+    parse_join_room,
     parse_login,
     parse_square,
     snapshot_from_json,
@@ -124,6 +127,46 @@ def test_is_play_command_rejects_anything_else():
     assert is_play_command("play") is False
     assert is_play_command("We2e4") is False
     assert is_play_command("LOGIN alice secret123") is False
+
+
+def test_is_create_room_command_recognizes_the_bare_keyword():
+    assert is_create_room_command("CREATE_ROOM") is True
+    assert is_create_room_command("  CREATE_ROOM  ") is True
+
+
+def test_is_create_room_command_rejects_anything_else():
+    assert is_create_room_command("create_room") is False
+    assert is_create_room_command("PLAY") is False
+
+
+def test_is_cancel_room_command_recognizes_the_bare_keyword():
+    assert is_cancel_room_command("CANCEL_ROOM") is True
+    assert is_cancel_room_command("  CANCEL_ROOM  ") is True
+
+
+def test_is_cancel_room_command_rejects_anything_else():
+    assert is_cancel_room_command("cancel_room") is False
+    assert is_cancel_room_command("PLAY") is False
+
+
+def test_parse_join_room_reads_the_room_id():
+    assert parse_join_room("JOIN_ROOM ab12cd") == "ab12cd"
+
+
+def test_parse_join_room_returns_none_for_a_non_join_room_message():
+    assert parse_join_room("PLAY") is None
+    assert parse_join_room("We2e4") is None
+    # No trailing space at all - not recognized as this message shape,
+    # the same way parse_login treats a bare "LOGIN" with no space.
+    assert parse_join_room("JOIN_ROOM") is None
+
+
+def test_parse_join_room_rejects_a_missing_id():
+    with pytest.raises(ProtocolError):
+        parse_join_room("JOIN_ROOM ")
+
+    with pytest.raises(ProtocolError):
+        parse_join_room("JOIN_ROOM    ")
 
 
 def test_snapshot_to_json_is_plain_json_serializable_data():

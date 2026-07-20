@@ -47,6 +47,16 @@ async def play(websocket) -> dict:
     return await recv_of_type(websocket, "play_ack")
 
 
+async def create_room(websocket) -> dict:
+    await websocket.send("CREATE_ROOM")
+    return await recv_of_type(websocket, "create_room_ack")
+
+
+async def join_room(websocket, room_id: str) -> dict:
+    await websocket.send(f"JOIN_ROOM {room_id}")
+    return await recv_of_type(websocket, "join_room_ack")
+
+
 @contextlib.asynccontextmanager
 async def running_server(
     tick_interval_s: float = 0.01,
@@ -54,6 +64,8 @@ async def running_server(
     account_store=None,
     matchmaking_timeout_ms: int = 300,
     disconnect_grace_ms: int = 300,
+    ping_interval_s: float = 12.0,
+    ping_timeout_s: float = 12.0,
 ):
     # A fresh ":memory:" store per server unless a test supplies its own
     # (so it can inspect ratings afterward) - see server/accounts.py's own
@@ -62,6 +74,13 @@ async def running_server(
     if owns_store:
         account_store = AccountStore(":memory:")
 
+    # ping_interval_s/ping_timeout_s default here to the same values as
+    # server/ws_server.py's own PING_INTERVAL_S/PING_TIMEOUT_S - see that
+    # module's own docstring on why they're deliberately not tighter than
+    # this: test_reconnecting_before_the_stale_socket_closes_does_not_
+    # evict_the_new_connection below exercises exactly the abrupt-close
+    # stall that a tighter number here turns into a false-positive
+    # keepalive timeout on an unrelated, healthy connection.
     server = GameServer(
         lambda: parse(board_text),
         account_store,
@@ -70,6 +89,8 @@ async def running_server(
         tick_interval_s=tick_interval_s,
         matchmaking_timeout_ms=matchmaking_timeout_ms,
         disconnect_grace_ms=disconnect_grace_ms,
+        ping_interval_s=ping_interval_s,
+        ping_timeout_s=ping_timeout_s,
     )
     task = asyncio.create_task(server.run_forever())
     await server.wait_started()
@@ -212,7 +233,7 @@ def test_move_command_when_not_in_any_game_is_rejected():
             uri = f"ws://localhost:{server.bound_port}"
             async with websockets.connect(uri) as ws:
                 await login(ws, "alice")
-                # Logged in, but never played - no current_game to belong to.
+                # Logged in, but never played - no active game to belong to.
                 await ws.send("Wa3c3")
                 ack = await recv_of_type(ws, "ack")
 
@@ -281,8 +302,8 @@ def test_broadcast_carries_the_moves_log_and_score_panel_data():
                 # Drains real broadcasts until one carries the just-logged
                 # move - the game_over-ending capture on this board can beat
                 # a later broadcast to the wire (see server/ws_server.py's
-                # _advance_current_game, which skips the panel broadcast
-                # entirely once finalize_ratings_if_game_over fires), so
+                # _advance_game, which skips the panel broadcast entirely
+                # once finalize_ratings_if_game_over fires), so
                 # this only asserts the move-log entry showed up at all, not
                 # a specific elapsed_ms or a mid-flight score value.
                 deadline = asyncio.get_event_loop().time() + 5.0
@@ -494,6 +515,169 @@ def test_disconnect_without_reconnecting_in_time_forces_a_resignation():
                 assert game_over == {"type": "game_over", "ratings": {"white": 1216, "black": 1184}}
                 assert account_store.rating_for("bob") == 1184
                 assert account_store.rating_for("alice") == 1216
+
+        account_store.close()
+
+    asyncio.run(scenario())
+
+
+def test_create_room_returns_a_room_id_and_join_room_seats_the_second_player():
+    async def scenario():
+        async with running_server() as server:
+            uri = f"ws://localhost:{server.bound_port}"
+            async with websockets.connect(uri) as a, websockets.connect(uri) as b:
+                await login(a, "alice")
+                await login(b, "bob")
+
+                created = await create_room(a)
+                assert created["accepted"] is True
+                room_id = created["room_id"]
+                assert isinstance(room_id, str) and room_id
+
+                # No opponent yet - alice isn't seated until someone joins.
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(a.recv(), timeout=0.2)
+
+                joined = await join_room(b, room_id)
+                assert joined == {"type": "join_room_ack", "accepted": True, "room_id": room_id, "role": "opponent"}
+
+                # Creator = white, first joiner = black - assigned the
+                # instant the opponent seat fills, not on the next tick.
+                assert await recv_of_type(a, "seat") == {"type": "seat", "color": "white"}
+                assert await recv_of_type(b, "seat") == {"type": "seat", "color": "black"}
+
+    asyncio.run(scenario())
+
+
+def test_a_second_joiner_becomes_a_spectator_and_gets_the_board_immediately():
+    async def scenario():
+        async with running_server() as server:
+            uri = f"ws://localhost:{server.bound_port}"
+            async with websockets.connect(uri) as a, websockets.connect(uri) as b, websockets.connect(uri) as c:
+                await login(a, "alice")
+                await login(b, "bob")
+                await login(c, "carol")
+
+                room_id = (await create_room(a))["room_id"]
+                await join_room(b, room_id)
+                await recv_of_type(a, "seat")
+                await recv_of_type(b, "seat")
+
+                joined = await join_room(c, room_id)
+                assert joined == {"type": "join_room_ack", "accepted": True, "room_id": room_id, "role": "spectator"}
+
+                # A spectator can't move - it must be rejected before
+                # reaching the engine, same as a wrong-seat player command.
+                await c.send("Wa1a2")
+                ack = await recv_of_type(c, "ack")
+                assert ack == {"type": "ack", "accepted": False, "reason": "not_in_game"}
+
+                # Carol still sees the board broadcast on the next tick,
+                # same payload shape a seated player gets.
+                payload = json.loads(await asyncio.wait_for(c.recv(), timeout=2.0))
+                assert "pieces" in payload
+
+    asyncio.run(scenario())
+
+
+def test_cancel_room_frees_the_creator_before_an_opponent_joins():
+    async def scenario():
+        async with running_server() as server:
+            uri = f"ws://localhost:{server.bound_port}"
+            async with websockets.connect(uri) as a:
+                await login(a, "alice")
+                room_id = (await create_room(a))["room_id"]
+
+                await a.send("CANCEL_ROOM")
+                ack = await recv_of_type(a, "cancel_room_ack")
+                assert ack == {"type": "cancel_room_ack", "accepted": True}
+
+                # alice is free again - she can queue for PLAY without
+                # being rejected as "already_in_game".
+                play_ack = await play(a)
+                assert play_ack == {"type": "play_ack", "accepted": True, "reason": "queued"}
+
+    asyncio.run(scenario())
+
+
+def test_cancel_room_after_an_opponent_joined_is_rejected():
+    async def scenario():
+        async with running_server() as server:
+            uri = f"ws://localhost:{server.bound_port}"
+            async with websockets.connect(uri) as a, websockets.connect(uri) as b:
+                await login(a, "alice")
+                await login(b, "bob")
+                room_id = (await create_room(a))["room_id"]
+                await join_room(b, room_id)
+                await recv_of_type(a, "seat")
+
+                await a.send("CANCEL_ROOM")
+                ack = await recv_of_type(a, "cancel_room_ack")
+                assert ack == {"type": "cancel_room_ack", "accepted": False, "reason": "already_started"}
+
+    asyncio.run(scenario())
+
+
+def test_play_and_room_run_as_independent_parallel_tracks():
+    async def scenario():
+        async with running_server() as server:
+            uri = f"ws://localhost:{server.bound_port}"
+            async with (
+                websockets.connect(uri) as a,
+                websockets.connect(uri) as b,
+                websockets.connect(uri) as c,
+                websockets.connect(uri) as d,
+            ):
+                await login(a, "alice")
+                await login(b, "bob")
+                await login(c, "carol")
+                await login(d, "dave")
+
+                # alice/bob matched via PLAY, carol/dave via a room - both
+                # pairs get seated independently, in the same tick loop.
+                await play(a)
+                await play(b)
+                room_id = (await create_room(c))["room_id"]
+                await join_room(d, room_id)
+
+                assert await recv_of_type(a, "seat") == {"type": "seat", "color": "white"}
+                assert await recv_of_type(b, "seat") == {"type": "seat", "color": "black"}
+                assert await recv_of_type(c, "seat") == {"type": "seat", "color": "white"}
+                assert await recv_of_type(d, "seat") == {"type": "seat", "color": "black"}
+
+                # A move in the room game shows up on carol's own board,
+                # not alice's - the two games never cross-talk.
+                await c.send("Wa3c3")
+                ack = await recv_of_type(c, "ack")
+                assert ack == {"type": "ack", "accepted": True, "reason": "ok"}
+
+    asyncio.run(scenario())
+
+
+def test_room_game_over_frees_every_member_for_a_new_room_or_match():
+    async def scenario():
+        account_store = AccountStore(":memory:")
+
+        async with running_server(board_text=KING_CAPTURE_BOARD, account_store=account_store) as server:
+            uri = f"ws://localhost:{server.bound_port}"
+            async with websockets.connect(uri) as a, websockets.connect(uri) as b:
+                await login(a, "alice", "secret123")
+                await login(b, "bob", "hunter2")
+                room_id = (await create_room(a))["room_id"]
+                await join_room(b, room_id)
+                assert (await recv_of_type(a, "seat"))["color"] == "white"
+                assert (await recv_of_type(b, "seat"))["color"] == "black"
+
+                await a.send("Wa1b1")
+                await recv_of_type(a, "ack")
+
+                game_over = await recv_of_type(a, "game_over", timeout=5.0)
+                assert game_over == {"type": "game_over", "ratings": {"white": 1216, "black": 1184}}
+
+                # Both are free again - a fresh room, not rejected as
+                # "already_in_game" by the now-closed one.
+                new_room = await create_room(a)
+                assert new_room["accepted"] is True
 
         account_store.close()
 
