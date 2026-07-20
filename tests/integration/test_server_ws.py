@@ -263,6 +263,46 @@ def test_move_after_match_gets_an_ack_and_the_next_broadcast_reflects_it():
     asyncio.run(scenario())
 
 
+def test_broadcast_carries_the_moves_log_and_score_panel_data():
+    async def scenario():
+        async with running_server(board_text=KING_CAPTURE_BOARD) as server:
+            uri = f"ws://localhost:{server.bound_port}"
+            async with websockets.connect(uri) as a, websockets.connect(uri) as b:
+                await login(a, "alice")
+                await login(b, "bob")
+                await play(a)
+                await play(b)
+                await recv_of_type(a, "seat")  # alice = white
+                await recv_of_type(b, "seat")  # bob = black
+
+                await a.send("Wa1b1")
+                await recv_of_type(a, "ack")
+
+                # Drains real broadcasts until one carries the just-logged
+                # move - the game_over-ending capture on this board can beat
+                # a later broadcast to the wire (see server/ws_server.py's
+                # _advance_current_game, which skips the panel broadcast
+                # entirely once finalize_ratings_if_game_over fires), so
+                # this only asserts the move-log entry showed up at all, not
+                # a specific elapsed_ms or a mid-flight score value.
+                deadline = asyncio.get_event_loop().time() + 5.0
+                move_log_entry = None
+                while asyncio.get_event_loop().time() < deadline:
+                    payload = json.loads(await asyncio.wait_for(a.recv(), timeout=1))
+                    if "pieces" not in payload:
+                        continue
+                    assert set(payload["score"]) == {"white", "black"}
+                    if payload["move_log"]["white"]:
+                        move_log_entry = payload["move_log"]["white"][0]
+                        break
+
+                assert move_log_entry is not None
+                assert move_log_entry["notation"] == "Rxb1"
+                assert isinstance(move_log_entry["elapsed_ms"], int)
+
+    asyncio.run(scenario())
+
+
 def test_wrong_seat_command_is_rejected_before_reaching_the_engine():
     async def scenario():
         async with running_server() as server:

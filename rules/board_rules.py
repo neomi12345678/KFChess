@@ -1,13 +1,14 @@
 from dataclasses import dataclass
 
 from model.board import BoardRepresentation
+from model.piece import ActionResultReason
 from model.position import Position
 
 
 @dataclass
 class BoardCheck:
     is_valid: bool
-    reason: str
+    reason: ActionResultReason
 
 
 class BoardRules:
@@ -19,14 +20,14 @@ class BoardRules:
 
     def check(self, board: BoardRepresentation, source: Position, destination: Position) -> BoardCheck:
         if not board.is_in_bounds(source) or not board.is_in_bounds(destination):
-            return BoardCheck(is_valid=False, reason="outside_board")
+            return BoardCheck(is_valid=False, reason=ActionResultReason.OUTSIDE_BOARD)
 
         piece = board.get_piece(source)
         if piece is None:
-            return BoardCheck(is_valid=False, reason="empty_source")
+            return BoardCheck(is_valid=False, reason=ActionResultReason.EMPTY_SOURCE)
 
         target = board.get_piece(destination)
         if target is not None and target.color == piece.color:
-            return BoardCheck(is_valid=False, reason="friendly_destination")
+            return BoardCheck(is_valid=False, reason=ActionResultReason.FRIENDLY_DESTINATION)
 
-        return BoardCheck(is_valid=True, reason="ok")
+        return BoardCheck(is_valid=True, reason=ActionResultReason.OK)

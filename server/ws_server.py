@@ -29,7 +29,7 @@ from model.piece import BLACK, WHITE
 from server.accounts import AccountStore, InvalidCredentialsError
 from server.matchmaking import TIMEOUT_MS as MATCHMAKING_TIMEOUT_MS
 from server.matchmaking import MatchmakingQueue
-from server.protocol import ProtocolError, is_play_command, parse_command, parse_login, snapshot_to_json
+from server.protocol import ProtocolError, is_play_command, panel_to_json, parse_command, parse_login, snapshot_to_json
 from server.session import DISCONNECT_GRACE_MS, GameSession
 
 DEFAULT_TICK_INTERVAL_S = 0.05
@@ -265,7 +265,9 @@ class GameServer:
                     },
                 )
 
-        await self._broadcast_to_game(game, snapshot_to_json(game.snapshot()))
+        payload = snapshot_to_json(game.snapshot())
+        payload.update(panel_to_json(game.move_log, game.score))
+        await self._broadcast_to_game(game, payload)
 
     async def _broadcast_to_game(self, game: GameSession, payload: dict) -> None:
         for seat in (WHITE, BLACK):

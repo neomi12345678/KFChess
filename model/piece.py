@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional, Protocol
 
 from model.position import Position
@@ -74,10 +75,33 @@ class Piece:
     state: str = IDLE
 
 
+# Every reason a move/jump request can be rejected for, across
+# rules/board_rules.py, rules/rule_engine.py, engine/game_engine.py, and
+# server/session.py - one shared, typed vocabulary instead of each layer
+# inventing its own ad hoc string. A str subclass, not a plain Enum: every
+# existing `result.reason == "route_conflict"`-style comparison (tests,
+# server/ws_server.py's JSON replies) keeps working unchanged, since a str
+# Enum member compares equal to - and json.dumps's as - its own string value.
+class ActionResultReason(str, Enum):
+    OK = "ok"
+    GAME_OVER = "game_over"
+    MOTION_IN_PROGRESS = "motion_in_progress"
+    PIECE_IS_AIRBORNE = "piece_is_airborne"
+    PIECE_IS_MOVING = "piece_is_moving"
+    PIECE_IN_COOLDOWN = "piece_in_cooldown"
+    ROUTE_CONFLICT = "route_conflict"
+    EMPTY_CELL = "empty_cell"
+    NOT_YOUR_PIECE = "not_your_piece"
+    ILLEGAL_PIECE_MOVE = "illegal_piece_move"
+    OUTSIDE_BOARD = "outside_board"
+    EMPTY_SOURCE = "empty_source"
+    FRIENDLY_DESTINATION = "friendly_destination"
+
+
 @dataclass(frozen=True)
 class ActionAvailability:
     allowed: bool
-    reason_if_blocked: Optional[str] = None
+    reason_if_blocked: Optional[ActionResultReason] = None
 
 
 # From each of piece.state's two *reachable* values, whether a "move" or
@@ -93,12 +117,12 @@ class ActionAvailability:
 # alongside this table, before starting a new move/jump.
 _MOVE_AVAILABILITY = {
     IDLE: ActionAvailability(allowed=True),
-    MOVING: ActionAvailability(allowed=False, reason_if_blocked="motion_in_progress"),
+    MOVING: ActionAvailability(allowed=False, reason_if_blocked=ActionResultReason.MOTION_IN_PROGRESS),
 }
 
 _JUMP_AVAILABILITY = {
     IDLE: ActionAvailability(allowed=True),
-    MOVING: ActionAvailability(allowed=False, reason_if_blocked="piece_is_moving"),
+    MOVING: ActionAvailability(allowed=False, reason_if_blocked=ActionResultReason.PIECE_IS_MOVING),
 }
 
 

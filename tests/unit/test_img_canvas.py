@@ -179,6 +179,21 @@ def test_highlight_cell_is_shifted_right_by_the_side_panel_width():
     )
 
 
+def test_begin_frame_forgets_animation_state_for_a_piece_no_longer_drawn():
+    # Regression guard for the wiring itself - view/piece_state_machine.py's
+    # actual pruning logic (and its effect on which sprite frame comes back)
+    # is covered directly in test_piece_state_machine.py and
+    # test_sprite_frames.py. This only proves ImgCanvas.begin_frame() feeds
+    # the animator the previous frame's drawn piece_ids and doesn't raise
+    # once a previously-drawn piece (e.g. captured) stops being drawn.
+    canvas = ImgCanvas()
+    canvas.begin_frame()
+    canvas.draw_image("p1:white:king:idle", x=CELL_SIZE // 2, y=CELL_SIZE // 2)
+
+    canvas.begin_frame()  # p1 not drawn this frame - pruned on the next begin_frame
+    canvas.begin_frame()  # must not raise even though p1 never reappears
+
+
 def test_draw_image_is_shifted_right_by_the_side_panel_width():
     canvas = ImgCanvas(board_width=3, board_height=3, side_panel_width_px=200)
     canvas.begin_frame()

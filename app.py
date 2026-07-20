@@ -1,7 +1,6 @@
 from display_config import CELL_SIZE
 from engine.game_engine import GameEngine
-from input.board_mapper import BoardMapper
-from input.controller import Controller
+from input.controller_builder import build_controller
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
 
@@ -20,10 +19,9 @@ from rules.rule_engine import RuleEngine
 def build_game(board, board_offset_x: int = 0, cell_size: int = CELL_SIZE):
     real_time_arbiter = RealTimeArbiter(board)
     game_engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=real_time_arbiter)
-    board_mapper = BoardMapper(
-        width=board.width, height=board.height, cell_size=cell_size, board_offset_x=board_offset_x
+    controller, board_mapper = build_controller(
+        game_engine, width=board.width, height=board.height, board_offset_x=board_offset_x, cell_size=cell_size
     )
-    controller = Controller(game_engine=game_engine)
     return game_engine, controller, board_mapper
 
 

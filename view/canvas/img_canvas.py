@@ -58,6 +58,12 @@ class ImgCanvas:
         self._board_offset_x = side_panel_width_px
         self._frame = None
         self._animator = SpriteAnimator(skin=skin)
+        # Every piece_id drawn since the last begin_frame() - handed to the
+        # animator's own forget_missing on the *next* begin_frame(), so a
+        # captured piece's animation-state entry is pruned within one frame
+        # of it no longer being drawn, instead of lingering for the rest of
+        # the game.
+        self._piece_ids_drawn: set[str] = set()
         # Every (piece_code, state, frame) sprite file's pixels never change
         # once loaded - reading + resizing it fresh from disk on every
         # draw_image call (every piece, every rendered frame) would be pure
@@ -68,6 +74,9 @@ class ImgCanvas:
         self._sprite_cache: dict[pathlib.Path, Img] = {}
 
     def begin_frame(self) -> None:
+        self._animator.forget_missing(self._piece_ids_drawn)
+        self._piece_ids_drawn = set()
+
         self._frame = Img()
         if self._board_offset_x == 0:
             # A fresh Img sharing a *copy* of the board's pixels, so drawing
@@ -104,6 +113,7 @@ class ImgCanvas:
     # every other piece on the board.
     def draw_image(self, key: str, x: int, y: int) -> None:
         piece_id, color, kind, state = key.split(":")
+        self._piece_ids_drawn.add(piece_id)
         code = piece_config.piece_code(kind, color)
         path = self._animator.sprite_path(piece_id, code, state)
 

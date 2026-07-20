@@ -1,16 +1,18 @@
 """Proves the whole events/bus.py wiring works together against a real
-GameEngine - the same shape play.py's build_app() wires up (BusBridge as
+GameEngine - the same shape game_builder.py's build_app() wires up (BusBridge as
 the one GameObserver, everything else a bus subscriber), not just each
 piece in isolation.
 """
 
 from boardio.board_parser import parse
 from engine.game_engine import GameEngine
-from events.bus import ARRIVAL, GAME_ENDED, GAME_STARTED, MOVE_LOGGED, Bus
+from events.bus import Bus
 from events.bus_bridge import BusBridge
 from events.game_animations import GAME_END_ANIMATION, GAME_START_ANIMATION, GameAnimationCues
+from events.game_events import GameStartedEvent
 from events.observers import MoveLogObserver, ScoreObserver
 from events.sound import CAPTURE_CUE, GAME_END_CUE, GAME_START_CUE, MOVE_CUE, SoundCues
+from model.game_state import ArrivalEvent, MoveLoggedEvent
 from model.piece import WHITE
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
@@ -26,14 +28,14 @@ def test_a_real_king_capture_reaches_every_bus_subscriber():
     move_log = MoveLogObserver(board_height=board.height)
     score = ScoreObserver()
     bus = Bus()
-    bus.subscribe(MOVE_LOGGED, move_log.on_move_logged)
-    bus.subscribe(ARRIVAL, move_log.on_arrival)
-    bus.subscribe(ARRIVAL, score.on_arrival)
+    bus.subscribe(MoveLoggedEvent, move_log.on_move_logged)
+    bus.subscribe(ArrivalEvent, move_log.on_arrival)
+    bus.subscribe(ArrivalEvent, score.on_arrival)
     sound = SoundCues(bus)
     animations = GameAnimationCues(bus)
     game_engine.add_observer(BusBridge(bus))
 
-    bus.publish(GAME_STARTED)
+    bus.publish(GameStartedEvent())
     assert sound.played == [GAME_START_CUE]
     assert animations.triggered == [GAME_START_ANIMATION]
 

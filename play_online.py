@@ -7,10 +7,12 @@ this renders whatever server/protocol.py's snapshot broadcasts say the
 board looks like, and turns clicks into wire commands via
 server/network_controller.py instead of a local Controller.
 
-No move-log/score side panels yet - those need a discrete event stream
-(see events/observers.py), and the wire protocol here only ever sends
-whole-board snapshots, not individual events (see server/protocol.py's
-snapshot_to_json).
+The moves-log/score side panels are driven by server/protocol.py's
+PanelState - a client-side duck-typed stand-in for events/observers.py's
+MoveLogObserver/ScoreObserver, rebuilt from each broadcast's own
+"move_log"/"score" keys (see server/session.py, which registers the real
+observers on the server's own GameEngine) rather than from a live local
+event stream, since only the server ever sees GameEngine's raw events.
 
 Run: python play_online.py
 """
@@ -21,12 +23,12 @@ import time
 
 import piece_config
 from boardio.algebraic_notation import square_name
-from display_config import compute_cell_size, screen_resolution_px
+from display_config import compute_cell_size, screen_resolution_px, side_panel_width_for
 from input.board_mapper import BoardMapper
 from model.piece import BLACK, WHITE
 from server.network_client import NetworkClientError, NetworkGameClient
 from server.network_controller import JumpRequest, MoveRequest, NetworkController
-from server.protocol import snapshot_from_json
+from server.protocol import PanelState, snapshot_from_json
 from view.canvas.img_canvas import ImgCanvas
 from view.canvas.window import GameWindow
 from view.renderer import Renderer
@@ -92,17 +94,32 @@ def main() -> None:  # pragma: no cover
 
     first_snapshot_payload = _wait_for_first_snapshot(client)
     latest_snapshot = snapshot_from_json(first_snapshot_payload)
+    panel_state = PanelState()
+    panel_state.update_from_json(first_snapshot_payload)
 
     cell_size = compute_cell_size(latest_snapshot.board_width, latest_snapshot.board_height, screen_size=screen_resolution_px)
-    board_mapper = BoardMapper(width=latest_snapshot.board_width, height=latest_snapshot.board_height, cell_size=cell_size)
+    side_panel_width_px = side_panel_width_for(cell_size)
+    board_mapper = BoardMapper(
+        width=latest_snapshot.board_width,
+        height=latest_snapshot.board_height,
+        cell_size=cell_size,
+        board_offset_x=side_panel_width_px,
+    )
     canvas = ImgCanvas(
         board_width=latest_snapshot.board_width,
         board_height=latest_snapshot.board_height,
-        side_panel_width_px=0,
+        side_panel_width_px=side_panel_width_px,
         cell_size=cell_size,
         skin=piece_config.DEFAULT_SKIN,
     )
-    renderer = Renderer(canvas, player_names={WHITE: "White", BLACK: "Black"}, cell_size=cell_size)
+    renderer = Renderer(
+        canvas,
+        move_log=panel_state,
+        score=panel_state,
+        player_names={WHITE: "White", BLACK: "Black"},
+        side_panel_width_px=side_panel_width_px,
+        cell_size=cell_size,
+    )
 
     controller = NetworkController(my_color)
     my_letter = _SEAT_LETTER[my_color]
@@ -135,6 +152,7 @@ def main() -> None:  # pragma: no cover
         for message in client.poll_messages():
             if "pieces" in message:
                 latest_snapshot = snapshot_from_json(message)
+                panel_state.update_from_json(message)
                 saw_snapshot_this_batch = True
             elif message.get("type") == "game_over":
                 print(f"Game over. New ratings: {message['ratings']}")

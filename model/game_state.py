@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from model.board import BoardRepresentation
-from model.piece import PieceRepresentation
+from model.piece import ActionResultReason, PieceRepresentation
 from model.position import Position
 
 
@@ -19,13 +19,13 @@ class GameState:
 @dataclass
 class MoveResult:
     is_accepted: bool
-    reason: str
+    reason: ActionResultReason
 
 
 @dataclass
 class JumpResult:
     is_accepted: bool
-    reason: str
+    reason: ActionResultReason
 
 
 @dataclass

@@ -1,8 +1,9 @@
 from model.game_state import ArrivalEvent, MoveLoggedEvent
 from model.piece import BLACK, KING, PAWN, ROOK, WHITE, Piece
 from model.position import Position
-from events.bus import ARRIVAL, GAME_ENDED, MOVE_LOGGED, Bus
+from events.bus import Bus
 from events.bus_bridge import BusBridge
+from events.game_events import GameEndedEvent
 
 
 def make_piece(color, kind, row=0, col=0):
@@ -22,10 +23,10 @@ def make_move_event(color=WHITE, kind=PAWN, is_jump=False):
     )
 
 
-def test_on_move_logged_publishes_to_move_logged_with_the_same_event():
+def test_on_move_logged_publishes_the_same_event():
     bus = Bus()
     received = []
-    bus.subscribe(MOVE_LOGGED, received.append)
+    bus.subscribe(MoveLoggedEvent, received.append)
     bridge = BusBridge(bus)
     event = make_move_event()
 
@@ -34,10 +35,10 @@ def test_on_move_logged_publishes_to_move_logged_with_the_same_event():
     assert received == [event]
 
 
-def test_on_arrival_publishes_to_arrival_with_the_same_event():
+def test_on_arrival_publishes_the_same_event():
     bus = Bus()
     received = []
-    bus.subscribe(ARRIVAL, received.append)
+    bus.subscribe(ArrivalEvent, received.append)
     bridge = BusBridge(bus)
     event = ArrivalEvent(piece=make_piece(WHITE, ROOK), captured_piece=None)
 
@@ -49,20 +50,20 @@ def test_on_arrival_publishes_to_arrival_with_the_same_event():
 def test_on_arrival_with_a_king_capture_also_publishes_game_ended():
     bus = Bus()
     ended = []
-    bus.subscribe(GAME_ENDED, ended.append)
+    bus.subscribe(GameEndedEvent, ended.append)
     bridge = BusBridge(bus)
     king = make_piece(BLACK, KING)
     event = ArrivalEvent(piece=make_piece(WHITE, ROOK), captured_piece=king)
 
     bridge.on_arrival(event)
 
-    assert ended == [event]
+    assert ended == [GameEndedEvent(arrival=event)]
 
 
 def test_on_arrival_without_a_capture_does_not_publish_game_ended():
     bus = Bus()
     ended = []
-    bus.subscribe(GAME_ENDED, ended.append)
+    bus.subscribe(GameEndedEvent, ended.append)
     bridge = BusBridge(bus)
     event = ArrivalEvent(piece=make_piece(WHITE, ROOK), captured_piece=None)
 
@@ -74,7 +75,7 @@ def test_on_arrival_without_a_capture_does_not_publish_game_ended():
 def test_on_arrival_with_a_non_king_capture_does_not_publish_game_ended():
     bus = Bus()
     ended = []
-    bus.subscribe(GAME_ENDED, ended.append)
+    bus.subscribe(GameEndedEvent, ended.append)
     bridge = BusBridge(bus)
     event = ArrivalEvent(piece=make_piece(WHITE, ROOK), captured_piece=make_piece(BLACK, PAWN))
 

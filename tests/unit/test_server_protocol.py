@@ -1,13 +1,17 @@
 import pytest
 
-from model.piece import BLACK, WHITE
+from events.observers import MoveLogObserver, ScoreObserver
+from model.game_state import ArrivalEvent, MoveLoggedEvent
+from model.piece import BLACK, KNIGHT, PAWN, Piece, WHITE
 from model.position import Position
 from server.protocol import (
     JUMP,
     MOVE,
     LoginRequest,
+    PanelState,
     ProtocolError,
     is_play_command,
+    panel_to_json,
     parse_command,
     parse_login,
     parse_square,
@@ -196,3 +200,56 @@ def test_snapshot_from_json_handles_no_selection_and_no_pieces():
     rebuilt = snapshot_from_json(snapshot_to_json(original))
 
     assert rebuilt == original
+
+
+def test_panel_to_json_is_plain_json_serializable_data():
+    move_log = MoveLogObserver(board_height=8)
+    move_log.on_move_logged(
+        MoveLoggedEvent(
+            piece_id="wP-6-4", color=WHITE, kind=PAWN, source=Position(6, 4), destination=Position(4, 4),
+            is_capture=False, is_jump=False, elapsed_ms=4105,
+        )
+    )
+    score = ScoreObserver()
+    score.on_arrival(ArrivalEvent(piece=Piece(id="wN", color=WHITE, kind=KNIGHT, cell=Position(5, 2)),
+                                   captured_piece=Piece(id="bP", color=BLACK, kind=PAWN, cell=Position(5, 2))))
+
+    payload = panel_to_json(move_log, score)
+
+    assert payload == {
+        "move_log": {
+            WHITE: [{"notation": "e4", "elapsed_ms": 4105}],
+            BLACK: [],
+        },
+        "score": {WHITE: 1, BLACK: 0},
+    }
+
+
+def test_panel_state_reconstructs_entries_for_and_score_for_from_the_wire_payload():
+    move_log = MoveLogObserver(board_height=8)
+    move_log.on_move_logged(
+        MoveLoggedEvent(
+            piece_id="wP-6-4", color=WHITE, kind=PAWN, source=Position(6, 4), destination=Position(4, 4),
+            is_capture=False, is_jump=False, elapsed_ms=4105,
+        )
+    )
+    score = ScoreObserver()
+    score.on_arrival(ArrivalEvent(piece=Piece(id="wN", color=WHITE, kind=KNIGHT, cell=Position(5, 2)),
+                                   captured_piece=Piece(id="bP", color=BLACK, kind=PAWN, cell=Position(5, 2))))
+
+    panel_state = PanelState()
+    panel_state.update_from_json(panel_to_json(move_log, score))
+
+    [entry] = panel_state.entries_for(WHITE)
+    assert entry.notation == "e4"
+    assert entry.elapsed_ms == 4105
+    assert panel_state.entries_for(BLACK) == []
+    assert panel_state.score_for(WHITE) == 1
+    assert panel_state.score_for(BLACK) == 0
+
+
+def test_panel_state_defaults_to_empty_before_any_update():
+    panel_state = PanelState()
+
+    assert panel_state.entries_for(WHITE) == []
+    assert panel_state.score_for(WHITE) == 0

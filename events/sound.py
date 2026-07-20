@@ -5,10 +5,11 @@ library/asset dependency yet: _play() is the one seam a real audio backend
 maps to which cue name) doesn't change when that happens.
 """
 
-from typing import List, Optional
+from typing import List
 
 from model.game_state import ArrivalEvent, MoveLoggedEvent
-from events.bus import ARRIVAL, GAME_ENDED, GAME_STARTED, MOVE_LOGGED, Bus
+from events.bus import Bus
+from events.game_events import GameEndedEvent, GameStartedEvent
 
 MOVE_CUE = "move"
 JUMP_CUE = "jump"
@@ -23,10 +24,10 @@ class SoundCues:
         # placeholder seam tests exercise for real (see _play()) in place
         # of an actual audio device/asset file.
         self.played: List[str] = []
-        bus.subscribe(MOVE_LOGGED, self._on_move_logged)
-        bus.subscribe(ARRIVAL, self._on_arrival)
-        bus.subscribe(GAME_STARTED, self._on_game_started)
-        bus.subscribe(GAME_ENDED, self._on_game_ended)
+        bus.subscribe(MoveLoggedEvent, self._on_move_logged)
+        bus.subscribe(ArrivalEvent, self._on_arrival)
+        bus.subscribe(GameStartedEvent, self._on_game_started)
+        bus.subscribe(GameEndedEvent, self._on_game_ended)
 
     def _on_move_logged(self, event: MoveLoggedEvent) -> None:
         self._play(JUMP_CUE if event.is_jump else MOVE_CUE)
@@ -35,10 +36,10 @@ class SoundCues:
         if event.captured_piece is not None:
             self._play(CAPTURE_CUE)
 
-    def _on_game_started(self, _event: None) -> None:
+    def _on_game_started(self, _event: GameStartedEvent) -> None:
         self._play(GAME_START_CUE)
 
-    def _on_game_ended(self, _event: Optional[ArrivalEvent]) -> None:
+    def _on_game_ended(self, _event: GameEndedEvent) -> None:
         self._play(GAME_END_CUE)
 
     def _play(self, cue_name: str) -> None:

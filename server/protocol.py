@@ -22,8 +22,9 @@ square_name, just inverted.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
+from events.observers import MoveLogObserver, ScoreObserver
 from model.game_state import GameSnapshot, PieceSnapshot
 from model.piece import BLACK, WHITE
 from model.position import Position
@@ -184,3 +185,55 @@ def snapshot_from_json(payload: dict) -> GameSnapshot:
             for piece in payload["pieces"]
         ),
     )
+
+
+# Per-color moves-log/score panel data (see view/renderer.py's own side
+# panels) - kept as its own dict, merged into the same broadcast as
+# snapshot_to_json's board state rather than added as GameSnapshot fields:
+# GameEngine itself never produces a moves log or a score at all (see
+# events/observers.py's own docstring), only whichever caller registered
+# these two observers on it does - here, server/session.py's GameSession.
+# entry.notation is already resolved display text by the time this runs
+# (events.observers.MoveLogObserver did that conversion synchronously,
+# server-side), so this never needs boardio's own notation grammar - the
+# isolation this module's docstring promises stays intact.
+def panel_to_json(move_log: MoveLogObserver, score: ScoreObserver) -> dict:
+    return {
+        "move_log": {
+            color: [{"notation": entry.notation, "elapsed_ms": entry.elapsed_ms} for entry in move_log.entries_for(color)]
+            for color in (WHITE, BLACK)
+        },
+        "score": {color: score.score_for(color) for color in (WHITE, BLACK)},
+    }
+
+
+@dataclass(frozen=True)
+class _PanelMoveLine:
+    notation: str
+    elapsed_ms: int
+
+
+# Client-side duck-typed stand-in for events.observers.MoveLogObserver +
+# ScoreObserver - view/renderer.py only ever calls entries_for(color)/
+# score_for(color) on whatever it's given (see Renderer._draw_panel), so a
+# single instance of this satisfies both roles at once, rebuilt from
+# panel_to_json's wire payload on every broadcast. The real observers build
+# their state from a live GameEngine event stream that never crosses the
+# network (see play_online.py) - this is just their last-broadcast snapshot.
+class PanelState:
+    def __init__(self):
+        self._entries_by_color: dict = {}
+        self._score_by_color: dict = {}
+
+    def update_from_json(self, payload: dict) -> None:
+        self._entries_by_color = {
+            color: [_PanelMoveLine(notation=entry["notation"], elapsed_ms=entry["elapsed_ms"]) for entry in entries]
+            for color, entries in payload["move_log"].items()
+        }
+        self._score_by_color = payload["score"]
+
+    def entries_for(self, color: str) -> List[_PanelMoveLine]:
+        return self._entries_by_color.get(color, [])
+
+    def score_for(self, color: str) -> int:
+        return self._score_by_color.get(color, 0)

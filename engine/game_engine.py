@@ -3,6 +3,7 @@ from typing import List, Optional
 from model.board import BoardRepresentation
 from model.game_state import ArrivalEvent, GameObserver, GameSnapshot, JumpResult, MoveLoggedEvent, MoveResult, PieceSnapshot
 from model.piece import (
+    ActionResultReason,
     PHASE_IDLE,
     PHASE_JUMP,
     PHASE_LONG_REST,
@@ -83,7 +84,7 @@ class GameEngine:
 
     def request_move(self, source: Position, destination: Position) -> MoveResult:
         if self.game_over:
-            return MoveResult(is_accepted=False, reason="game_over")
+            return MoveResult(is_accepted=False, reason=ActionResultReason.GAME_OVER)
 
         # A piece already committed to a motion, still resting, or currently
         # airborne, can't be redirected. Airborne/resting are never part of
@@ -94,14 +95,14 @@ class GameEngine:
         piece = self._board.get_piece(source)
         if piece is not None:
             if self._real_time_arbiter.is_airborne(piece):
-                return MoveResult(is_accepted=False, reason="piece_is_airborne")
+                return MoveResult(is_accepted=False, reason=ActionResultReason.PIECE_IS_AIRBORNE)
 
             availability = move_availability(piece.state)
             if not availability.allowed:
                 return MoveResult(is_accepted=False, reason=availability.reason_if_blocked)
 
             if self._real_time_arbiter.is_in_cooldown(piece):
-                return MoveResult(is_accepted=False, reason="piece_in_cooldown")
+                return MoveResult(is_accepted=False, reason=ActionResultReason.PIECE_IN_COOLDOWN)
 
         validation = self._rule_engine.validate_move(self._board, source, destination)
         if not validation.is_valid:
@@ -128,7 +129,7 @@ class GameEngine:
         # regardless of whether started ended up True or False.
         self._handle_arrival_events(self._real_time_arbiter.take_pending_events())
         if not started:
-            return MoveResult(is_accepted=False, reason="route_conflict")
+            return MoveResult(is_accepted=False, reason=ActionResultReason.ROUTE_CONFLICT)
 
         self._notify_move(
             piece_id=piece.id,
@@ -140,25 +141,25 @@ class GameEngine:
             is_jump=False,
         )
 
-        return MoveResult(is_accepted=True, reason="ok")
+        return MoveResult(is_accepted=True, reason=ActionResultReason.OK)
 
     def request_jump(self, position: Position) -> JumpResult:
         if self.game_over:
-            return JumpResult(is_accepted=False, reason="game_over")
+            return JumpResult(is_accepted=False, reason=ActionResultReason.GAME_OVER)
 
         piece = self._board.get_piece(position)
         if piece is None:
-            return JumpResult(is_accepted=False, reason="empty_cell")
+            return JumpResult(is_accepted=False, reason=ActionResultReason.EMPTY_CELL)
 
         if self._real_time_arbiter.is_airborne(piece):
-            return JumpResult(is_accepted=False, reason="piece_is_moving")
+            return JumpResult(is_accepted=False, reason=ActionResultReason.PIECE_IS_MOVING)
 
         availability = jump_availability(piece.state)
         if not availability.allowed:
             return JumpResult(is_accepted=False, reason=availability.reason_if_blocked)
 
         if self._real_time_arbiter.is_in_cooldown(piece):
-            return JumpResult(is_accepted=False, reason="piece_in_cooldown")
+            return JumpResult(is_accepted=False, reason=ActionResultReason.PIECE_IN_COOLDOWN)
 
         # Unlike start_motion (which can still refuse over a route
         # conflict even once availability passes), start_jump's only
@@ -180,7 +181,7 @@ class GameEngine:
             is_jump=True,
         )
 
-        return JumpResult(is_accepted=True, reason="ok")
+        return JumpResult(is_accepted=True, reason=ActionResultReason.OK)
 
     def wait(self, ms: int) -> None:
         self._elapsed_ms += ms

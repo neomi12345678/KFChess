@@ -148,3 +148,20 @@ def test_each_piece_id_tracks_its_own_animation_clock_independently():
 
     assert path_a.name == "2.png"
     assert path_b.name == "1.png"
+
+
+def test_forget_missing_resets_a_dropped_pieces_animation_clock():
+    # A captured piece stops being drawn, so nothing calls sprite_path for
+    # its id again - forget_missing (see view/canvas/img_canvas.py's
+    # ImgCanvas.begin_frame) is what stops its animation-clock entry from
+    # lingering forever. Proven here by re-adding the same piece_id well
+    # into another piece's animation and expecting frame 1, not a frame
+    # computed from time elapsed before it was forgotten.
+    animator, clock = make_animator()
+    animator.sprite_path("p1", "KW", PHASE_IDLE)
+    clock.now = 0.5
+
+    animator.forget_missing(present_piece_ids=set())
+
+    path = animator.sprite_path("p1", "KW", PHASE_IDLE)
+    assert path.name == "1.png"

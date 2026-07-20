@@ -1,8 +1,8 @@
 import time
-from dataclasses import dataclass
 
 import piece_config
 from view.animation_states import STATE_FOLDER
+from view.piece_state_machine import PieceAnimationStateMachine
 
 # A piece not covered by view.animation_states.STATE_FOLDER (captured, or a
 # future addition) falls back to "idle" - a piece that isn't one of
@@ -10,17 +10,13 @@ from view.animation_states import STATE_FOLDER
 # in the first place.
 
 
-@dataclass
-class _EnteredState:
-    folder: str
-    entered_at: float
-
-
 class SpriteAnimator:
     """Picks which sprite frame to show for a piece, driven by each
     animation folder's own config.json (frames_per_sec/is_loop, read via
-    piece_config.py) - the same state machine the course's config format
-    describes, just read for its graphics half only. Real move/jump/
+    piece_config.py). How long a piece has continuously been in its current
+    folder is view/piece_state_machine.py's PieceAnimationStateMachine's job
+    (self._state_machine below) - this class only ever turns that elapsed
+    time into a frame index, never tracks state itself. Real move/jump/
     short_rest/long_rest timing all come from logic_config.py's fixed
     duration constants instead - none of it depends on this class's frame
     count/frames_per_sec, which only ever affect which sprite gets
@@ -33,25 +29,27 @@ class SpriteAnimator:
     # view/ - a caller that wants a different skin passes a different
     # piece_config.Skin in, everyone else is unaffected.
     def __init__(self, clock=time.monotonic, skin: piece_config.Skin = piece_config.DEFAULT_SKIN):
-        self._clock = clock
         self._skin = skin
-        self._entered_by_piece_id: dict[str, _EnteredState] = {}
+        self._state_machine = PieceAnimationStateMachine(clock=clock)
 
     def sprite_path(self, piece_id: str, piece_code: str, state: str):
         folder = STATE_FOLDER.get(state, "idle")
-        frame = self._current_frame(piece_id, piece_code, folder)
+        elapsed_s = self._state_machine.enter(piece_id, folder)
+        frame = self._frame_for(piece_code, folder, elapsed_s)
         return self._skin.pieces_dir / piece_code / "states" / folder / "sprites" / f"{frame}.png"
 
-    def _current_frame(self, piece_id: str, piece_code: str, folder: str) -> int:
-        now = self._clock()
-        entered = self._entered_by_piece_id.get(piece_id)
-        if entered is None or entered.folder != folder:
-            entered = _EnteredState(folder=folder, entered_at=now)
-            self._entered_by_piece_id[piece_id] = entered
+    # Forgets any piece_id not in `present_piece_ids` - see
+    # PieceAnimationStateMachine.forget_missing. Called once per rendered
+    # frame (see view/canvas/img_canvas.py's ImgCanvas.begin_frame) with
+    # every piece_id actually drawn the frame before, so a captured piece's
+    # animation clock doesn't linger forever.
+    def forget_missing(self, present_piece_ids) -> None:
+        self._state_machine.forget_missing(present_piece_ids)
 
+    def _frame_for(self, piece_code: str, folder: str, elapsed_s: float) -> int:
         state_config = piece_config.load_animation(piece_code, folder, self._skin)
 
-        elapsed_frames = int((now - entered.entered_at) * state_config.frames_per_sec)
+        elapsed_frames = int(elapsed_s * state_config.frames_per_sec)
         if state_config.is_loop:
             index = elapsed_frames % state_config.frame_count
         else:

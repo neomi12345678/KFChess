@@ -16,9 +16,10 @@ import math
 from typing import Dict, Optional, Union
 
 from app import build_game
+from events.observers import MoveLogObserver, ScoreObserver
 from model.board import BoardRepresentation
 from model.game_state import ArrivalEvent, GameObserver, JumpResult, MoveResult
-from model.piece import BLACK, KING, WHITE
+from model.piece import ActionResultReason, BLACK, KING, WHITE
 from model.position import Position
 from server.accounts import AccountStore
 from server.protocol import JUMP, Command
@@ -63,6 +64,14 @@ class GameSession:
         self._usernames: Dict[str, str] = {WHITE: white_username, BLACK: black_username}
         self._king_capture_watcher = _KingCaptureWatcher()
         self.game_engine.add_observer(self._king_capture_watcher)
+        # Registered directly, not via events/bus.py's Bus like play.py's
+        # sound/animation cues - server/ws_server.py has no notion of those,
+        # only of forwarding whatever these two accumulate to the client
+        # (see server/protocol.py's panel_to_json).
+        self.move_log = MoveLogObserver(board_height=board.height)
+        self.score = ScoreObserver()
+        self.game_engine.add_observer(self.move_log)
+        self.game_engine.add_observer(self.score)
         self._ratings_finalized = False
         self._disconnect_grace_ms = disconnect_grace_ms
         # Only present while a seat's connection is currently disconnected -
@@ -155,7 +164,7 @@ class GameSession:
     def apply_command(self, command: Command) -> Union[MoveResult, JumpResult]:
         piece = self._board.get_piece(command.source)
         if piece is None or piece.color != command.color:
-            reason = "not_your_piece"
+            reason = ActionResultReason.NOT_YOUR_PIECE
             if command.kind == JUMP:
                 return JumpResult(is_accepted=False, reason=reason)
             return MoveResult(is_accepted=False, reason=reason)

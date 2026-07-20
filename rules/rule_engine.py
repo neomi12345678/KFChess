@@ -2,7 +2,18 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Protocol
 
 from model.board import BoardRepresentation
-from model.piece import BISHOP, KING, KIND_BY_LETTER, KNIGHT, PAWN, PieceRepresentation, QUEEN, ROOK, WHITE
+from model.piece import (
+    ActionResultReason,
+    BISHOP,
+    KING,
+    KIND_BY_LETTER,
+    KNIGHT,
+    PAWN,
+    PieceRepresentation,
+    QUEEN,
+    ROOK,
+    WHITE,
+)
 from model.position import Position
 from rules.board_rules import BoardRules
 from rules.piece_rules import BishopRule, KingRule, KnightRule, PawnRule, PieceRule, QueenRule, RookRule
@@ -41,7 +52,7 @@ ensure_covers(STANDARD_PIECE_RULES, KIND_BY_LETTER.values())
 @dataclass
 class MoveValidation:
     is_valid: bool
-    reason: str
+    reason: ActionResultReason
 
 
 class RuleEngine:
@@ -66,9 +77,9 @@ class RuleEngine:
         piece = board.get_piece(source)
         rule = self._piece_rules.get(piece.kind)
         if rule is None or destination not in rule.legal_destinations(board, piece):
-            return MoveValidation(is_valid=False, reason="illegal_piece_move")
+            return MoveValidation(is_valid=False, reason=ActionResultReason.ILLEGAL_PIECE_MOVE)
 
-        return MoveValidation(is_valid=True, reason="ok")
+        return MoveValidation(is_valid=True, reason=ActionResultReason.OK)
 
 
 class WinCondition(Protocol):

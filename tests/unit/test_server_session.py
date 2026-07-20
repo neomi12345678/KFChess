@@ -217,6 +217,26 @@ def test_finalize_ratings_updates_and_persists_both_accounts_after_a_king_captur
     assert account_store.rating_for("bob") == 1184
 
 
+def test_apply_command_populates_the_real_move_log_and_score_observers(account_store):
+    # A 1x2 board: white rook right next to a black pawn (not a king - see
+    # model.piece.PIECE_VALUES, a captured king is worth 0 points, since
+    # that capture already ends the game via a resignation/rating path, not
+    # a score one) - one move both logs a move-log entry and, once it
+    # lands, credits white's score - the same MoveLogObserver/ScoreObserver
+    # play.py wires up locally (see events/observers.py), here fed by the
+    # server's own GameEngine instead.
+    session = make_session("wR bP", account_store)
+
+    session.apply_command(Command(color=WHITE, kind=MOVE, source=Position(0, 0), destination=Position(0, 1)))
+
+    [entry] = session.move_log.entries_for(WHITE)
+    assert entry.notation == "Rxb1"
+
+    session.tick(MOVE_CELL_DURATION_MS + 1)
+
+    assert session.score.score_for(WHITE) == 1
+
+
 def test_finalize_ratings_only_ever_applies_once(account_store):
     session = make_session("wK . .\n. . .\n. . .", account_store)
     session.resign(WHITE)
