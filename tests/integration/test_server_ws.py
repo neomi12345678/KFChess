@@ -429,6 +429,48 @@ def test_disconnected_player_can_reconnect_within_the_grace_window_and_resume():
     asyncio.run(scenario())
 
 
+def test_reconnecting_before_the_stale_socket_closes_does_not_evict_the_new_connection():
+    async def scenario():
+        async with running_server(disconnect_grace_ms=200) as server:
+            uri = f"ws://localhost:{server.bound_port}"
+            async with websockets.connect(uri) as a:
+                b = await websockets.connect(uri)
+                await login(a, "alice")
+                await login(b, "bob")
+                await play(a)
+                await play(b)
+                await recv_of_type(a, "seat")  # alice = white
+                await recv_of_type(b, "seat")  # bob = black
+
+                # bob's client reconnects (e.g. after a network blip) and
+                # logs back in on a fresh socket *before* the server has
+                # noticed the old one, b, is gone - b's recv loop is still
+                # blocked, not yet closed.
+                async with websockets.connect(uri) as b2:
+                    await login(b2, "bob")
+
+                    # The stale socket finally closes. Its _handle_connection
+                    # finally-block must not tear down b2's now-current
+                    # entry for "bob" just because the username matches.
+                    await b.close()
+
+                    # Comfortably past disconnect_grace_ms - a reintroduced
+                    # bug would have force-resigned bob's seat by now.
+                    await asyncio.sleep(0.5)
+
+                    with pytest.raises(asyncio.TimeoutError):
+                        await recv_of_type(a, "game_over", timeout=1.0)
+
+                    # bob, via b2, is still recognized as the seated player -
+                    # "not_in_game" is exactly what a wrongful eviction would
+                    # produce.
+                    await b2.send("Ba1a2")
+                    ack = await recv_of_type(b2, "ack")
+                    assert ack["reason"] != "not_in_game"
+
+    asyncio.run(scenario())
+
+
 def test_disconnect_without_reconnecting_in_time_forces_a_resignation():
     async def scenario():
         account_store = AccountStore(":memory:")

@@ -87,7 +87,12 @@ class GameServer:
             async for message in websocket:
                 username = await self._handle_message(websocket, username, message)
         finally:
-            if username is not None:
+            # Only tear down state if this socket is still the one on file
+            # for the username - a newer connection may have already logged
+            # this same username back in (e.g. a client reconnecting after a
+            # network blip before this stale socket's recv loop noticed),
+            # and this socket closing later must not evict that live one.
+            if username is not None and self._connections_by_username.get(username) is websocket:
                 self._connections_by_username.pop(username, None)
                 self._matchmaking.remove(username)
                 if self.current_game is not None:
