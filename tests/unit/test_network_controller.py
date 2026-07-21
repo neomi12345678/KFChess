@@ -1,7 +1,7 @@
 from model.game_state import GameSnapshot, PieceSnapshot
 from model.piece import BLACK, KING, PHASE_IDLE, PHASE_MOVE, ROOK, WHITE
 from model.position import Position
-from server.network_controller import JumpRequest, MoveRequest, NetworkController
+from client.network_controller import JumpRequest, MoveRequest, NetworkController
 
 
 def make_piece(piece_id, color, kind=ROOK, row=0, col=0, motion_phase=PHASE_IDLE):
@@ -127,7 +127,7 @@ def test_second_click_is_ignored_when_a_different_piece_now_occupies_the_selecte
 
     # Real wall-clock time passes between two clicks - the originally
     # selected piece may have been replaced by a different one landing on
-    # the same cell (see server/network_controller.py's own docstring).
+    # the same cell (see client/network_controller.py's own docstring).
     snapshot_b = make_snapshot([make_piece("impostor", WHITE, row=0, col=0)])
 
     result = controller.click(Position(0, 2), snapshot_b)

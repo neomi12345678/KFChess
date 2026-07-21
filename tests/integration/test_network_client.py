@@ -3,7 +3,7 @@ NetworkGameClient (the same transport play_online.py uses), no mocking.
 
 NetworkGameClient's own blocking calls (login/play/wait_for_seat) must run
 via run_in_executor rather than awaited directly - they're synchronous by
-design (see server/network_client.py's own docstring: the GUI frame loop
+design (see client/network_client.py's own docstring: the GUI frame loop
 that drives them isn't async), but calling one directly from this test's
 own coroutine would block the very event loop the server task here needs
 to keep running on, deadlocking the reply it's waiting for.
@@ -15,8 +15,8 @@ import contextlib
 import pytest
 
 from boardio.board_parser import parse
+from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
 from server.accounts import AccountStore
-from server.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
 from server.ws_server import GameServer
 
 STARTING_BOARD = "wR . .\n. . .\n. . ."

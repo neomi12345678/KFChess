@@ -7,7 +7,7 @@ the section-6 room flow (see server/rooms.py) - moves by hand once seated.
 A stand-in until the real GUI talks to the server directly, not a
 replacement for it.
 
-Run: python -m server.client_cli
+Run: python -m client.client_cli
 """
 
 import asyncio

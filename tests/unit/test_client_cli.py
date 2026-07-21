@@ -1,7 +1,7 @@
 import pytest
 
 from model.piece import BLACK, WHITE
-from server.client_cli import (
+from client.client_cli import (
     InputError,
     _ClientState,
     build_cancel_room,

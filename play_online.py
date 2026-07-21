@@ -2,10 +2,10 @@
 driven by the server (see server/ws_server.py) over WebSocket instead of a
 local GameEngine. Login and matchmaking/room setup happen in the terminal
 before the window opens (the Home screen's own "shell, not GUI" login step
-- see server/client_cli.py, the text-only equivalent of this); once
+- see client/client_cli.py, the text-only equivalent of this); once
 seated, this renders whatever server/protocol.py's snapshot broadcasts say
 the board looks like, and turns clicks into wire commands via
-server/network_controller.py instead of a local Controller. A room
+client/network_controller.py instead of a local Controller. A room
 (server/rooms.py) joined as a spectator instead of the opponent renders
 the exact same way, minus any click handling - see is_spectator below.
 
@@ -16,13 +16,19 @@ MoveLogObserver/ScoreObserver, rebuilt from each broadcast's own
 observers on the server's own GameEngine) rather than from a live local
 event stream, since only the server ever sees GameEngine's raw events.
 
-Sound cues (see events/sound.py's play_cue) work the same way, one level
-removed: there's no GameEngine here to publish MoveLoggedEvent/ArrivalEvent
-to a local Bus at all (unlike play.py - see game_builder.py's build_app),
-so _cue_for_new_entry below derives a cue name straight from each newly
-arrived move-log entry's own notation string instead - "x" for a capture,
-a trailing "^" for a jump (see boardio/algebraic_notation.py's own
-move_notation/jump_notation), anything else a plain move.
+Sound/animation cues go through the exact same events/sound.py's SoundCues
+and events/game_animations.py's GameAnimationCues game_builder.py wires up
+for local play (see build_app there) - just fed by a local Bus of this
+client's own instead of a live GameEngine. There's no GameEngine here to
+publish MoveLoggedEvent/ArrivalEvent itself (unlike play.py), so
+_publish_move_events below re-derives those two events from each newly
+arrived move-log entry's own notation string - "x" for a capture, a
+trailing "^" for a jump (see boardio/algebraic_notation.py's own
+move_notation/jump_notation) - and publishes them on this client's Bus,
+same as GameEngine's own BusBridge would. The fields neither SoundCues nor
+GameAnimationCues ever reads (piece identity, board positions, the real
+captured Piece) are left as placeholders - the wire never carries them, and
+nothing downstream looks at them.
 
 Run: python play_online.py
 """
@@ -34,12 +40,16 @@ from typing import Dict, Optional
 
 import piece_config
 from boardio.algebraic_notation import square_name
+from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
+from client.network_controller import JumpRequest, MoveRequest, NetworkController
 from display_config import compute_cell_size, screen_resolution_px, side_panel_width_for
-from events.sound import CAPTURE_CUE, GAME_END_CUE, GAME_START_CUE, JUMP_CUE, MOVE_CUE, play_cue
+from events.bus import Bus
+from events.game_animations import GameAnimationCues
+from events.game_events import GameEndedEvent, GameStartedEvent
+from events.sound import SoundCues
 from input.board_mapper import BoardMapper
+from model.game_state import ArrivalEvent, MoveLoggedEvent
 from model.piece import BLACK, WHITE
-from server.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
-from server.network_controller import JumpRequest, MoveRequest, NetworkController
 from server.protocol import PanelState, snapshot_from_json
 from view.canvas.img_canvas import ImgCanvas
 from view.canvas.window import GameWindow
@@ -146,29 +156,44 @@ def _wait_for_first_snapshot(client: NetworkGameClient, timeout: float = 5.0) ->
     raise NetworkClientError("timed out waiting for the first board snapshot")
 
 
-def _cue_for_notation(notation: str) -> str:
-    if "x" in notation:
-        return CAPTURE_CUE
-    if notation.endswith("^"):
-        return JUMP_CUE
-    return MOVE_CUE
+# A stand-in for the real captured Piece SoundCues/GameAnimationCues never
+# actually get here (see this module's own docstring) - ArrivalEvent's
+# captured_piece is only ever tested for "is this None or not" by either
+# subscriber, never read into, so any non-None object satisfies that check.
+_CAPTURED_PIECE_PLACEHOLDER = object()
 
 
 # Diffs panel_state's own per-color move-log entry counts against
 # move_log_counts (this client's running tally, updated in place) and
-# returns a cue name for every entry that's newly arrived since the last
-# call - ordinarily at most one per color per broadcast, but this holds up
-# fine even if a client fell behind a tick and a broadcast's move log grew
-# by more than one entry at once.
-def _new_move_cues(panel_state: PanelState, move_log_counts: Dict[str, int]) -> list:
-    cues = []
+# publishes a MoveLoggedEvent - plus an ArrivalEvent for a capture - on bus
+# for every entry that's newly arrived since the last call, deriving
+# is_capture/is_jump from the entry's own notation string the same way the
+# server's real algebraic-notation grammar produced it. Ordinarily at most
+# one new entry per color per broadcast, but this holds up fine even if a
+# client fell behind a tick and a broadcast's move log grew by more than one
+# entry at once.
+def _publish_move_events(bus: Bus, panel_state: PanelState, move_log_counts: Dict[str, int]) -> None:
     for color in (WHITE, BLACK):
         entries = panel_state.entries_for(color)
         previous_count = move_log_counts.get(color, 0)
         for entry in entries[previous_count:]:
-            cues.append(_cue_for_notation(entry.notation))
+            is_jump = entry.notation.endswith("^")
+            is_capture = "x" in entry.notation
+            bus.publish(
+                MoveLoggedEvent(
+                    color=color,
+                    kind="",
+                    source=None,
+                    destination=None,
+                    is_capture=is_capture,
+                    is_jump=is_jump,
+                    elapsed_ms=entry.elapsed_ms,
+                    piece_id="",
+                )
+            )
+            if is_capture:
+                bus.publish(ArrivalEvent(piece=None, captured_piece=_CAPTURED_PIECE_PLACEHOLDER))
         move_log_counts[color] = len(entries)
-    return cues
 
 
 def main() -> None:  # pragma: no cover
@@ -203,7 +228,14 @@ def main() -> None:  # pragma: no cover
     # and none of those already-happened moves should each play a sound
     # cue the instant this client catches up to them.
     move_log_counts: Dict[str, int] = {color: len(panel_state.entries_for(color)) for color in (WHITE, BLACK)}
-    play_cue(GAME_START_CUE)
+
+    # This client's own local Bus - the network counterpart to
+    # game_builder.py's build_app wiring the same two subscribers to a
+    # GameEngine-fed Bus for local play (see this module's own docstring).
+    client_bus = Bus()
+    SoundCues(client_bus)
+    GameAnimationCues(client_bus)
+    client_bus.publish(GameStartedEvent())
 
     cell_size = compute_cell_size(latest_snapshot.board_width, latest_snapshot.board_height, screen_size=screen_resolution_px)
     side_panel_width_px = side_panel_width_for(cell_size)
@@ -272,11 +304,16 @@ def main() -> None:  # pragma: no cover
                 latest_snapshot = snapshot_from_json(message)
                 panel_state.update_from_json(message)
                 saw_snapshot_this_batch = True
-                for cue_name in _new_move_cues(panel_state, move_log_counts):
-                    play_cue(cue_name)
+                _publish_move_events(client_bus, panel_state, move_log_counts)
             elif message.get("type") == "game_over":
                 print(f"Game over. New ratings: {message['ratings']}")
-                play_cue(GAME_END_CUE)
+                # arrival=None - unlike every other GameEndedEvent, there's
+                # no ArrivalEvent behind a networked game-over at all (see
+                # server/session.py's resign(), a disconnect timeout rather
+                # than a king-capture ArrivalEvent), and neither SoundCues
+                # nor GameAnimationCues ever reads this field anyway (see
+                # this module's own docstring).
+                client_bus.publish(GameEndedEvent(arrival=None))
             elif message.get("type") == "disconnect_countdown":
                 disconnect_countdown_text = (
                     f"Opponent disconnected - resigning in {message['seconds_remaining']}s unless they return"
@@ -305,7 +342,7 @@ def main() -> None:  # pragma: no cover
 
         # controller.selected is purely this client's own UX state - the
         # server's own broadcast has no notion of it (see
-        # server/network_controller.py) - so it's overlaid here just for
+        # client/network_controller.py) - so it's overlaid here just for
         # rendering the highlight, the same role GameEngine.snapshot's own
         # selected argument plays for the local GUI (see app.py's App.render).
         # None for a spectator, who has no controller (and thus nothing of

@@ -128,7 +128,7 @@ class NetworkGameClient:
         return self._wait_for_type("join_room_ack", timeout)
 
     # Loops past any interleaved message of a different type rather than
-    # raising on the first mismatch - mirrors server/client_cli.py's own
+    # raising on the first mismatch - mirrors client/client_cli.py's own
     # _recv_of_type, for the same reason: a reply to something just sent
     # and a periodic broadcast are written by independent tasks server-
     # side, so either can land first on the wire. stop_types names message
