@@ -237,6 +237,51 @@ def test_apply_command_populates_the_real_move_log_and_score_observers(account_s
     assert session.score.score_for(WHITE) == 1
 
 
+def test_drain_wire_events_reports_a_plain_move_as_move_logged_not_a_jump(account_store):
+    session = make_session("wR . .\n. . .\n. . .", account_store)
+
+    session.apply_command(Command(color=WHITE, kind=MOVE, source=Position(0, 0), destination=Position(0, 2)))
+
+    assert session.drain_wire_events() == [{"type": "move_logged", "is_jump": False}]
+
+
+def test_drain_wire_events_reports_a_jump_as_move_logged_with_is_jump_true(account_store):
+    session = make_session("wK . .\n. . .\n. . .", account_store)
+
+    session.apply_command(Command(color=WHITE, kind=JUMP, source=Position(0, 0), destination=None))
+
+    assert session.drain_wire_events() == [{"type": "move_logged", "is_jump": True}]
+
+
+def test_drain_wire_events_reports_a_capture_once_the_piece_actually_arrives(account_store):
+    # A 1x2 board: white rook right next to a black pawn - the capture only
+    # resolves (and thus only buffers a "capture" wire event) once the move
+    # actually lands, on tick(), not at request time.
+    session = make_session("wR bP", account_store)
+    session.apply_command(Command(color=WHITE, kind=MOVE, source=Position(0, 0), destination=Position(0, 1)))
+
+    assert session.drain_wire_events() == [{"type": "move_logged", "is_jump": False}]
+
+    session.tick(MOVE_CELL_DURATION_MS + 1)
+
+    assert session.drain_wire_events() == [{"type": "capture"}]
+
+
+def test_drain_wire_events_is_empty_when_nothing_happened(account_store):
+    session = make_session("wK . .\n. . .\n. . .", account_store)
+
+    assert session.drain_wire_events() == []
+
+
+def test_drain_wire_events_clears_the_buffer_once_read(account_store):
+    session = make_session("wR . .\n. . .\n. . .", account_store)
+    session.apply_command(Command(color=WHITE, kind=MOVE, source=Position(0, 0), destination=Position(0, 2)))
+
+    session.drain_wire_events()
+
+    assert session.drain_wire_events() == []
+
+
 def test_finalize_ratings_only_ever_applies_once(account_store):
     session = make_session("wK . .\n. . .\n. . .", account_store)
     session.resign(WHITE)

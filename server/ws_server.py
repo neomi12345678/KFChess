@@ -482,6 +482,14 @@ class GameServer:
 
         session.tick(whole_ms)
 
+        # Sent before the game-over check below, not after - a king-capture
+        # ArrivalEvent (and thus its "capture" wire event) is published by
+        # the very same tick() call that also ends the game, and a game that
+        # just ended returns from this method early (see below) without
+        # reaching the ordinary snapshot broadcast at its end.
+        for wire_event in session.drain_wire_events():
+            await self._broadcast_to_game(game, wire_event)
+
         rating_update = session.finalize_ratings_if_game_over()
         if rating_update is not None:
             await self._broadcast_to_game(game, {"type": "game_over", "ratings": rating_update})

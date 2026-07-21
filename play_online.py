@@ -21,14 +21,15 @@ and events/game_animations.py's GameAnimationCues game_builder.py wires up
 for local play (see build_app there) - just fed by a local Bus of this
 client's own instead of a live GameEngine. There's no GameEngine here to
 publish MoveLoggedEvent/ArrivalEvent itself (unlike play.py), so
-_publish_move_events below re-derives those two events from each newly
-arrived move-log entry's own notation string - "x" for a capture, a
-trailing "^" for a jump (see boardio/algebraic_notation.py's own
-move_notation/jump_notation) - and publishes them on this client's Bus,
-same as GameEngine's own BusBridge would. The fields neither SoundCues nor
-GameAnimationCues ever reads (piece identity, board positions, the real
-captured Piece) are left as placeholders - the wire never carries them, and
-nothing downstream looks at them.
+_handle_sound_event below reconstructs minimal stand-ins for those two
+events straight from the server's own "move_logged"/"capture" wire messages
+(see server/session.py's drain_wire_events, buffered off the server's real
+GameEngine-fed bus) and publishes them on this client's Bus, same as
+GameEngine's own BusBridge would - server-authoritative facts, not a guess
+reconstructed from move-log notation text the way this used to work. The
+fields neither SoundCues nor GameAnimationCues ever reads (piece identity,
+board positions, the real captured Piece) are left as placeholders - the
+wire never carries them, and nothing downstream looks at them.
 
 Run: python play_online.py
 """
@@ -36,7 +37,7 @@ Run: python play_online.py
 import dataclasses
 import getpass
 import time
-from typing import Dict, Optional
+from typing import Optional
 
 import piece_config
 from boardio.algebraic_notation import square_name
@@ -163,37 +164,31 @@ def _wait_for_first_snapshot(client: NetworkGameClient, timeout: float = 5.0) ->
 _CAPTURED_PIECE_PLACEHOLDER = object()
 
 
-# Diffs panel_state's own per-color move-log entry counts against
-# move_log_counts (this client's running tally, updated in place) and
-# publishes a MoveLoggedEvent - plus an ArrivalEvent for a capture - on bus
-# for every entry that's newly arrived since the last call, deriving
-# is_capture/is_jump from the entry's own notation string the same way the
-# server's real algebraic-notation grammar produced it. Ordinarily at most
-# one new entry per color per broadcast, but this holds up fine even if a
-# client fell behind a tick and a broadcast's move log grew by more than one
-# entry at once.
-def _publish_move_events(bus: Bus, panel_state: PanelState, move_log_counts: Dict[str, int]) -> None:
-    for color in (WHITE, BLACK):
-        entries = panel_state.entries_for(color)
-        previous_count = move_log_counts.get(color, 0)
-        for entry in entries[previous_count:]:
-            is_jump = entry.notation.endswith("^")
-            is_capture = "x" in entry.notation
-            bus.publish(
-                MoveLoggedEvent(
-                    color=color,
-                    kind="",
-                    source=None,
-                    destination=None,
-                    is_capture=is_capture,
-                    is_jump=is_jump,
-                    elapsed_ms=entry.elapsed_ms,
-                    piece_id="",
-                )
+# Reconstructs a minimal MoveLoggedEvent/ArrivalEvent straight from one of
+# the server's own "move_logged"/"capture" wire messages (see
+# server/session.py's drain_wire_events) and publishes it on bus - the same
+# two events GameEngine's own BusBridge would publish for local play, just
+# fed by the server's say-so instead of a live GameEngine. Every field
+# neither SoundCues nor GameAnimationCues actually reads is left as a
+# placeholder, same as _CAPTURED_PIECE_PLACEHOLDER above - the wire only
+# ever carries what those two subscribers need (is_jump, and whether a
+# capture happened at all).
+def _handle_sound_event(bus: Bus, message: dict) -> None:
+    if message["type"] == "move_logged":
+        bus.publish(
+            MoveLoggedEvent(
+                color="",
+                kind="",
+                source=None,
+                destination=None,
+                is_capture=False,
+                is_jump=message["is_jump"],
+                elapsed_ms=0,
+                piece_id="",
             )
-            if is_capture:
-                bus.publish(ArrivalEvent(piece=None, captured_piece=_CAPTURED_PIECE_PLACEHOLDER))
-        move_log_counts[color] = len(entries)
+        )
+    elif message["type"] == "capture":
+        bus.publish(ArrivalEvent(piece=None, captured_piece=_CAPTURED_PIECE_PLACEHOLDER))
 
 
 def main() -> None:  # pragma: no cover
@@ -222,12 +217,6 @@ def main() -> None:  # pragma: no cover
     latest_snapshot = snapshot_from_json(first_snapshot_payload)
     panel_state = PanelState()
     panel_state.update_from_json(first_snapshot_payload)
-
-    # Seeded from the first snapshot's own counts, not empty - a
-    # mid-game reconnect's move log can already be several entries deep,
-    # and none of those already-happened moves should each play a sound
-    # cue the instant this client catches up to them.
-    move_log_counts: Dict[str, int] = {color: len(panel_state.entries_for(color)) for color in (WHITE, BLACK)}
 
     # This client's own local Bus - the network counterpart to
     # game_builder.py's build_app wiring the same two subscribers to a
@@ -304,7 +293,8 @@ def main() -> None:  # pragma: no cover
                 latest_snapshot = snapshot_from_json(message)
                 panel_state.update_from_json(message)
                 saw_snapshot_this_batch = True
-                _publish_move_events(client_bus, panel_state, move_log_counts)
+            elif message.get("type") in ("move_logged", "capture"):
+                _handle_sound_event(client_bus, message)
             elif message.get("type") == "game_over":
                 print(f"Game over. New ratings: {message['ratings']}")
                 # arrival=None - unlike every other GameEndedEvent, there's

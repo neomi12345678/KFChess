@@ -324,6 +324,33 @@ def test_broadcast_carries_the_moves_log_and_score_panel_data():
     asyncio.run(scenario())
 
 
+def test_broadcast_carries_a_move_logged_and_a_capture_wire_event():
+    # A king-capturing move on this board - see server/session.py's
+    # drain_wire_events, which a networked client (see play_online.py) uses
+    # instead of guessing "was that a capture?" from move-log notation text.
+    async def scenario():
+        async with running_server(board_text=KING_CAPTURE_BOARD) as server:
+            uri = f"ws://localhost:{server.bound_port}"
+            async with websockets.connect(uri) as a, websockets.connect(uri) as b:
+                await login(a, "alice")
+                await login(b, "bob")
+                await play(a)
+                await play(b)
+                await recv_of_type(a, "seat")  # alice = white
+                await recv_of_type(b, "seat")  # bob = black
+
+                await a.send("Wa1b1")
+                await recv_of_type(a, "ack")
+
+                move_logged = await recv_of_type(a, "move_logged", timeout=5.0)
+                assert move_logged == {"type": "move_logged", "is_jump": False}
+
+                capture = await recv_of_type(a, "capture", timeout=5.0)
+                assert capture == {"type": "capture"}
+
+    asyncio.run(scenario())
+
+
 def test_wrong_seat_command_is_rejected_before_reaching_the_engine():
     async def scenario():
         async with running_server() as server:

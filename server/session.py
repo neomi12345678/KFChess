@@ -13,7 +13,7 @@ front instead of exposing an assign_seat()/login() step of its own.
 """
 
 import math
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from app import build_game
 from events.bus import Bus
@@ -71,9 +71,10 @@ class GameSession:
         # local GUI's sound/animation cues - the king-capture watcher, move
         # log, and score are subscribers here too, not GameEngine observers
         # in their own right. GameEngine itself only ever sees BusBridge
-        # (see events/bus_bridge.py); server/ws_server.py still has no
-        # notion of any of this, only of forwarding whatever move_log/score
-        # accumulate to the client (see server/protocol.py's panel_to_json).
+        # (see events/bus_bridge.py); server/ws_server.py has no notion of
+        # this bus itself, only of the move_log/score it accumulates (see
+        # server/protocol.py's panel_to_json) and the wire events it buffers
+        # for a networked client's own sound cues (see drain_wire_events).
         self._bus = Bus()
         self._king_capture_watcher = _KingCaptureWatcher()
         self._bus.subscribe(ArrivalEvent, self._king_capture_watcher.on_arrival)
@@ -82,6 +83,20 @@ class GameSession:
         self._bus.subscribe(MoveLoggedEvent, self.move_log.on_move_logged)
         self._bus.subscribe(ArrivalEvent, self.move_log.on_arrival)
         self._bus.subscribe(ArrivalEvent, self.score.on_arrival)
+
+        # The bare minimum a networked client needs to fire the same
+        # move/jump/capture sound cue a local GameEngine-fed Bus would (see
+        # events/sound.py's SoundCues) - buffered here rather than sent
+        # immediately, since GameSession has no notion of websockets or
+        # broadcasting (see this module's own docstring); server/ws_server.py
+        # drains this once per tick (see drain_wire_events) and broadcasts
+        # each entry as its own message, instead of a networked client
+        # re-guessing "was that a capture?" from the move-log's own notation
+        # text the way it used to.
+        self._pending_wire_events: List[dict] = []
+        self._bus.subscribe(MoveLoggedEvent, self._buffer_move_logged)
+        self._bus.subscribe(ArrivalEvent, self._buffer_capture)
+
         self.game_engine.add_observer(BusBridge(self._bus))
         self._bus.publish(GameStartedEvent())
 
@@ -90,6 +105,29 @@ class GameSession:
         # Only present while a seat's connection is currently disconnected -
         # absent means "connected" (see mark_disconnected/mark_reconnected).
         self._disconnected_ms: Dict[str, int] = {}
+
+    def _buffer_move_logged(self, event: MoveLoggedEvent) -> None:
+        self._pending_wire_events.append({"type": "move_logged", "is_jump": event.is_jump})
+
+    # Fires on every arrival, but only ever buffered for a capture - a
+    # networked client's SoundCues only reacts to ArrivalEvent.captured_piece
+    # being non-None (see events/sound.py's SoundCues._on_arrival), so a
+    # quiet arrival has nothing worth telling it about. Buffered as soon as
+    # this fires, same as a local Bus would - including a mid-flight
+    # interception's capture (has_landed=False), which the old notation-
+    # guessing approach could only ever detect once the mover's own move-log
+    # entry was finally corrected at landing (see events/observers.py's
+    # MoveLogObserver.on_arrival).
+    def _buffer_capture(self, event: ArrivalEvent) -> None:
+        if event.captured_piece is not None:
+            self._pending_wire_events.append({"type": "capture"})
+
+    # Drains every wire event buffered since the last call, in order - see
+    # server/ws_server.py's _advance_game, the only caller, once per tick.
+    def drain_wire_events(self) -> List[dict]:
+        events = self._pending_wire_events
+        self._pending_wire_events = []
+        return events
 
     @property
     def board_height(self) -> int:
