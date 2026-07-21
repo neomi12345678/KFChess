@@ -9,27 +9,15 @@ client/network_controller.py instead of a local Controller. A room
 (server/rooms.py) joined as a spectator instead of the opponent renders
 the exact same way, minus any click handling - see is_spectator below.
 
-The moves-log/score side panels are driven by server/protocol.py's
-PanelState - a client-side duck-typed stand-in for events/observers.py's
-MoveLogObserver/ScoreObserver, rebuilt from each broadcast's own
-"move_log"/"score" keys (see server/session.py, which registers the real
-observers on the server's own GameEngine) rather than from a live local
-event stream, since only the server ever sees GameEngine's raw events.
-
-Sound/animation cues go through the exact same events/sound.py's SoundCues
-and events/game_animations.py's GameAnimationCues game_builder.py wires up
-for local play (see build_app there) - just fed by a local Bus of this
-client's own instead of a live GameEngine. There's no GameEngine here to
-publish MoveLoggedEvent/ArrivalEvent itself (unlike play.py), so
-_handle_sound_event below reconstructs minimal stand-ins for those two
-events straight from the server's own "move_logged"/"capture" wire messages
-(see server/session.py's drain_wire_events, buffered off the server's real
-GameEngine-fed bus) and publishes them on this client's Bus, same as
-GameEngine's own BusBridge would - server-authoritative facts, not a guess
-reconstructed from move-log notation text the way this used to work. The
-fields neither SoundCues nor GameAnimationCues ever reads (piece identity,
-board positions, the real captured Piece) are left as placeholders - the
-wire never carries them, and nothing downstream looks at them.
+The moves-log/score side panels, the sound/animation Bus, and the two
+transient status banners (disconnect countdown, a rejected move) are all
+owned by client/game_view_state.py's GameViewState, not this module - see
+its own docstring for why that state (and the message-dispatch logic that
+updates it) lives there instead of as locals/closures in main() below:
+mainly so it can be unit-tested without a real GameWindow/canvas/renderer.
+main() here is only ever responsible for the terminal login/matchmaking
+step, wiring GameViewState up to a real NetworkGameClient/GameWindow, and
+driving the render loop - never for deciding what any wire message means.
 
 Run: python play_online.py
 """
@@ -41,17 +29,12 @@ from typing import Optional
 
 import piece_config
 from boardio.algebraic_notation import square_name
+from client.game_view_state import GameViewState
 from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
 from client.network_controller import JumpRequest, MoveRequest, NetworkController
 from display_config import compute_cell_size, screen_resolution_px, side_panel_width_for
-from events.bus import Bus
-from events.game_animations import GameAnimationCues
-from events.game_events import GameEndedEvent, GameStartedEvent
-from events.sound import SoundCues
 from input.board_mapper import BoardMapper
-from model.game_state import ArrivalEvent, MoveLoggedEvent
 from model.piece import BLACK, WHITE
-from server.protocol import PanelState, snapshot_from_json
 from view.canvas.img_canvas import ImgCanvas
 from view.canvas.window import GameWindow
 from view.renderer import Renderer
@@ -157,40 +140,6 @@ def _wait_for_first_snapshot(client: NetworkGameClient, timeout: float = 5.0) ->
     raise NetworkClientError("timed out waiting for the first board snapshot")
 
 
-# A stand-in for the real captured Piece SoundCues/GameAnimationCues never
-# actually get here (see this module's own docstring) - ArrivalEvent's
-# captured_piece is only ever tested for "is this None or not" by either
-# subscriber, never read into, so any non-None object satisfies that check.
-_CAPTURED_PIECE_PLACEHOLDER = object()
-
-
-# Reconstructs a minimal MoveLoggedEvent/ArrivalEvent straight from one of
-# the server's own "move_logged"/"capture" wire messages (see
-# server/session.py's drain_wire_events) and publishes it on bus - the same
-# two events GameEngine's own BusBridge would publish for local play, just
-# fed by the server's say-so instead of a live GameEngine. Every field
-# neither SoundCues nor GameAnimationCues actually reads is left as a
-# placeholder, same as _CAPTURED_PIECE_PLACEHOLDER above - the wire only
-# ever carries what those two subscribers need (is_jump, and whether a
-# capture happened at all).
-def _handle_sound_event(bus: Bus, message: dict) -> None:
-    if message["type"] == "move_logged":
-        bus.publish(
-            MoveLoggedEvent(
-                color="",
-                kind="",
-                source=None,
-                destination=None,
-                is_capture=False,
-                is_jump=message["is_jump"],
-                elapsed_ms=0,
-                piece_id="",
-            )
-        )
-    elif message["type"] == "capture":
-        bus.publish(ArrivalEvent(piece=None, captured_piece=_CAPTURED_PIECE_PLACEHOLDER))
-
-
 def main() -> None:  # pragma: no cover
     client = NetworkGameClient(HOST, PORT)
 
@@ -213,30 +162,19 @@ def main() -> None:  # pragma: no cover
     # reject everything a real seated player's could legitimately do.
     is_spectator = my_color is None
 
-    first_snapshot_payload = _wait_for_first_snapshot(client)
-    latest_snapshot = snapshot_from_json(first_snapshot_payload)
-    panel_state = PanelState()
-    panel_state.update_from_json(first_snapshot_payload)
+    state = GameViewState(_wait_for_first_snapshot(client))
 
-    # This client's own local Bus - the network counterpart to
-    # game_builder.py's build_app wiring the same two subscribers to a
-    # GameEngine-fed Bus for local play (see this module's own docstring).
-    client_bus = Bus()
-    SoundCues(client_bus)
-    GameAnimationCues(client_bus)
-    client_bus.publish(GameStartedEvent())
-
-    cell_size = compute_cell_size(latest_snapshot.board_width, latest_snapshot.board_height, screen_size=screen_resolution_px)
+    cell_size = compute_cell_size(state.snapshot.board_width, state.snapshot.board_height, screen_size=screen_resolution_px)
     side_panel_width_px = side_panel_width_for(cell_size)
     board_mapper = BoardMapper(
-        width=latest_snapshot.board_width,
-        height=latest_snapshot.board_height,
+        width=state.snapshot.board_width,
+        height=state.snapshot.board_height,
         cell_size=cell_size,
         board_offset_x=side_panel_width_px,
     )
     canvas = ImgCanvas(
-        board_width=latest_snapshot.board_width,
-        board_height=latest_snapshot.board_height,
+        board_width=state.snapshot.board_width,
+        board_height=state.snapshot.board_height,
         side_panel_width_px=side_panel_width_px,
         cell_size=cell_size,
         skin=piece_config.DEFAULT_SKIN,
@@ -255,10 +193,10 @@ def main() -> None:  # pragma: no cover
         if controller is None:
             return
         cell = board_mapper.pixel_to_cell(x, y)
-        request = controller.click(cell, latest_snapshot)
+        request = controller.click(cell, state.snapshot)
         if isinstance(request, MoveRequest):
-            source = square_name(request.source, latest_snapshot.board_height)
-            destination = square_name(request.destination, latest_snapshot.board_height)
+            source = square_name(request.source, state.snapshot.board_height)
+            destination = square_name(request.destination, state.snapshot.board_height)
             client.send_command(f"{my_letter}{source}{destination}")
 
     def handle_jump(x: int, y: int) -> None:
@@ -267,68 +205,19 @@ def main() -> None:  # pragma: no cover
         cell = board_mapper.pixel_to_cell(x, y)
         request = controller.jump(cell)
         if isinstance(request, JumpRequest):
-            square = square_name(request.position, latest_snapshot.board_height)
+            square = square_name(request.position, state.snapshot.board_height)
             client.send_command(f"{my_letter}J{square}")
 
     window = GameWindow("KFChess (online)")
     window.on_click(handle_click)
     window.on_jump(handle_jump)
 
-    # How long a rejected move/jump's message stays on screen - the ack
-    # itself (unlike disconnect_countdown) is a one-off reply, not a
-    # standing state the server keeps re-broadcasting, so there's no
-    # "still true" signal to clear it on; it just times out instead.
-    ILLEGAL_MOVE_MESSAGE_S = 2.0
-
-    disconnect_countdown_text = None
-    illegal_move_text = None
-    illegal_move_expires_at = 0.0
-
     running = True
     while running:
-        saw_snapshot_this_batch = False
-        saw_countdown_this_batch = False
+        state.begin_batch()
         for message in client.poll_messages():
-            if "pieces" in message:
-                latest_snapshot = snapshot_from_json(message)
-                panel_state.update_from_json(message)
-                saw_snapshot_this_batch = True
-            elif message.get("type") in ("move_logged", "capture"):
-                _handle_sound_event(client_bus, message)
-            elif message.get("type") == "game_over":
-                print(f"Game over. New ratings: {message['ratings']}")
-                # arrival=None - unlike every other GameEndedEvent, there's
-                # no ArrivalEvent behind a networked game-over at all (see
-                # server/session.py's resign(), a disconnect timeout rather
-                # than a king-capture ArrivalEvent), and neither SoundCues
-                # nor GameAnimationCues ever reads this field anyway (see
-                # this module's own docstring).
-                client_bus.publish(GameEndedEvent(arrival=None))
-            elif message.get("type") == "disconnect_countdown":
-                disconnect_countdown_text = (
-                    f"Opponent disconnected - resigning in {message['seconds_remaining']}s unless they return"
-                )
-                saw_countdown_this_batch = True
-            elif message.get("type") == "ack" and not message.get("accepted"):
-                illegal_move_text = f"Illegal move: {message.get('reason')}"
-                illegal_move_expires_at = time.monotonic() + ILLEGAL_MOVE_MESSAGE_S
-
-        # A tick that broadcast a snapshot but no accompanying
-        # disconnect_countdown means the opponent's seat is no longer
-        # disconnected (see server/ws_server.py's _advance_game, which only
-        # ever sends the countdown while is_disconnected(seat))
-        # - clear the stale banner rather than leaving last tick's message
-        # on screen forever once they reconnect.
-        if saw_snapshot_this_batch and not saw_countdown_this_batch:
-            disconnect_countdown_text = None
-
-        if illegal_move_text is not None and time.monotonic() >= illegal_move_expires_at:
-            illegal_move_text = None
-
-        # disconnect_countdown_text wins the single status-message slot when
-        # both are live - it reflects a standing fact the opponent is
-        # waiting on, not a transient one-off like a rejected move.
-        status_message = disconnect_countdown_text or illegal_move_text
+            state.apply_message(message)
+        state.end_batch()
 
         # controller.selected is purely this client's own UX state - the
         # server's own broadcast has no notion of it (see
@@ -338,9 +227,9 @@ def main() -> None:  # pragma: no cover
         # None for a spectator, who has no controller (and thus nothing of
         # their own ever selected) at all.
         selected_cell = controller.selected if controller is not None else None
-        display_snapshot = dataclasses.replace(latest_snapshot, selected_cell=selected_cell)
+        display_snapshot = dataclasses.replace(state.snapshot, selected_cell=selected_cell)
         ui_snapshot = build_ui_snapshot(
-            display_snapshot, move_log=panel_state, score=panel_state, status_message=status_message
+            display_snapshot, move_log=state.panel_state, score=state.panel_state, status_message=state.status_message
         )
         canvas.begin_frame()
         renderer.draw(ui_snapshot)
