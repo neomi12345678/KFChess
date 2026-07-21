@@ -1,8 +1,10 @@
 """Networked counterpart to play.py: same graphical window/renderer, but
 driven by the server (see server/ws_server.py) over WebSocket instead of a
-local GameEngine. Login and matchmaking/room setup happen in the terminal
-before the window opens (the Home screen's own "shell, not GUI" login step
-- see client/client_cli.py, the text-only equivalent of this); once
+local GameEngine. Login and matchmaking/room setup happen in a small tkinter
+GUI window before the game window opens (see client/setup_dialogs.py - cv2,
+which the game window itself is built on, has no text-entry/button widgets
+of its own; client/client_cli.py remains the separate, terminal-only shell
+client the Home screen's own "shell, not GUI" login step uses); once
 seated, this renders whatever server/protocol.py's snapshot broadcasts say
 the board looks like, and turns clicks into wire commands via
 client/network_controller.py instead of a local Controller. A room
@@ -15,23 +17,22 @@ owned by client/game_view_state.py's GameViewState, not this module - see
 its own docstring for why that state (and the message-dispatch logic that
 updates it) lives there instead of as locals/closures in main() below:
 mainly so it can be unit-tested without a real GameWindow/canvas/renderer.
-main() here is only ever responsible for the terminal login/matchmaking
-step, wiring GameViewState up to a real NetworkGameClient/GameWindow, and
-driving the render loop - never for deciding what any wire message means.
+main() here is only ever responsible for the login/matchmaking setup step,
+wiring GameViewState up to a real NetworkGameClient/GameWindow, and driving
+the render loop - never for deciding what any wire message means.
 
 Run: python play_online.py
 """
 
 import dataclasses
-import getpass
 import time
-from typing import Optional
 
 import piece_config
 from boardio.algebraic_notation import square_name
 from client.game_view_state import GameViewState
-from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
+from client.network_client import NetworkClientError, NetworkGameClient
 from client.network_controller import JumpRequest, MoveRequest, NetworkController
+from client.setup_dialogs import SetupCancelled, run_game_setup, run_login
 from display_config import compute_cell_size, screen_resolution_px, side_panel_width_for
 from input.board_mapper import BoardMapper
 from model.piece import BLACK, WHITE
@@ -43,91 +44,6 @@ from view.ui_snapshot import build_ui_snapshot
 HOST = "localhost"
 PORT = 8765
 _SEAT_LETTER = {WHITE: "W", BLACK: "B"}
-
-
-def _prompt_login(client: NetworkGameClient) -> dict:
-    username = input("Username: ").strip()
-    password = getpass.getpass("Password: ")
-    return client.login(username, password)
-
-
-# Returns the seated color (WHITE/BLACK) for matchmaking or joining a room
-# as its opponent, or None for joining a room as a spectator - main() below
-# is what turns that None into "skip building a NetworkController at all"
-# (see is_spectator there). Loops on any rejection/timeout rather than
-# giving up outright, the same "try again" UX play() already had.
-def _prompt_for_game(client: NetworkGameClient) -> Optional[str]:
-    print("Type 'play' for matchmaking, 'create' to open a room, or 'join <id>' to join one.")
-    while True:
-        typed = input("> ").strip()
-        lowered = typed.lower()
-
-        if lowered == "play":
-            play_ack = client.play()
-            if not play_ack["accepted"]:
-                print(f"Could not queue: {play_ack['reason']}")
-                continue
-
-            print("Searching for an opponent...")
-            try:
-                seat_message = client.wait_for_seat()
-            except MatchmakingTimeoutError:
-                # The server itself gave up (see server/matchmaking.py's
-                # TIMEOUT_MS) - reported the moment it happens, not after
-                # our own longer local wait_for_seat timeout also elapses.
-                print("No opponent found in time - try again.")
-                continue
-            except NetworkClientError:
-                print("Lost connection while waiting for a match.")
-                continue
-            return seat_message["color"]
-
-        if lowered == "create":
-            create_ack = client.create_room()
-            if not create_ack["accepted"]:
-                print(f"Could not create a room: {create_ack['reason']}")
-                continue
-
-            room_id = create_ack["room_id"]
-            print(f"Room created: {room_id} - share this id with your opponent. Waiting for them to join...")
-            try:
-                # No fixed timeout on the wire for this (unlike PLAY's own
-                # matchmaking_timeout) - a room just waits until its
-                # creator cancels it themselves (Ctrl+C) or someone joins.
-                # A day-long timeout stands in for "indefinitely" - Queue.get
-                # needs an actual float, and float("inf") isn't a timeout
-                # value the underlying lock primitives are guaranteed to
-                # accept cleanly.
-                seat_message = client.wait_for_seat(timeout=86_400.0)
-            except NetworkClientError:
-                print("Lost connection while waiting for an opponent.")
-                continue
-            return seat_message["color"]
-
-        if lowered.startswith("join "):
-            room_id = typed[len("join "):].strip()
-            if not room_id:
-                print("(usage: 'join <room id>')")
-                continue
-
-            join_ack = client.join_room(room_id)
-            if not join_ack["accepted"]:
-                print(f"Could not join room {room_id}: {join_ack['reason']}")
-                continue
-
-            if join_ack["role"] == "spectator":
-                print(f"Joined room {room_id} as a spectator.")
-                return None
-
-            print(f"Joined room {room_id} as the opponent.")
-            try:
-                seat_message = client.wait_for_seat()
-            except NetworkClientError:
-                print("Lost connection while waiting to be seated.")
-                continue
-            return seat_message["color"]
-
-        print("(type 'play', 'create', or 'join <id>')")
 
 
 def _wait_for_first_snapshot(client: NetworkGameClient, timeout: float = 5.0) -> dict:
@@ -143,18 +59,22 @@ def _wait_for_first_snapshot(client: NetworkGameClient, timeout: float = 5.0) ->
 def main() -> None:  # pragma: no cover
     client = NetworkGameClient(HOST, PORT)
 
-    login_ack = _prompt_login(client)
-    if not login_ack["accepted"]:
-        print(f"Login failed: {login_ack['reason']}")
-        return
-    print(f"Logged in as {login_ack['username']} (rating {login_ack['rating']})")
+    try:
+        # run_login only ever returns once the server has accepted the
+        # login (it loops the GUI form on rejection itself) - see
+        # client/setup_dialogs.py.
+        login_ack = run_login(client)
+        print(f"Logged in as {login_ack['username']} (rating {login_ack['rating']})")
 
-    if login_ack.get("reconnected"):
-        my_color = login_ack["color"]
-        print(f"Reconnected to your game as {my_color}")
-    else:
-        my_color = _prompt_for_game(client)
-        print(f"Seated as {my_color}" if my_color is not None else "Spectating.")
+        if login_ack.get("reconnected"):
+            my_color = login_ack["color"]
+            print(f"Reconnected to your game as {my_color}")
+        else:
+            my_color = run_game_setup(client)
+            print(f"Seated as {my_color}" if my_color is not None else "Spectating.")
+    except SetupCancelled:
+        client.close()
+        return
 
     # A spectator (see server/rooms.py) has no seat of their own to move as
     # - every click/jump handler below becomes a no-op, and no
