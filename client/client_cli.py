@@ -17,10 +17,9 @@ from typing import Optional
 
 import websockets
 
-from model.piece import BLACK, WHITE
 from server.main import HOST, PORT
+from server.protocol import COLOR_PREFIX
 
-_SEAT_LETTER = {WHITE: "W", BLACK: "B"}
 _PLAY_INPUT = "play"
 _CREATE_ROOM_INPUT = "create room"
 _CANCEL_ROOM_INPUT = "cancel room"
@@ -64,7 +63,7 @@ def build_command(raw_input: str, seat: str) -> str:
     if not text:
         raise InputError("empty input")
 
-    letter = _SEAT_LETTER[seat]
+    letter = COLOR_PREFIX[seat]
     parts = text.split(None, 1)
 
     if parts[0].lower() == "jump":

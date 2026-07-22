@@ -39,7 +39,13 @@ from model.game_state import GameSnapshot, PieceSnapshot
 from model.piece import BLACK, WHITE
 from model.position import Position
 
-_COLOR_BY_PREFIX = {"W": WHITE, "B": BLACK}
+# The wire format's own color letters (see this module's docstring) - public
+# so a client building a command (client/client_cli.py, play_online.py) can
+# get "W"/"B" for its own seat from the same single source of truth this
+# module parses commands back out of, instead of each hand-rolling its own
+# copy of this mapping.
+COLOR_PREFIX = {WHITE: "W", BLACK: "B"}
+_COLOR_BY_PREFIX = {letter: color for color, letter in COLOR_PREFIX.items()}
 _LOGIN_PREFIX = "LOGIN "
 PLAY_COMMAND = "PLAY"
 

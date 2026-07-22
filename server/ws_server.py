@@ -57,7 +57,7 @@ from server.protocol import (
     snapshot_to_json,
 )
 from server.rooms import Room, RoomError, RoomRegistry
-from server.session import DISCONNECT_GRACE_MS, GameSession
+from server.session import DISCONNECT_GRACE_MS, OTHER_SEAT, GameSession
 
 DEFAULT_TICK_INTERVAL_S = 0.05
 
@@ -75,9 +75,6 @@ DEFAULT_TICK_INTERVAL_S = 0.05
 PING_INTERVAL_S = 10.0
 PING_TIMEOUT_S = 10.0
 CLOSE_TIMEOUT_S = 5.0
-
-_OTHER_SEAT = {WHITE: BLACK, BLACK: WHITE}
-
 
 # {color: username} for panel_to_json's own names argument (see
 # server/protocol.py) - both seats' real usernames were already fixed at
@@ -511,7 +508,7 @@ class GameServer:
             if session.is_disconnected(seat):
                 await self._send_to_seat(
                     session,
-                    _OTHER_SEAT[seat],
+                    OTHER_SEAT[seat],
                     {
                         "type": "disconnect_countdown",
                         "seat": seat,

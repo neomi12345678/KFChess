@@ -36,6 +36,7 @@ from client.setup_dialogs import SetupCancelled, run_game_setup, run_login
 from display_config import compute_cell_size, screen_resolution_px, side_panel_width_for
 from input.board_mapper import BoardMapper
 from model.piece import BLACK, WHITE
+from server.protocol import COLOR_PREFIX
 from view.canvas.img_canvas import ImgCanvas
 from view.canvas.window import GameWindow
 from view.renderer import Renderer
@@ -43,7 +44,6 @@ from view.ui_snapshot import build_ui_snapshot
 
 HOST = "localhost"
 PORT = 8765
-_SEAT_LETTER = {WHITE: "W", BLACK: "B"}
 
 
 def _wait_for_first_snapshot(client: NetworkGameClient, timeout: float = 5.0) -> dict:
@@ -120,7 +120,7 @@ def main() -> None:  # pragma: no cover
     )
 
     controller = None if is_spectator else NetworkController(my_color)
-    my_letter = None if is_spectator else _SEAT_LETTER[my_color]
+    my_letter = None if is_spectator else COLOR_PREFIX[my_color]
 
     def handle_click(x: int, y: int) -> None:
         if controller is None:

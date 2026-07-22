@@ -28,7 +28,11 @@ from server.accounts import AccountStore
 from server.protocol import JUMP, Command
 from server.rating import updated_ratings
 
-_OTHER_SEAT = {WHITE: BLACK, BLACK: WHITE}
+# Shared with server/ws_server.py (see its own import of this constant) -
+# "the other seat" is the same lookup whether it's this module deciding a
+# resignation's winner or ws_server.py addressing the disconnect-countdown
+# broadcast at the opponent.
+OTHER_SEAT = {WHITE: BLACK, BLACK: WHITE}
 
 # How long a disconnected seat gets before it's ruled a resignation (see
 # resign()) - the Home-screen slide's own "auto-resign after 20 sec".
@@ -197,7 +201,7 @@ class GameSession:
         if loser_seat is None:
             return None
 
-        winner_seat = _OTHER_SEAT[loser_seat]
+        winner_seat = OTHER_SEAT[loser_seat]
         winner_username = self._usernames[winner_seat]
         loser_username = self._usernames[loser_seat]
 
