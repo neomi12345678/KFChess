@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 
 from model.game_state import ArrivalEvent, MoveLoggedEvent
 from events.bus import Bus
-from events.game_events import GameEndedEvent, GameStartedEvent
+from events.game_events import GameEndedEvent, GameStartedEvent, RemoteCaptureEvent
 
 MOVE_CUE = "move"
 JUMP_CUE = "jump"
@@ -70,6 +70,7 @@ class SoundCues:
         self.played: List[str] = []
         bus.subscribe(MoveLoggedEvent, self._on_move_logged)
         bus.subscribe(ArrivalEvent, self._on_arrival)
+        bus.subscribe(RemoteCaptureEvent, self._on_remote_capture)
         bus.subscribe(GameStartedEvent, self._on_game_started)
         bus.subscribe(GameEndedEvent, self._on_game_ended)
 
@@ -79,6 +80,12 @@ class SoundCues:
     def _on_arrival(self, event: ArrivalEvent) -> None:
         if event.captured_piece is not None:
             self._play(CAPTURE_CUE)
+
+    # Same cue as a local capture's ArrivalEvent above - see
+    # events/game_events.py's RemoteCaptureEvent for why a networked capture
+    # can't carry (or fake) a real ArrivalEvent's captured_piece instead.
+    def _on_remote_capture(self, _event: RemoteCaptureEvent) -> None:
+        self._play(CAPTURE_CUE)
 
     def _on_game_started(self, _event: GameStartedEvent) -> None:
         self._play(GAME_START_CUE)

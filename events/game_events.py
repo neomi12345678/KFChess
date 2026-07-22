@@ -24,3 +24,15 @@ class GameEndedEvent:
     # events/bus_bridge.py's on_arrival for why "game over" is inferred
     # from a king capture there, rather than GameEngine reporting it itself.
     arrival: ArrivalEvent
+
+
+@dataclass(frozen=True)
+class RemoteCaptureEvent:
+    """A capture just happened, reported by client/network_message_adapter.py's
+    NetworkMessageAdapter from the server's own "capture" wire message (see
+    server/session.py's drain_wire_events) - unlike a local GameEngine's own
+    ArrivalEvent (model/game_state.py), the wire carries no piece identity,
+    board position, or the real captured Piece, so there's no ArrivalEvent
+    to reconstruct even a placeholder for. Subscribers that only ever check
+    "did a capture happen" (SoundCues) treat this the same as an ArrivalEvent
+    whose captured_piece isn't None."""

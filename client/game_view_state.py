@@ -1,68 +1,47 @@
 """State a networked game window (play_online.py) accumulates from the
 server's own broadcasts - the latest board/panel snapshot, this client's
-local sound/animation Bus, and the two transient status banners
-(disconnect countdown, a rejected move) - kept as its own class so the
-message-dispatch logic (apply_message) is unit-testable without a real
-GameWindow/canvas/renderer, the same way client/network_controller.py's
-click/jump logic already is.
+local sound/animation Bus, and the single status banner (disconnect
+countdown, a rejected move) - kept as its own class so the message-handling
+logic (apply_message) is unit-testable without a real GameWindow/canvas/
+renderer, the same way client/network_controller.py's click/jump logic
+already is.
 
-apply_message's only job is translating a raw wire message into a typed
-domain event and publishing it on self.bus (events/bus.py) - it never
-mutates view state itself. Every subscriber below (SoundCues,
-GameAnimationCues, StatusBannerCues) reacts to whichever event types it
-cares about without apply_message needing to know who's listening, the same
-Pub/Sub split game_builder.py's build_app already uses for local play
-(events/bus_bridge.py publishing GameEngine's own on_move_logged/on_arrival
-calls onto a Bus). Before this, apply_message dispatched through a private
-message_type -> bound-method table and had disconnect_countdown/ack write
-straight into this object's own fields - a hand-rolled, string-keyed
-Subject/Observer that only this class could ever add a listener to.
-
-There's no GameEngine here to publish MoveLoggedEvent/ArrivalEvent itself
-(unlike play.py), so apply_message reconstructs minimal stand-ins for
-those two events straight from the server's own "move_logged"/"capture"
-wire messages (see server/session.py's drain_wire_events, buffered off the
-server's real GameEngine-fed bus) - server-authoritative facts, not a guess
-reconstructed from move-log notation text. The fields neither SoundCues nor
-GameAnimationCues ever reads (piece identity, board positions, the real
-captured Piece) are left as placeholders - the wire never carries them, and
-nothing downstream looks at them.
+apply_message's own job is now narrow: apply the periodic full-board
+snapshot directly (there's no discrete "event" to publish for a continuous
+state broadcast), and hand every other wire message to
+client/network_message_adapter.py's NetworkMessageAdapter, which translates
+it into a typed domain event and publishes it on self.bus (events/bus.py).
+GameViewState itself never mutates status-banner state - StatusBannerState
+below is a Bus subscriber, same as SoundCues/GameAnimationCues, and owns
+that reaction entirely on its own. Before this split, apply_message
+dispatched wire messages through a private message_type -> bound-method
+table and had disconnect_countdown/ack write straight into this object's
+own fields - a hand-rolled, string-keyed Subject/Observer that only this
+class could ever add a listener to, and that mixed wire-parsing with view
+state in one place.
 """
 
 import time
 from dataclasses import dataclass
 from typing import Optional
 
+from client.network_message_adapter import DisconnectCountdownEvent, MoveRejectedEvent, NetworkMessageAdapter
 from events.bus import Bus
 from events.game_animations import GameAnimationCues
-from events.game_events import GameEndedEvent, GameStartedEvent
+from events.game_events import GameStartedEvent
 from events.sound import SoundCues
-from model.game_state import ArrivalEvent, GameSnapshot, MoveLoggedEvent
+from model.game_state import GameSnapshot
 from server.protocol import PanelState, snapshot_from_json
 
-# A stand-in for the real captured Piece SoundCues/GameAnimationCues never
-# actually get here (see this module's own docstring) - ArrivalEvent's
-# captured_piece is only ever tested for "is this None or not" by either
-# subscriber, never read into, so any non-None object satisfies that check.
-_CAPTURED_PIECE_PLACEHOLDER = object()
 
-
-# The three event types below exist only for this module's own wire
-# messages (disconnect_countdown/ack/the periodic full snapshot) - unlike
-# MoveLoggedEvent/ArrivalEvent (model/game_state.py) or GameStartedEvent/
-# GameEndedEvent (events/game_events.py), nothing outside a networked game
-# ever produces or subscribes to them, so they're kept next to their one
-# publisher (apply_message) and one subscriber (StatusBannerCues) instead.
-@dataclass(frozen=True)
-class DisconnectCountdownEvent:
-    seconds_remaining: int
-
-
-@dataclass(frozen=True)
-class MoveRejectedEvent:
-    reason: str
-
-
+# Published only by GameViewState.apply_message's own snapshot branch below,
+# and only ever subscribed to by StatusBannerState - unlike
+# DisconnectCountdownEvent/MoveRejectedEvent (client/network_message_adapter.py),
+# there's no wire message type carrying this; it exists purely so
+# StatusBannerState's end-of-batch "did a snapshot arrive without a
+# countdown" check (see its own end_batch) can react to the snapshot the
+# same way it reacts to every other event, through the Bus, instead of
+# GameViewState reaching into it directly.
 @dataclass(frozen=True)
 class SnapshotAppliedEvent:
     pass
@@ -78,8 +57,10 @@ ILLEGAL_MOVE_MESSAGE_S = 2.0
 # Owns the single status-banner slot play_online.py reads (GameViewState.
 # status_message delegates here) - a Bus subscriber like SoundCues/
 # GameAnimationCues, so it (and only it) knows how a disconnect countdown
-# and a rejected move combine into one line of text.
-class StatusBannerCues:
+# and a rejected move combine into one line of text. Not "...Cues" like
+# those two: it holds standing state across ticks rather than firing a
+# one-shot reaction (a sound, a triggered animation) per event.
+class StatusBannerState:
     def __init__(self, bus: Bus):
         self.disconnect_countdown_text: Optional[str] = None
         self.illegal_move_text: Optional[str] = None
@@ -147,28 +128,13 @@ class GameViewState:
         self.bus = Bus()
         SoundCues(self.bus)
         GameAnimationCues(self.bus)
-        self.status_banner = StatusBannerCues(self.bus)
+        self.status_banner = StatusBannerState(self.bus)
+        self.message_adapter = NetworkMessageAdapter(self.bus)
         self.bus.publish(GameStartedEvent())
-
-        # message.get("type") -> raw wire message -> domain event, the one
-        # thing apply_message needs per-instance state for (none, actually -
-        # every factory below is pure - but kept as a bound-method dict
-        # anyway so a message type unknown here is a silent no-op lookup
-        # miss, same as before).
-        self._event_factories = {
-            "move_logged": self._move_logged_event,
-            "capture": self._capture_event,
-            "game_over": self._game_over_event,
-            "disconnect_countdown": self._disconnect_countdown_event,
-            "ack": self._ack_event,
-        }
 
     def begin_batch(self) -> None:
         self.status_banner.begin_batch()
 
-    # Translates one raw wire message into a domain event and publishes it
-    # on self.bus - never mutates view state directly (see this module's own
-    # docstring for why: every subscriber above owns its own reaction).
     def apply_message(self, message: dict) -> None:
         if "pieces" in message:
             self.snapshot = snapshot_from_json(message)
@@ -176,48 +142,7 @@ class GameViewState:
             self.bus.publish(SnapshotAppliedEvent())
             return
 
-        factory = self._event_factories.get(message.get("type"))
-        if factory is None:
-            return
-        event = factory(message)
-        if event is not None:
-            self.bus.publish(event)
-
-    def _move_logged_event(self, message: dict) -> MoveLoggedEvent:
-        return MoveLoggedEvent(
-            color="",
-            kind="",
-            source=None,
-            destination=None,
-            is_capture=False,
-            is_jump=message["is_jump"],
-            elapsed_ms=0,
-            piece_id="",
-        )
-
-    def _capture_event(self, _message: dict) -> ArrivalEvent:
-        return ArrivalEvent(piece=None, captured_piece=_CAPTURED_PIECE_PLACEHOLDER)
-
-    def _game_over_event(self, message: dict) -> GameEndedEvent:
-        print(f"Game over. New ratings: {message['ratings']}")
-        # arrival=None - unlike every other GameEndedEvent, there's no
-        # ArrivalEvent behind a networked game-over at all (see
-        # server/session.py's resign(), a disconnect timeout rather
-        # than a king-capture ArrivalEvent), and neither SoundCues nor
-        # GameAnimationCues ever reads this field anyway (see this
-        # module's own docstring).
-        return GameEndedEvent(arrival=None)
-
-    def _disconnect_countdown_event(self, message: dict) -> DisconnectCountdownEvent:
-        return DisconnectCountdownEvent(seconds_remaining=message["seconds_remaining"])
-
-    # None (no event) when the move was accepted - there's nothing for
-    # StatusBannerCues to react to, the same as apply_message silently
-    # discarding a message type it has no factory for at all.
-    def _ack_event(self, message: dict) -> Optional[MoveRejectedEvent]:
-        if message.get("accepted"):
-            return None
-        return MoveRejectedEvent(reason=message.get("reason"))
+        self.message_adapter.apply(message)
 
     def end_batch(self) -> None:
         self.status_banner.end_batch()
