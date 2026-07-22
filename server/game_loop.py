@@ -18,9 +18,16 @@ from typing import Callable, Dict, Optional, Set
 
 from model.board import BoardRepresentation
 from model.piece import BLACK, WHITE
-from net_protocol import DISCONNECT_COUNTDOWN, GAME_OVER, MATCHMAKING_TIMEOUT, SEAT, panel_to_json, snapshot_to_json
+from net_protocol import (
+    DisconnectCountdownMessage,
+    GameOverMessage,
+    MatchmakingTimeoutMessage,
+    SeatMessage,
+    panel_to_json,
+    snapshot_to_json,
+)
 from server.accounts import AccountStore
-from server.connections import ConnectionRegistry
+from server.connections import ConnectionRegistry, WirePayload
 from server.matchmaking import MatchmakingQueue
 from server.rooms import Room, RoomRegistry
 from server.session import OTHER_SEAT, GameSession
@@ -103,7 +110,7 @@ class GameLoop:
         self._games[room.room_id] = game
 
         for seat, username in ((WHITE, room.creator), (BLACK, room.opponent)):
-            await self._connections.send_to_username(username, {"type": SEAT, "color": seat})
+            await self._connections.send_to_username(username, SeatMessage(color=seat))
 
         # Empty in the ordinary "opponent just joined" path - a room only
         # ever gains spectators after it stops being pending (see
@@ -144,7 +151,7 @@ class GameLoop:
 
     async def _advance_matchmaking(self, whole_ms: int) -> None:
         for username in self.matchmaking.advance_time(whole_ms):
-            await self._connections.send_to_username(username, {"type": MATCHMAKING_TIMEOUT})
+            await self._connections.send_to_username(username, MatchmakingTimeoutMessage())
 
     async def _try_start_a_match(self) -> None:
         match = self.matchmaking.find_match()
@@ -166,7 +173,7 @@ class GameLoop:
         self._games[f"play-{self._next_play_game_id}"] = ActiveGame(session=session)
 
         for seat, username in ((WHITE, white_username), (BLACK, black_username)):
-            await self._connections.send_to_username(username, {"type": SEAT, "color": seat})
+            await self._connections.send_to_username(username, SeatMessage(color=seat))
 
     async def _advance_game(self, game_id: str, game: ActiveGame, whole_ms: int) -> None:
         session = game.session
@@ -187,7 +194,7 @@ class GameLoop:
 
         rating_update = session.finalize_ratings_if_game_over()
         if rating_update is not None:
-            await self._broadcast_to_game(game, {"type": GAME_OVER, "ratings": rating_update})
+            await self._broadcast_to_game(game, GameOverMessage(ratings=rating_update))
             del self._games[game_id]
             if game.room_id is not None:
                 self._rooms.close(game.room_id)
@@ -197,18 +204,14 @@ class GameLoop:
             if session.is_disconnected(seat):
                 await self._connections.send_to_username(
                     session.username_for(OTHER_SEAT[seat]),
-                    {
-                        "type": DISCONNECT_COUNTDOWN,
-                        "seat": seat,
-                        "seconds_remaining": session.seconds_remaining_for(seat),
-                    },
+                    DisconnectCountdownMessage(seat=seat, seconds_remaining=session.seconds_remaining_for(seat)),
                 )
 
         payload = snapshot_to_json(session.snapshot())
         payload.update(panel_to_json(session.move_log, session.score, names_for(session)))
         await self._broadcast_to_game(game, payload)
 
-    async def _broadcast_to_game(self, game: ActiveGame, payload: dict) -> None:
+    async def _broadcast_to_game(self, game: ActiveGame, payload: WirePayload) -> None:
         for seat in (WHITE, BLACK):
             await self._connections.send_to_username(game.session.username_for(seat), payload)
         # list(...) - a spectator's connection can drop (and its finally

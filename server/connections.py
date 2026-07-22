@@ -5,9 +5,30 @@ goes through here instead of calling websocket.send directly.
 """
 
 import json
-from typing import Dict
+from dataclasses import asdict, is_dataclass
+from typing import Dict, Union
 
 import websockets
+
+from net_protocol import ErrorMessage
+
+# Every outgoing control message is one of net_protocol.py's frozen
+# dataclasses (ErrorMessage stands in for the whole family here just for
+# the type hint) - the per-tick snapshot broadcast is the one exception,
+# still a plain dict from snapshot_to_json/panel_to_json (see net_protocol.py's
+# own docstring on why that one has no dataclass).
+WirePayload = Union[ErrorMessage, dict]
+
+
+# A dataclass field only has a default (None) when that message genuinely
+# omits it sometimes (see net_protocol.py's own docstring on each message) -
+# stripping those Nones here, in the one place every send funnels through,
+# is what keeps the actual bytes on the wire identical to before these
+# dataclasses existed, so no client-side parsing needed to change.
+def _as_wire_dict(payload: WirePayload) -> dict:
+    if not is_dataclass(payload):
+        return payload
+    return {key: value for key, value in asdict(payload).items() if value is not None}
 
 
 class ConnectionRegistry:
@@ -47,13 +68,13 @@ class ConnectionRegistry:
     # out of the tick loop and crash the *entire* server over one player's
     # dead socket - every other game along with it.
     @staticmethod
-    async def send(websocket, payload: dict) -> None:
+    async def send(websocket, payload: WirePayload) -> None:
         try:
-            await websocket.send(json.dumps(payload))
+            await websocket.send(json.dumps(_as_wire_dict(payload)))
         except (websockets.exceptions.ConnectionClosed, OSError):
             pass
 
-    async def send_to_username(self, username: str, payload: dict) -> None:
+    async def send_to_username(self, username: str, payload: WirePayload) -> None:
         websocket = self._by_username.get(username)
         if websocket is not None:
             await self.send(websocket, payload)

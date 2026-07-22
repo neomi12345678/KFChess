@@ -27,6 +27,41 @@ python -m pytest
 
 runs the full suite (unit tests + the `.kfc` integration scripts).
 
+### Playing it locally (graphical)
+
+```
+python play.py
+```
+
+Opens a real window (via `view/canvas/window.py`, backed by OpenCV) on the
+standard chess starting position: click a piece then a destination to move
+it, right-click (see `GameWindow`) to jump. This is the same `GameEngine`
+`main.py` drives, just wired to a real canvas and a real click loop
+(`app.py`'s `App`) instead of a `.kfc` script's `click`/`jump` commands.
+
+### Playing it online
+
+```
+python -m server.main
+```
+
+starts the WebSocket server (`server/ws_server.py`) on `ws://localhost:8765`
+(see `net_protocol.py`'s `HOST`/`PORT`) - a lobby that pairs players by
+rating (`PLAY`) or lets one create/join an explicit room
+(`CREATE_ROOM`/`JOIN_ROOM`), then ticks every active game's `GameEngine`
+forward and broadcasts its snapshot to both seats.
+
+```
+python play_online.py
+```
+
+connects to that server: a small tkinter dialog (`client/setup_dialogs.py`)
+handles login and matchmaking/room setup, then the same graphical window
+`play.py` uses renders whatever the server broadcasts, with clicks sent as
+wire commands instead of driving a local `GameEngine` directly. Run it
+twice (two terminals/accounts) against the same server for a full two-player
+game.
+
 ## Architecture
 
 The codebase is organized so each layer only knows about the layer below it

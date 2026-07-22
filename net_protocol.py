@@ -54,6 +54,109 @@ MOVE_LOGGED = "move_logged"
 CAPTURE = "capture"
 
 
+# One dataclass per server->client control message (everything except the
+# per-tick snapshot broadcast, which stays a plain dict built by
+# snapshot_to_json/panel_to_json below - it has no "type" of its own, see
+# client/game_view_state.py's own "pieces" in message check). Each mirrors
+# its message's exact real-world shape: a field is only Optional/defaulted
+# if that message genuinely sends it sometimes and omits it other times
+# (see server/connections.py's ConnectionRegistry.send, which drops None
+# fields before serializing so the wire shape is unchanged from before
+# these existed) - a field with no default is one every send site actually
+# provides. Building one of these with a missing required field or a typo'd
+# keyword argument is a TypeError at the send site, not a message a client
+# silently never matches anything in.
+@dataclass(frozen=True)
+class ErrorMessage:
+    message: str
+    type: str = ERROR
+
+
+@dataclass(frozen=True)
+class LoginAckMessage:
+    accepted: bool
+    reason: Optional[str] = None
+    username: Optional[str] = None
+    rating: Optional[int] = None
+    reconnected: Optional[bool] = None
+    color: Optional[str] = None
+    resuming_room_id: Optional[str] = None
+    type: str = LOGIN_ACK
+
+
+@dataclass(frozen=True)
+class PlayAckMessage:
+    accepted: bool
+    reason: str
+    type: str = PLAY_ACK
+
+
+@dataclass(frozen=True)
+class CreateRoomAckMessage:
+    accepted: bool
+    reason: Optional[str] = None
+    room_id: Optional[str] = None
+    type: str = CREATE_ROOM_ACK
+
+
+@dataclass(frozen=True)
+class JoinRoomAckMessage:
+    accepted: bool
+    reason: Optional[str] = None
+    room_id: Optional[str] = None
+    role: Optional[str] = None
+    type: str = JOIN_ROOM_ACK
+
+
+@dataclass(frozen=True)
+class CancelRoomAckMessage:
+    accepted: bool
+    reason: Optional[str] = None
+    type: str = CANCEL_ROOM_ACK
+
+
+@dataclass(frozen=True)
+class AckMessage:
+    accepted: bool
+    reason: str
+    type: str = ACK
+
+
+@dataclass(frozen=True)
+class SeatMessage:
+    color: str
+    type: str = SEAT
+
+
+@dataclass(frozen=True)
+class MatchmakingTimeoutMessage:
+    type: str = MATCHMAKING_TIMEOUT
+
+
+@dataclass(frozen=True)
+class DisconnectCountdownMessage:
+    seat: str
+    seconds_remaining: int
+    type: str = DISCONNECT_COUNTDOWN
+
+
+@dataclass(frozen=True)
+class GameOverMessage:
+    ratings: Dict[str, int]
+    type: str = GAME_OVER
+
+
+@dataclass(frozen=True)
+class MoveLoggedMessage:
+    is_jump: bool
+    type: str = MOVE_LOGGED
+
+
+@dataclass(frozen=True)
+class CaptureMessage:
+    type: str = CAPTURE
+
+
 def _position_to_json(position: Optional[Position]) -> Optional[dict]:
     if position is None:
         return None

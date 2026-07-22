@@ -53,13 +53,13 @@ from model.piece import BLACK, WHITE
 from net_protocol import HOST as DEFAULT_HOST
 from net_protocol import PORT as DEFAULT_PORT
 from net_protocol import (
-    ACK,
-    CANCEL_ROOM_ACK,
-    CREATE_ROOM_ACK,
-    ERROR,
-    JOIN_ROOM_ACK,
-    LOGIN_ACK,
-    PLAY_ACK,
+    AckMessage,
+    CancelRoomAckMessage,
+    CreateRoomAckMessage,
+    ErrorMessage,
+    JoinRoomAckMessage,
+    LoginAckMessage,
+    PlayAckMessage,
     panel_to_json,
     snapshot_to_json,
 )
@@ -207,14 +207,14 @@ class GameServer:
         try:
             login_request = parse_login(message)
         except ProtocolError as error:
-            await self._connections.send(websocket, {"type": ERROR, "message": str(error)})
+            await self._connections.send(websocket, ErrorMessage(message=str(error)))
             return username
 
         if login_request is not None:
             return await self._handle_login(websocket, login_request)
 
         if username is None:
-            await self._connections.send(websocket, {"type": ERROR, "message": "login_required"})
+            await self._connections.send(websocket, ErrorMessage(message="login_required"))
             return username
 
         if is_play_command(message):
@@ -232,7 +232,7 @@ class GameServer:
         try:
             room_id = parse_join_room(message)
         except ProtocolError as error:
-            await self._connections.send(websocket, {"type": ERROR, "message": str(error)})
+            await self._connections.send(websocket, ErrorMessage(message=str(error)))
             return username
         if room_id is not None:
             await self._handle_join_room(websocket, username, room_id)
@@ -255,7 +255,7 @@ class GameServer:
                 None, self._account_store.login, login_request.username, login_request.password
             )
         except InvalidCredentialsError:
-            await self._connections.send(websocket, {"type": LOGIN_ACK, "accepted": False, "reason": "wrong_password"})
+            await self._connections.send(websocket, LoginAckMessage(accepted=False, reason="wrong_password"))
             return None
 
         username = account.username
@@ -286,14 +286,9 @@ class GameServer:
             game.session.mark_reconnected(seat)
             await self._connections.send(
                 websocket,
-                {
-                    "type": LOGIN_ACK,
-                    "accepted": True,
-                    "username": username,
-                    "rating": account.rating,
-                    "reconnected": True,
-                    "color": seat,
-                },
+                LoginAckMessage(
+                    accepted=True, username=username, rating=account.rating, reconnected=True, color=seat
+                ),
             )
             return username
 
@@ -320,14 +315,9 @@ class GameServer:
                 await self._loop.start_room_game(room)
                 await self._connections.send(
                     websocket,
-                    {
-                        "type": LOGIN_ACK,
-                        "accepted": True,
-                        "username": username,
-                        "rating": account.rating,
-                        "reconnected": True,
-                        "color": seat,
-                    },
+                    LoginAckMessage(
+                        accepted=True, username=username, rating=account.rating, reconnected=True, color=seat
+                    ),
                 )
                 return username
 
@@ -337,57 +327,51 @@ class GameServer:
             # see RoomRegistry.join).
             await self._connections.send(
                 websocket,
-                {
-                    "type": LOGIN_ACK,
-                    "accepted": True,
-                    "username": username,
-                    "rating": account.rating,
-                    "resuming_room_id": room.room_id,
-                },
+                LoginAckMessage(accepted=True, username=username, rating=account.rating, resuming_room_id=room.room_id),
             )
             return username
 
         await self._connections.send(
-            websocket, {"type": LOGIN_ACK, "accepted": True, "username": username, "rating": account.rating}
+            websocket, LoginAckMessage(accepted=True, username=username, rating=account.rating)
         )
         return username
 
     async def _handle_play(self, websocket, username: str) -> None:
         reason = self._busy_reason(username)
         if reason is not None:
-            await self._connections.send(websocket, {"type": PLAY_ACK, "accepted": False, "reason": reason})
+            await self._connections.send(websocket, PlayAckMessage(accepted=False, reason=reason))
             return
 
         rating = self._account_store.rating_for(username)
         self._loop.matchmaking.enqueue(username, rating)
-        await self._connections.send(websocket, {"type": PLAY_ACK, "accepted": True, "reason": "queued"})
+        await self._connections.send(websocket, PlayAckMessage(accepted=True, reason="queued"))
 
     async def _handle_create_room(self, websocket, username: str) -> None:
         reason = self._busy_reason(username)
         if reason is not None:
-            await self._connections.send(websocket, {"type": CREATE_ROOM_ACK, "accepted": False, "reason": reason})
+            await self._connections.send(websocket, CreateRoomAckMessage(accepted=False, reason=reason))
             return
 
         room = self._rooms.create(username)
         print(f"[room] '{username}' created room {room.room_id}")
-        await self._connections.send(websocket, {"type": CREATE_ROOM_ACK, "accepted": True, "room_id": room.room_id})
+        await self._connections.send(websocket, CreateRoomAckMessage(accepted=True, room_id=room.room_id))
 
     async def _handle_join_room(self, websocket, username: str, room_id: str) -> None:
         reason = self._busy_reason(username)
         if reason is not None:
-            await self._connections.send(websocket, {"type": JOIN_ROOM_ACK, "accepted": False, "reason": reason})
+            await self._connections.send(websocket, JoinRoomAckMessage(accepted=False, reason=reason))
             return
 
         try:
             room = self._rooms.join(room_id, username)
         except RoomError as error:
-            await self._connections.send(websocket, {"type": JOIN_ROOM_ACK, "accepted": False, "reason": str(error)})
+            await self._connections.send(websocket, JoinRoomAckMessage(accepted=False, reason=str(error)))
             return
 
         role = "opponent" if room.opponent == username else "spectator"
         print(f"[room] '{username}' joined room {room_id} as {role}")
         await self._connections.send(
-            websocket, {"type": JOIN_ROOM_ACK, "accepted": True, "room_id": room_id, "role": role}
+            websocket, JoinRoomAckMessage(accepted=True, room_id=room_id, role=role)
         )
 
         if role == "opponent":
@@ -408,11 +392,11 @@ class GameServer:
         try:
             self._rooms.cancel(username)
         except RoomError as error:
-            await self._connections.send(websocket, {"type": CANCEL_ROOM_ACK, "accepted": False, "reason": str(error)})
+            await self._connections.send(websocket, CancelRoomAckMessage(accepted=False, reason=str(error)))
             return
 
         print(f"[room] '{username}' cancelled their room")
-        await self._connections.send(websocket, {"type": CANCEL_ROOM_ACK, "accepted": True})
+        await self._connections.send(websocket, CancelRoomAckMessage(accepted=True))
 
     # Shared by _handle_play/_handle_create_room/_handle_join_room - a
     # connection may only ever be committed to one thing at a time (queued,
@@ -430,21 +414,21 @@ class GameServer:
         game = self._loop.active_game_for(username)
         seat = game.session.seat_for_username(username) if game is not None else None
         if seat is None:
-            await self._connections.send(websocket, {"type": ACK, "accepted": False, "reason": "not_in_game"})
+            await self._connections.send(websocket, AckMessage(accepted=False, reason="not_in_game"))
             return
 
         try:
             command = parse_command(message, game.session.board_height)
         except ProtocolError as error:
-            await self._connections.send(websocket, {"type": ERROR, "message": str(error)})
+            await self._connections.send(websocket, ErrorMessage(message=str(error)))
             return
 
         # A connection may only move the color it was seated as - the
         # command's own color letter is otherwise just a client-asserted
         # claim, not something GameEngine checks (see server/session.py).
         if command.color != seat:
-            await self._connections.send(websocket, {"type": ACK, "accepted": False, "reason": "wrong_seat"})
+            await self._connections.send(websocket, AckMessage(accepted=False, reason="wrong_seat"))
             return
 
         result = game.session.apply_command(command)
-        await self._connections.send(websocket, {"type": ACK, "accepted": result.is_accepted, "reason": result.reason})
+        await self._connections.send(websocket, AckMessage(accepted=result.is_accepted, reason=result.reason))
