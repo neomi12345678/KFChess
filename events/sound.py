@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 
 from model.game_state import ArrivalEvent, MoveLoggedEvent
 from events.bus import Bus
-from events.game_events import GameEndedEvent, GameStartedEvent, RemoteCaptureEvent
+from events.game_events import GameEndedEvent, GameStartedEvent, RemoteCaptureEvent, RemoteMoveEvent
 
 MOVE_CUE = "move"
 JUMP_CUE = "jump"
@@ -69,13 +69,23 @@ class SoundCues:
         # on cue selection without a real audio device (see play_cue()).
         self.played: List[str] = []
         bus.subscribe(MoveLoggedEvent, self._on_move_logged)
+        bus.subscribe(RemoteMoveEvent, self._on_remote_move)
         bus.subscribe(ArrivalEvent, self._on_arrival)
         bus.subscribe(RemoteCaptureEvent, self._on_remote_capture)
         bus.subscribe(GameStartedEvent, self._on_game_started)
         bus.subscribe(GameEndedEvent, self._on_game_ended)
 
     def _on_move_logged(self, event: MoveLoggedEvent) -> None:
-        self._play(JUMP_CUE if event.is_jump else MOVE_CUE)
+        self._play_move_cue(event.is_jump)
+
+    # Same cue selection as a local move's own MoveLoggedEvent above - see
+    # events/game_events.py's RemoteMoveEvent for why a networked move can't
+    # carry (or fake) a real MoveLoggedEvent's other fields instead.
+    def _on_remote_move(self, event: RemoteMoveEvent) -> None:
+        self._play_move_cue(event.is_jump)
+
+    def _play_move_cue(self, is_jump: bool) -> None:
+        self._play(JUMP_CUE if is_jump else MOVE_CUE)
 
     def _on_arrival(self, event: ArrivalEvent) -> None:
         if event.captured_piece is not None:

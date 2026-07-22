@@ -31,7 +31,7 @@ from events.game_animations import GameAnimationCues
 from events.game_events import GameStartedEvent
 from events.sound import SoundCues
 from model.game_state import GameSnapshot
-from server.protocol import PanelState, snapshot_from_json
+from net_protocol import PanelState, snapshot_from_json
 
 
 # Published only by GameViewState.apply_message's own snapshot branch below,

@@ -22,6 +22,7 @@ reject/timeout branching mirrors the old terminal prompts exactly and stays
 covered at the NetworkGameClient level by tests/integration/test_network_client.py.
 """
 
+import gc
 import queue
 import threading
 import tkinter as tk
@@ -55,6 +56,27 @@ def _destroy_root() -> None:
     if _root is not None:
         _root.destroy()
         _root = None
+        _collect_dialog_garbage()
+
+
+# Every button/entry built below carries a Tcl-registered command closure
+# that (via the shared `controls` list each closure closes over) refers
+# back to the very widgets it's bound to - a real reference cycle plain
+# refcounting can never collect, only Python's cyclic GC pass can, and only
+# whenever that next happens to run. Left uncollected, this garbage floats
+# until *some* thread's allocations cross the GC threshold - and once the
+# real (cv2) game window is up, play_online.py's NetworkGameClient
+# background thread is already running and allocating constantly (parsing
+# every server broadcast), so it's the one at risk of winning that race. A
+# StringVar's __del__ then calling back into a Tcl interpreter that's
+# already been destroy()'d, from a thread Tcl doesn't consider "the main
+# thread", is exactly what produces "Tcl_AsyncDelete: async handler deleted
+# by the wrong thread" - fatal on some Tcl builds. Forcing the collection
+# here instead - synchronously, on this thread, right after the widgets
+# that formed the cycle are torn down - keeps this deterministic instead of
+# a race against that background thread.
+def _collect_dialog_garbage() -> None:
+    gc.collect()
 
 
 def _set_widgets_enabled(widgets: List[tk.Widget], enabled: bool) -> None:
@@ -123,14 +145,22 @@ def run_login(client: NetworkGameClient) -> dict:
             root.after(50, poll)
             return
 
+        # A connection error or a rejected login both let the player retry
+        # (re-enabled controls above are exactly what submit() needs to fire
+        # again) - so, unlike an accepted login below, this must keep
+        # polling: nothing else ever reschedules poll() once this call
+        # returns, and a later submit() only ever puts a new result on
+        # result_queue, it doesn't restart the polling loop itself.
         if kind == "error":
             _set_widgets_enabled(controls, enabled=True)
             status_var.set(f"Connection error: {payload}")
+            root.after(50, poll)
             return
 
         if not payload["accepted"]:
             _set_widgets_enabled(controls, enabled=True)
             status_var.set(f"Login failed: {payload['reason']}")
+            root.after(50, poll)
             return
 
         outcome["value"] = payload
@@ -165,6 +195,12 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
     root.title("Play KFChess")
     for child in root.winfo_children():
         child.destroy()
+    # run_login's own widgets/closures just became unreachable above, and
+    # form the same reference cycle _collect_dialog_garbage's own docstring
+    # describes - collected here too, for the same reason: client.login()
+    # already ran on a background thread by this point, so there's already
+    # something racing to collect this garbage on the wrong thread instead.
+    _collect_dialog_garbage()
 
     frame = ttk.Frame(root, padding=16)
     frame.grid()

@@ -19,6 +19,7 @@ import websockets
 
 from boardio.board_parser import parse
 from server.accounts import AccountStore
+from server.rooms import RoomRegistry, RoomStore
 from server.ws_server import GameServer
 
 STARTING_BOARD = "wR . .\n. . .\n. . ."
@@ -62,17 +63,23 @@ async def running_server(
     tick_interval_s: float = 0.01,
     board_text: str = STARTING_BOARD,
     account_store=None,
+    room_store=None,
     matchmaking_timeout_ms: int = 300,
     disconnect_grace_ms: int = 300,
     ping_interval_s: float = 12.0,
     ping_timeout_s: float = 12.0,
 ):
     # A fresh ":memory:" store per server unless a test supplies its own
-    # (so it can inspect ratings afterward) - see server/accounts.py's own
-    # db_path docstring for why there's no shared default to fall back on.
+    # (so it can inspect ratings afterward, or - for room_store - reuse the
+    # same store across two servers to simulate a restart) - see
+    # server/accounts.py's and server/rooms.py's own db_path docstrings for
+    # why there's no shared default to fall back on.
     owns_store = account_store is None
     if owns_store:
         account_store = AccountStore(":memory:")
+    owns_room_store = room_store is None
+    if owns_room_store:
+        room_store = RoomStore(":memory:")
 
     # ping_interval_s/ping_timeout_s default here to the same values as
     # server/ws_server.py's own PING_INTERVAL_S/PING_TIMEOUT_S - see that
@@ -91,6 +98,7 @@ async def running_server(
         disconnect_grace_ms=disconnect_grace_ms,
         ping_interval_s=ping_interval_s,
         ping_timeout_s=ping_timeout_s,
+        room_store=room_store,
     )
     task = asyncio.create_task(server.run_forever())
     await server.wait_started()
@@ -102,6 +110,8 @@ async def running_server(
             await task
         if owns_store:
             account_store.close()
+        if owns_room_store:
+            room_store.close()
 
 
 def test_login_alone_does_not_start_a_game():
@@ -707,5 +717,102 @@ def test_room_game_over_frees_every_member_for_a_new_room_or_match():
                 assert new_room["accepted"] is True
 
         account_store.close()
+
+    asyncio.run(scenario())
+
+
+async def _next_snapshot(websocket, timeout: float = 5.0) -> dict:
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        payload = json.loads(await asyncio.wait_for(websocket.recv(), timeout=1))
+        if "pieces" in payload:
+            return payload
+    raise AssertionError("no snapshot broadcast arrived in time")
+
+
+def test_room_survives_a_server_restart_and_resumes_with_a_fresh_game():
+    # A real restart's RoomRegistry reload (see server/rooms.py) has no
+    # notion of how its previous process ended - it only ever sees whatever
+    # was last written to the store. Seeding the store directly through a
+    # RoomRegistry, with no GameServer/websockets involved at all, is
+    # exactly as faithful a stand-in for "the previous process crashed
+    # mid-game" as actually crashing one would be, and sidesteps this
+    # process's own `websockets.serve` from gracefully closing those
+    # connections (and thus cancelling/mark-disconnecting the room) as part
+    # of an orderly test teardown - which a real crash never does either.
+    async def scenario():
+        room_store = RoomStore(":memory:")
+        try:
+            seed_registry = RoomRegistry(store=room_store)
+            room = seed_registry.create("alice")
+            seed_registry.join(room.room_id, "bob")
+            room_id = room.room_id
+
+            async with running_server(room_store=room_store) as server:
+                uri = f"ws://localhost:{server.bound_port}"
+                async with websockets.connect(uri) as a, websockets.connect(uri) as b:
+                    # alice is first back - nothing to resume yet, just told
+                    # which room she's waiting on.
+                    ack_a = await login(a, "alice")
+                    assert ack_a == {
+                        "type": "login_ack",
+                        "accepted": True,
+                        "username": "alice",
+                        "rating": 1200,
+                        "resuming_room_id": room_id,
+                    }
+
+                    # bob logs back in second - alice is already online, so
+                    # this starts the fresh game immediately.
+                    ack_b = await login(b, "bob")
+                    assert ack_b == {
+                        "type": "login_ack",
+                        "accepted": True,
+                        "username": "bob",
+                        "rating": 1200,
+                        "reconnected": True,
+                        "color": "black",
+                    }
+
+                    assert (await recv_of_type(a, "seat")) == {"type": "seat", "color": "white"}
+
+                    # A fresh GameSession - the rook is still on its
+                    # starting square, not wherever some prior (never
+                    # persisted) game might have left it.
+                    snapshot = await _next_snapshot(a)
+                    assert snapshot["pieces"][0]["kind"] == "rook"
+                    assert snapshot["pieces"][0]["col"] == 0.0
+        finally:
+            room_store.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_still_pending_room_survives_a_server_restart_and_stays_joinable():
+    async def scenario():
+        room_store = RoomStore(":memory:")
+        try:
+            room_id = RoomRegistry(store=room_store).create("alice").room_id
+
+            async with running_server(room_store=room_store) as server:
+                uri = f"ws://localhost:{server.bound_port}"
+                async with websockets.connect(uri) as a, websockets.connect(uri) as b:
+                    ack_a = await login(a, "alice")
+                    assert ack_a == {
+                        "type": "login_ack",
+                        "accepted": True,
+                        "username": "alice",
+                        "rating": 1200,
+                        "resuming_room_id": room_id,
+                    }
+
+                    await login(b, "bob")
+                    joined = await join_room(b, room_id)
+                    assert joined == {"type": "join_room_ack", "accepted": True, "room_id": room_id, "role": "opponent"}
+
+                    assert (await recv_of_type(a, "seat")) == {"type": "seat", "color": "white"}
+                    assert (await recv_of_type(b, "seat")) == {"type": "seat", "color": "black"}
+        finally:
+            room_store.close()
 
     asyncio.run(scenario())

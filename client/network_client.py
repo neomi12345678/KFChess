@@ -15,6 +15,7 @@ view/canvas/window.py's blocking cv2.waitKey() loop isn't.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import queue
 import threading
@@ -22,6 +23,8 @@ import time
 from typing import List, Optional
 
 import websockets
+
+from net_protocol import CREATE_ROOM_ACK, JOIN_ROOM_ACK, LOGIN_ACK, MATCHMAKING_TIMEOUT, PLAY_ACK, SEAT
 
 
 class NetworkClientError(Exception):
@@ -79,9 +82,20 @@ class NetworkGameClient:
             pass
 
     # Thread-safe: called from the GUI thread, actually sends on the
-    # background thread's own event loop.
+    # background thread's own event loop. Fire-and-forget by design (the GUI
+    # frame loop can't block on a per-frame send) - but a send that raises
+    # (e.g. the socket died between frames) must not vanish without a trace,
+    # so the returned Future's outcome is still checked, just asynchronously
+    # via this callback rather than by blocking on it here.
     def send_command(self, text: str) -> None:
-        asyncio.run_coroutine_threadsafe(self._websocket.send(text), self._loop)
+        future = asyncio.run_coroutine_threadsafe(self._websocket.send(text), self._loop)
+        future.add_done_callback(self._report_send_failure)
+
+    @staticmethod
+    def _report_send_failure(future: concurrent.futures.Future) -> None:
+        error = future.exception()
+        if error is not None:
+            print(f"NetworkGameClient: failed to send command: {error}")
 
     # Non-blocking - called once per GUI frame (see play_online.py) to
     # drain whatever arrived since the last poll, in order.
@@ -100,11 +114,11 @@ class NetworkGameClient:
     # is draining self._incoming concurrently at that point.
     def login(self, username: str, password: str, timeout: float = 10.0) -> dict:
         self.send_command(f"LOGIN {username} {password}")
-        return self._wait_for_type("login_ack", timeout)
+        return self._wait_for_type(LOGIN_ACK, timeout)
 
     def play(self, timeout: float = 10.0) -> dict:
         self.send_command("PLAY")
-        return self._wait_for_type("play_ack", timeout)
+        return self._wait_for_type(PLAY_ACK, timeout)
 
     # timeout is a defensive upper bound, not the expected path - the server
     # gives up and reports matchmaking_timeout on its own after
@@ -112,7 +126,7 @@ class NetworkGameClient:
     # _wait_for_type's stop_types below reacts to immediately rather than
     # this call silently discarding it and waiting out its own timeout too.
     def wait_for_seat(self, timeout: float = 65.0) -> dict:
-        return self._wait_for_type("seat", timeout, stop_types={"matchmaking_timeout": MatchmakingTimeoutError})
+        return self._wait_for_type(SEAT, timeout, stop_types={MATCHMAKING_TIMEOUT: MatchmakingTimeoutError})
 
     # The section-6 room flow (see server/rooms.py) - create_room's own
     # reply carries the room id (nothing to wait_for_seat for yet, since a
@@ -121,11 +135,11 @@ class NetworkGameClient:
     # each), decided by the server, not requested by the caller.
     def create_room(self, timeout: float = 10.0) -> dict:
         self.send_command("CREATE_ROOM")
-        return self._wait_for_type("create_room_ack", timeout)
+        return self._wait_for_type(CREATE_ROOM_ACK, timeout)
 
     def join_room(self, room_id: str, timeout: float = 10.0) -> dict:
         self.send_command(f"JOIN_ROOM {room_id}")
-        return self._wait_for_type("join_room_ack", timeout)
+        return self._wait_for_type(JOIN_ROOM_ACK, timeout)
 
     # Loops past any interleaved message of a different type rather than
     # raising on the first mismatch - mirrors client/client_cli.py's own

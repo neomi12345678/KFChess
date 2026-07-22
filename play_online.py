@@ -5,7 +5,7 @@ GUI window before the game window opens (see client/setup_dialogs.py - cv2,
 which the game window itself is built on, has no text-entry/button widgets
 of its own; client/client_cli.py remains the separate, terminal-only shell
 client the Home screen's own "shell, not GUI" login step uses); once
-seated, this renders whatever server/protocol.py's snapshot broadcasts say
+seated, this renders whatever net_protocol.py's snapshot broadcasts say
 the board looks like, and turns clicks into wire commands via
 client/network_controller.py instead of a local Controller. A room
 (server/rooms.py) joined as a spectator instead of the opponent renders
@@ -34,16 +34,19 @@ from client.network_client import NetworkClientError, NetworkGameClient
 from client.network_controller import JumpRequest, MoveRequest, NetworkController
 from client.setup_dialogs import SetupCancelled, run_game_setup, run_login
 from display_config import compute_cell_size, screen_resolution_px, side_panel_width_for
+from events.game_events import GameEndedEvent
 from input.board_mapper import BoardMapper
 from model.piece import BLACK, WHITE
-from server.protocol import COLOR_PREFIX
+from net_protocol import COLOR_PREFIX, HOST, PORT
 from view.canvas.img_canvas import ImgCanvas
 from view.canvas.window import GameWindow
 from view.renderer import Renderer
 from view.ui_snapshot import build_ui_snapshot
 
-HOST = "localhost"
-PORT = 8765
+
+def _print_ratings_if_game_over(event: GameEndedEvent) -> None:
+    if event.new_ratings is not None:
+        print(f"Game over. New ratings: {event.new_ratings}")
 
 
 def _wait_for_first_snapshot(client: NetworkGameClient, timeout: float = 5.0) -> dict:
@@ -69,6 +72,15 @@ def main() -> None:  # pragma: no cover
         if login_ack.get("reconnected"):
             my_color = login_ack["color"]
             print(f"Reconnected to your game as {my_color}")
+        elif login_ack.get("resuming_room_id"):
+            # A room this account was already in survived a server restart
+            # (see server/rooms.py's RoomStore) - wait for the other player
+            # to reconnect too rather than showing the create/join dialog
+            # again (see server/ws_server.py's _handle_login for the
+            # server-side half of this).
+            print(f"Resuming room {login_ack['resuming_room_id']} - waiting for the other player...")
+            my_color = client.wait_for_seat(timeout=86_400.0)["color"]
+            print(f"Resumed as {my_color}")
         else:
             my_color = run_game_setup(client)
             print(f"Seated as {my_color}" if my_color is not None else "Spectating.")
@@ -83,6 +95,7 @@ def main() -> None:  # pragma: no cover
     is_spectator = my_color is None
 
     state = GameViewState(_wait_for_first_snapshot(client))
+    state.bus.subscribe(GameEndedEvent, _print_ratings_if_game_over)
 
     cell_size = compute_cell_size(state.snapshot.board_width, state.snapshot.board_height, screen_size=screen_resolution_px)
     side_panel_width_px = side_panel_width_for(cell_size)
@@ -101,7 +114,7 @@ def main() -> None:  # pragma: no cover
     )
     # {color: real username} for whichever colors the server's first
     # snapshot actually named (see server/ws_server.py's _names_for and
-    # server/protocol.py's PanelState.name_for) - never a "White"/"Black"
+    # net_protocol.py's PanelState.name_for) - never a "White"/"Black"
     # placeholder. A color PanelState has no name for (there shouldn't be
     # one in practice; every networked GameSession names both seats up
     # front) is simply left out, so Renderer draws that side's card with no

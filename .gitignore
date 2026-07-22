@@ -5,3 +5,4 @@ __pycache__/
 htmlcov/
 .venv/
 server/accounts.db
+server/rooms.db

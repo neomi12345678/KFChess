@@ -22,13 +22,13 @@ from dataclasses import dataclass
 from typing import Optional
 
 from events.bus import Bus
-from events.game_events import GameEndedEvent, RemoteCaptureEvent
-from model.game_state import MoveLoggedEvent
+from events.game_events import GameEndedEvent, RemoteCaptureEvent, RemoteMoveEvent
+from net_protocol import ACK, CAPTURE, DISCONNECT_COUNTDOWN, GAME_OVER, MOVE_LOGGED
 
 # Network-only events - nothing about a local game (play.py/game_builder.py)
 # ever produces or subscribes to these, unlike RemoteCaptureEvent/
-# GameEndedEvent (events/game_events.py), which SoundCues/GameAnimationCues
-# already react to for both local and networked play.
+# RemoteMoveEvent/GameEndedEvent (events/game_events.py), which SoundCues/
+# GameAnimationCues already react to for both local and networked play.
 @dataclass(frozen=True)
 class DisconnectCountdownEvent:
     seconds_remaining: int
@@ -43,11 +43,11 @@ class NetworkMessageAdapter:
     def __init__(self, bus: Bus):
         self._bus = bus
         self._event_factories = {
-            "move_logged": self._move_logged_event,
-            "capture": self._capture_event,
-            "game_over": self._game_over_event,
-            "disconnect_countdown": self._disconnect_countdown_event,
-            "ack": self._ack_event,
+            MOVE_LOGGED: self._move_logged_event,
+            CAPTURE: self._capture_event,
+            GAME_OVER: self._game_over_event,
+            DISCONNECT_COUNTDOWN: self._disconnect_countdown_event,
+            ACK: self._ack_event,
         }
 
     # Silently ignores any message type it has no factory for - the same
@@ -61,29 +61,21 @@ class NetworkMessageAdapter:
         if event is not None:
             self._bus.publish(event)
 
-    def _move_logged_event(self, message: dict) -> MoveLoggedEvent:
-        return MoveLoggedEvent(
-            color="",
-            kind="",
-            source=None,
-            destination=None,
-            is_capture=False,
-            is_jump=message["is_jump"],
-            elapsed_ms=0,
-            piece_id="",
-        )
+    def _move_logged_event(self, message: dict) -> RemoteMoveEvent:
+        return RemoteMoveEvent(is_jump=message["is_jump"])
 
     def _capture_event(self, _message: dict) -> RemoteCaptureEvent:
         return RemoteCaptureEvent()
 
     def _game_over_event(self, message: dict) -> GameEndedEvent:
-        print(f"Game over. New ratings: {message['ratings']}")
         # arrival=None - unlike every other GameEndedEvent, there's no
         # ArrivalEvent behind a networked game-over at all (see
         # server/session.py's resign(), a disconnect timeout rather than a
         # king-capture ArrivalEvent), and neither SoundCues nor
-        # GameAnimationCues ever reads this field anyway.
-        return GameEndedEvent(arrival=None)
+        # GameAnimationCues ever reads this field anyway. new_ratings is the
+        # one field a networked game-over actually carries - see
+        # events/game_events.py's own docstring on it.
+        return GameEndedEvent(arrival=None, new_ratings=message["ratings"])
 
     def _disconnect_countdown_event(self, message: dict) -> DisconnectCountdownEvent:
         return DisconnectCountdownEvent(seconds_remaining=message["seconds_remaining"])

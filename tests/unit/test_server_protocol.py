@@ -4,22 +4,19 @@ from events.observers import MoveLogObserver, ScoreObserver
 from model.game_state import ArrivalEvent, MoveLoggedEvent
 from model.piece import BLACK, KNIGHT, PAWN, Piece, WHITE
 from model.position import Position
+from net_protocol import PanelState, panel_to_json, snapshot_from_json, snapshot_to_json
 from server.protocol import (
     JUMP,
     MOVE,
     LoginRequest,
-    PanelState,
     ProtocolError,
     is_cancel_room_command,
     is_create_room_command,
     is_play_command,
-    panel_to_json,
     parse_command,
     parse_join_room,
     parse_login,
     parse_square,
-    snapshot_from_json,
-    snapshot_to_json,
 )
 
 

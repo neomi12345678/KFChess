@@ -1,6 +1,6 @@
 import pytest
 
-from server.rooms import RoomError, RoomRegistry
+from server.rooms import RoomError, RoomRegistry, RoomStore
 
 
 def test_create_returns_a_pending_room_with_no_opponent_yet():
@@ -142,3 +142,120 @@ def test_close_of_an_already_gone_room_is_a_no_op():
     registry = RoomRegistry()
 
     registry.close("no-such-room")  # must not raise
+
+
+# --- RoomStore, exercised directly ---
+
+
+@pytest.fixture
+def store():
+    # ":memory:" - a real SQLite database, just an isolated, disposable one
+    # per test (see RoomStore's own db_path docstring, mirroring
+    # server/accounts.py's AccountStore fixture in test_server_accounts.py).
+    store = RoomStore(":memory:")
+    yield store
+    store.close()
+
+
+def test_load_all_on_a_fresh_store_is_empty(store):
+    assert store.load_all() == []
+
+
+def test_save_then_load_all_round_trips_a_pending_room(store):
+    registry = RoomRegistry(store=store)
+    room = registry.create("alice")
+
+    [loaded] = store.load_all()
+
+    assert loaded == {"room_id": room.room_id, "creator": "alice", "opponent": None, "spectators": set()}
+
+
+def test_save_then_load_all_round_trips_opponent_and_spectators(store):
+    registry = RoomRegistry(store=store)
+    room = registry.create("alice")
+    registry.join(room.room_id, "bob")
+    registry.join(room.room_id, "carol")
+
+    [loaded] = store.load_all()
+
+    assert loaded == {"room_id": room.room_id, "creator": "alice", "opponent": "bob", "spectators": {"carol"}}
+
+
+def test_save_is_an_upsert_not_a_duplicate_row(store):
+    registry = RoomRegistry(store=store)
+    room = registry.create("alice")
+
+    registry.join(room.room_id, "bob")
+
+    assert len(store.load_all()) == 1
+
+
+def test_delete_removes_the_room_and_its_spectators(store):
+    registry = RoomRegistry(store=store)
+    room = registry.create("alice")
+    registry.join(room.room_id, "bob")
+    registry.join(room.room_id, "carol")
+
+    registry.close(room.room_id)
+
+    assert store.load_all() == []
+
+
+# --- RoomRegistry reload, simulating a server restart against the same
+# underlying store (a fresh process would instead reopen the same on-disk
+# file - see server/main.py's ROOM_DB_PATH) ---
+
+
+def test_a_new_registry_over_the_same_store_reconstructs_a_pending_room(store):
+    RoomRegistry(store=store).create("alice")
+
+    restarted = RoomRegistry(store=store)
+
+    room = restarted.room_for_username("alice")
+    assert room is not None
+    assert room.creator == "alice"
+    assert room.opponent is None
+    assert room.is_pending is True
+
+
+def test_a_new_registry_over_the_same_store_reconstructs_opponent_and_spectators():
+    store = RoomStore(":memory:")
+    first = RoomRegistry(store=store)
+    room = first.create("alice")
+    first.join(room.room_id, "bob")
+    first.join(room.room_id, "carol")
+
+    restarted = RoomRegistry(store=store)
+
+    assert restarted.room_for_username("alice").room_id == room.room_id
+    assert restarted.room_for_username("bob").room_id == room.room_id
+    assert restarted.room_for_username("carol").room_id == room.room_id
+    reloaded = restarted.room_for_username("alice")
+    assert reloaded.opponent == "bob"
+    assert reloaded.spectators == {"carol"}
+
+
+def test_a_new_registry_over_the_same_store_does_not_see_a_cancelled_room():
+    store = RoomStore(":memory:")
+    first = RoomRegistry(store=store)
+    room = first.create("alice")
+    first.cancel("alice")
+
+    restarted = RoomRegistry(store=store)
+
+    assert restarted.room_for_username("alice") is None
+    with pytest.raises(RoomError):
+        restarted.join(room.room_id, "bob")
+
+
+def test_a_new_registry_over_the_same_store_does_not_see_a_closed_room():
+    store = RoomStore(":memory:")
+    first = RoomRegistry(store=store)
+    room = first.create("alice")
+    first.join(room.room_id, "bob")
+    first.close(room.room_id)
+
+    restarted = RoomRegistry(store=store)
+
+    assert restarted.room_for_username("alice") is None
+    assert restarted.room_for_username("bob") is None

@@ -1,7 +1,7 @@
 """Aggregates everything view/renderer.py's Renderer needs to draw one frame
 into a single immutable value, built once per frame by build_ui_snapshot()
 below. Before this existed, Renderer held long-lived references to
-MoveLogObserver/ScoreObserver (or server/protocol.py's PanelState stand-in)
+MoveLogObserver/ScoreObserver (or net_protocol.py's PanelState stand-in)
 and pulled from them mid-draw - now Renderer.draw() takes one self-contained
 value and never reaches out to a live collaborator itself, which is what
 lets it be exercised with nothing but plain data in tests.
@@ -33,7 +33,7 @@ class UiSnapshot:
 
 # move_log/score are duck-typed (entries_for(color)/score_for(color)) so
 # either the real events.observers.MoveLogObserver/ScoreObserver or
-# server.protocol.PanelState's client-side stand-in works here unchanged -
+# net_protocol.PanelState's client-side stand-in works here unchanged -
 # both None by default, matching Renderer's own former no-panels default,
 # so a caller that doesn't track either still gets a valid UiSnapshot.
 def build_ui_snapshot(game: GameSnapshot, move_log=None, score=None, status_message: Optional[str] = None) -> UiSnapshot:

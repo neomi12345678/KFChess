@@ -24,6 +24,7 @@ from model.board import BoardRepresentation
 from model.game_state import ArrivalEvent, GameObserver, JumpResult, MoveLoggedEvent, MoveResult
 from model.piece import ActionResultReason, BLACK, KING, WHITE
 from model.position import Position
+from net_protocol import CAPTURE, MOVE_LOGGED
 from server.accounts import AccountStore
 from server.protocol import JUMP, Command
 from server.rating import updated_ratings
@@ -77,7 +78,7 @@ class GameSession:
         # in their own right. GameEngine itself only ever sees BusBridge
         # (see events/bus_bridge.py); server/ws_server.py has no notion of
         # this bus itself, only of the move_log/score it accumulates (see
-        # server/protocol.py's panel_to_json) and the wire events it buffers
+        # net_protocol.py's panel_to_json) and the wire events it buffers
         # for a networked client's own sound cues (see drain_wire_events).
         self._bus = Bus()
         self._king_capture_watcher = _KingCaptureWatcher()
@@ -111,7 +112,7 @@ class GameSession:
         self._disconnected_ms: Dict[str, int] = {}
 
     def _buffer_move_logged(self, event: MoveLoggedEvent) -> None:
-        self._pending_wire_events.append({"type": "move_logged", "is_jump": event.is_jump})
+        self._pending_wire_events.append({"type": MOVE_LOGGED, "is_jump": event.is_jump})
 
     # Fires on every arrival, but only ever buffered for a capture - a
     # networked client's SoundCues only reacts to ArrivalEvent.captured_piece
@@ -124,7 +125,7 @@ class GameSession:
     # MoveLogObserver.on_arrival).
     def _buffer_capture(self, event: ArrivalEvent) -> None:
         if event.captured_piece is not None:
-            self._pending_wire_events.append({"type": "capture"})
+            self._pending_wire_events.append({"type": CAPTURE})
 
     # Drains every wire event buffered since the last call, in order - see
     # server/ws_server.py's _advance_game, the only caller, once per tick.

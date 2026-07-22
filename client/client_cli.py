@@ -17,8 +17,7 @@ from typing import Optional
 
 import websockets
 
-from server.main import HOST, PORT
-from server.protocol import COLOR_PREFIX
+from net_protocol import COLOR_PREFIX, GAME_OVER, HOST, LOGIN_ACK, PORT, SEAT
 
 _PLAY_INPUT = "play"
 _CREATE_ROOM_INPUT = "create room"
@@ -40,8 +39,8 @@ class _ClientState:
     # below) fully replace the seat rather than modifying it, so a plain
     # lookup is all that's needed.
     _SEAT_BY_MESSAGE_TYPE = {
-        "seat": lambda payload: payload["color"],
-        "game_over": lambda payload: None,
+        SEAT: lambda payload: payload["color"],
+        GAME_OVER: lambda payload: None,
     }
 
     def __init__(self, seat: Optional[str] = None):
@@ -160,7 +159,7 @@ async def _main() -> None:  # pragma: no cover
     uri = f"ws://{HOST}:{PORT}"
     async with websockets.connect(uri) as websocket:
         await websocket.send(build_login(username, password))
-        login_ack = await _recv_of_type(websocket, "login_ack")
+        login_ack = await _recv_of_type(websocket, LOGIN_ACK)
         if not login_ack["accepted"]:
             print(f"Login failed: {login_ack['reason']}")
             return
