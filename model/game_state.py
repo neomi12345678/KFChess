@@ -134,6 +134,20 @@ class PieceSnapshot:
     # thing; which sprite folder each phase maps to is view/
     # animation_states.py's business alone.
     motion_phase: str
+    # How much of this piece's current stretch of unavailability has
+    # elapsed vs. its total duration, in ms - both 0 when motion_phase is
+    # PHASE_IDLE/PHASE_MOVE. For PHASE_JUMP/PHASE_SHORT_REST this spans
+    # airborne time plus the short_rest that follows it as one continuous
+    # total (see RealTimeArbiter.unavailable_progress for why - a jump's
+    # airborne hangtime badly outlasts its own animation, so the clock has
+    # to start counting from the jump itself, not just once short_rest
+    # begins); for PHASE_LONG_REST it's just that rest alone. Raw ms, not a
+    # pre-computed fraction, so turning it into a depleting cooldown-bar
+    # width stays view/renderer.py's job (see its own row/col-to-pixels
+    # reasoning above), the same way MoveLoggedEvent.elapsed_ms is raw ms
+    # left for boardio/view code to format.
+    cooldown_remaining_ms: int = 0
+    cooldown_total_ms: int = 0
 
 
 # Frozen for the same reason PieceSnapshot is - the view's own read-only copy

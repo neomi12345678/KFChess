@@ -79,6 +79,15 @@ CLOSE_TIMEOUT_S = 5.0
 _OTHER_SEAT = {WHITE: BLACK, BLACK: WHITE}
 
 
+# {color: username} for panel_to_json's own names argument (see
+# server/protocol.py) - both seats' real usernames were already fixed at
+# GameSession construction (see server/session.py's own __init__), so this
+# is never anything but a real logged-in name, never a "White"/"Black"
+# placeholder for a networked game.
+def _names_for(session: GameSession) -> dict:
+    return {WHITE: session.username_for(WHITE), BLACK: session.username_for(BLACK)}
+
+
 # One running game plus the server-layer-only facts GameSession itself has
 # no business knowing: whether it came from a room at all (room_id is None
 # for a PLAY match), and who's merely watching it. GameSession stays exactly
@@ -344,7 +353,7 @@ class GameServer:
         if game is not None:
             game.spectator_usernames.add(username)
             payload = snapshot_to_json(game.session.snapshot())
-            payload.update(panel_to_json(game.session.move_log, game.session.score))
+            payload.update(panel_to_json(game.session.move_log, game.session.score, _names_for(game.session)))
             await self._safe_send(websocket, payload)
 
     async def _handle_cancel_room(self, websocket, username: str) -> None:
@@ -511,7 +520,7 @@ class GameServer:
                 )
 
         payload = snapshot_to_json(session.snapshot())
-        payload.update(panel_to_json(session.move_log, session.score))
+        payload.update(panel_to_json(session.move_log, session.score, _names_for(session)))
         await self._broadcast_to_game(game, payload)
 
     async def _broadcast_to_game(self, game: _ActiveGame, payload: dict) -> None:

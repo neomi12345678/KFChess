@@ -7,6 +7,32 @@ from view.ui_snapshot import UiSnapshot
 _PANEL_LINE_HEIGHT_PX = 18
 _PANEL_TEXT_MARGIN_PX = 10
 _PANEL_FONT_SIZE = 0.5
+_PANEL_TITLE_FONT_SIZE = 0.6
+
+# The card's own inner padding, and how far right the "MOVE" column starts
+# from the same left edge "TIME" (and the name/score lines above it) use -
+# see _draw_panel. Kept separate from _PANEL_TEXT_MARGIN_PX (the margin
+# between the board/screen edge and the card itself) since that one
+# positions the whole card, not text within it.
+_CARD_PADDING_PX = 8
+_MOVE_COLUMN_OFFSET_PX = 90
+
+# BGR, matching every other color this module's canvas calls take (see
+# view/canvas/img_canvas.py's draw_cooldown_bar). _GOLD is the exact same
+# yellow view/canvas/img_canvas.py's highlight_cell already uses for the
+# selected-square highlight (0, 255, 255) - one accent color for "this is
+# the highlighted/important thing" across the whole board+panel view,
+# rather than a second, only-slightly-different gold invented for the panel
+# alone. Approximates the dark-card look a moves-log panel should have: a
+# near-black card with faintly alternating row stripes so a long moves list
+# stays easy to scan line-by-line - no border around the card itself (see
+# _draw_panel), just the background fill.
+_GOLD = (0, 255, 255)
+_CARD_BG = (18, 18, 18)
+_HEADER_ROW_BG = (35, 28, 8)
+_ROW_BG_EVEN = (14, 14, 14)
+_ROW_BG_ODD = (26, 26, 26)
+_WHITE_TEXT = (255, 255, 255, 255)
 
 
 # The counterpart text-only reader is boardio/board_printer.py's
@@ -24,6 +50,15 @@ class Renderer:
     # passing them explicitly makes that pairing visible at the call site
     # instead of modules silently agreeing via a shared import.
     #
+    # player_names defaults to empty rather than a "White"/"Black" placeholder
+    # - a color missing from it just gets no name line at all (see
+    # _draw_panel), so a caller with no real name to show (e.g. play_online.py
+    # before the server's own broadcast has told it who it's playing) doesn't
+    # have to invent one. Local play (game_builder.py's build_app) always
+    # passes real names explicitly, defaulting to "White"/"Black" itself -
+    # this class has no opinion on what a good default name is, only on
+    # whether to draw a name line at all.
+    #
     # No move_log/score here - unlike those, a Renderer's whole draw() input
     # is per-frame data (see view/ui_snapshot.py's UiSnapshot), not a
     # long-lived collaborator it reaches out to mid-draw. This class only
@@ -37,7 +72,7 @@ class Renderer:
         cell_size: int = CELL_SIZE,
     ):
         self._canvas = canvas
-        self._player_names = player_names if player_names is not None else {WHITE: "White", BLACK: "Black"}
+        self._player_names = player_names if player_names is not None else {}
         self._side_panel_width_px = side_panel_width_px
         self._max_visible_moves = max_visible_moves
         self._cell_size = cell_size
@@ -52,6 +87,7 @@ class Renderer:
         self._draw_grid(snapshot)
         self._draw_pieces(snapshot)
         self._draw_selection(snapshot)
+        self._draw_cooldown_bars(snapshot)
         next_overlay_y = 0
         if snapshot.game_over:
             self._canvas.draw_text("Game Over", x=self._side_panel_width_px, y=next_overlay_y)
@@ -82,6 +118,19 @@ class Renderer:
         if snapshot.selected_cell is not None:
             self._canvas.highlight_cell(row=snapshot.selected_cell.row, col=snapshot.selected_cell.col)
 
+    # A depleting bar on every piece still airborne/short_rest/long_rest
+    # (see model.piece.PHASE_JUMP/PHASE_SHORT_REST/PHASE_LONG_REST and
+    # RealTimeArbiter.unavailable_progress) - a per-piece cooldown clock,
+    # separate from _draw_selection's click-time square highlight above.
+    # cooldown_total_ms is 0 for every piece not unavailable, so this only
+    # ever draws for the ones that are.
+    def _draw_cooldown_bars(self, snapshot) -> None:
+        for piece in snapshot.pieces:
+            if piece.cooldown_total_ms <= 0:
+                continue
+            fraction = piece.cooldown_remaining_ms / piece.cooldown_total_ms
+            self._canvas.draw_cooldown_bar(row=int(piece.row), col=int(piece.col), fraction=fraction)
+
     # Purely cosmetic - reads whatever view/ui_snapshot.py's UiSnapshot
     # carries for this frame's move_log/score panels. Drawn in
     # canvas-frame-absolute coordinates (unlike draw_rect/draw_image/
@@ -99,17 +148,47 @@ class Renderer:
         self._draw_panel(ui_snapshot, WHITE, x=right_panel_x)
 
     def _draw_panel(self, ui_snapshot: UiSnapshot, color: str, x: int) -> None:
-        lines = [
-            self._player_names.get(color, color),
-            f"Score: {ui_snapshot.score_by_color.get(color, 0)}",
-            "Time      Move",
-        ]
-        for entry in ui_snapshot.move_log_by_color.get(color, [])[-self._max_visible_moves:]:
-            lines.append(f"{_format_elapsed(entry.elapsed_ms)}  {entry.notation}")
+        # None (not "White"/"Black"/the raw color string) when this Renderer
+        # was never told a real name for this color - see __init__'s own
+        # comment on why player_names defaults to empty. Skipping the name
+        # line entirely (rather than falling back to a placeholder) is what
+        # lets a networked client that hasn't heard the server's real
+        # usernames yet show a plain score/moves card instead of a lie.
+        name = self._player_names.get(color)
+        moves = ui_snapshot.move_log_by_color.get(color, [])[-self._max_visible_moves:]
 
-        for line_index, line in enumerate(lines):
-            y = line_index * _PANEL_LINE_HEIGHT_PX
-            self._canvas.draw_text(line, x=x, y=y, font_size=_PANEL_FONT_SIZE)
+        line_count = (1 if name else 0) + 1 + 1 + len(moves)  # [name?] + score + header + one row per move
+        card_width = self._side_panel_width_px - 2 * _PANEL_TEXT_MARGIN_PX
+        card_height = line_count * _PANEL_LINE_HEIGHT_PX + 2 * _CARD_PADDING_PX
+        self._canvas.fill_rect(x, 0, card_width, card_height, color=_CARD_BG)
+
+        text_x = x + _CARD_PADDING_PX
+        move_x = text_x + _MOVE_COLUMN_OFFSET_PX
+        y = _CARD_PADDING_PX
+
+        if name:
+            self._canvas.draw_text(name, x=text_x, y=y, font_size=_PANEL_TITLE_FONT_SIZE, color=_GOLD)
+            y += _PANEL_LINE_HEIGHT_PX
+
+        self._canvas.draw_text(
+            f"Score: {ui_snapshot.score_by_color.get(color, 0)}", x=text_x, y=y, font_size=_PANEL_FONT_SIZE,
+            color=_WHITE_TEXT,
+        )
+        y += _PANEL_LINE_HEIGHT_PX
+
+        self._canvas.fill_rect(x, y, card_width, _PANEL_LINE_HEIGHT_PX, color=_HEADER_ROW_BG)
+        self._canvas.draw_text("TIME", x=text_x, y=y, font_size=_PANEL_FONT_SIZE, color=_GOLD)
+        self._canvas.draw_text("MOVE", x=move_x, y=y, font_size=_PANEL_FONT_SIZE, color=_GOLD)
+        y += _PANEL_LINE_HEIGHT_PX
+
+        for row_index, entry in enumerate(moves):
+            row_bg = _ROW_BG_EVEN if row_index % 2 == 0 else _ROW_BG_ODD
+            self._canvas.fill_rect(x, y, card_width, _PANEL_LINE_HEIGHT_PX, color=row_bg)
+            self._canvas.draw_text(
+                _format_elapsed(entry.elapsed_ms), x=text_x, y=y, font_size=_PANEL_FONT_SIZE, color=_WHITE_TEXT
+            )
+            self._canvas.draw_text(entry.notation, x=move_x, y=y, font_size=_PANEL_FONT_SIZE, color=_WHITE_TEXT)
+            y += _PANEL_LINE_HEIGHT_PX
 
 
 def _format_elapsed(elapsed_ms: int) -> str:

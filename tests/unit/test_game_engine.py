@@ -11,6 +11,7 @@ from logic_config import (
     LONG_REST_BASE_DURATION_MS,
     MOVE_CELL_DURATION_MS,
     REST_DURATION_MULTIPLIER,
+    SHORT_REST_BASE_DURATION_MS,
 )
 from model.game_state import ArrivalEvent, GameObserver, MoveLoggedEvent
 from model.piece import (
@@ -48,6 +49,7 @@ class RecordingObserver(GameObserver):
 CELL_DURATION_MS = MOVE_CELL_DURATION_MS
 AIRBORNE_DURATION_MS = round(AIRBORNE_BASE_DURATION_MS * AIRBORNE_DURATION_MULTIPLIER)
 LONG_REST_DURATION_MS = round(LONG_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
+SHORT_REST_DURATION_MS = round(SHORT_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
 
 
 def make_engine(board_text):
@@ -555,6 +557,76 @@ def test_snapshot_reports_idle_motion_phase_once_long_rest_expires():
     assert piece_snapshot.motion_phase == PHASE_IDLE
 
 
+def test_snapshot_reports_zero_cooldown_for_a_piece_that_has_not_acted():
+    board, engine, arbiter = make_engine("wK . .\n. . .\n. . .")
+
+    [piece_snapshot] = engine.snapshot().pieces
+
+    assert piece_snapshot.cooldown_remaining_ms == 0
+    assert piece_snapshot.cooldown_total_ms == 0
+
+
+def test_snapshot_reports_full_remaining_cooldown_right_after_a_move_lands():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    engine.request_move(Position(1, 1), Position(0, 1))
+    engine.wait(CELL_DURATION_MS)
+
+    [piece_snapshot] = engine.snapshot().pieces
+
+    assert piece_snapshot.cooldown_remaining_ms == LONG_REST_DURATION_MS
+    assert piece_snapshot.cooldown_total_ms == LONG_REST_DURATION_MS
+
+
+def test_snapshot_reports_falling_remaining_cooldown_partway_through_a_rest():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    engine.request_move(Position(1, 1), Position(0, 1))
+    engine.wait(CELL_DURATION_MS)
+
+    engine.wait(100)
+    [piece_snapshot] = engine.snapshot().pieces
+
+    assert piece_snapshot.cooldown_remaining_ms == LONG_REST_DURATION_MS - 100
+    assert piece_snapshot.cooldown_total_ms == LONG_REST_DURATION_MS
+
+
+def test_snapshot_reports_zero_cooldown_once_long_rest_expires():
+    board, engine, arbiter = make_engine(". . .\n. wR .\n. . .")
+    engine.request_move(Position(1, 1), Position(0, 1))
+    engine.wait(CELL_DURATION_MS)
+    engine.wait(LONG_REST_DURATION_MS)
+
+    [piece_snapshot] = engine.snapshot().pieces
+
+    assert piece_snapshot.cooldown_remaining_ms == 0
+    assert piece_snapshot.cooldown_total_ms == 0
+
+
+def test_snapshot_reports_full_unavailable_window_the_instant_a_jump_launches():
+    # A jump's total unavailable time spans its airborne hangtime plus the
+    # short_rest that follows landing - reported from the moment the jump
+    # is thrown, not only once short_rest itself starts (see
+    # RealTimeArbiter.unavailable_progress's own docstring for why).
+    board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
+    engine.request_jump(Position(1, 1))
+
+    [piece_snapshot] = engine.snapshot().pieces
+
+    assert piece_snapshot.cooldown_remaining_ms == AIRBORNE_DURATION_MS + SHORT_REST_DURATION_MS
+    assert piece_snapshot.cooldown_total_ms == AIRBORNE_DURATION_MS + SHORT_REST_DURATION_MS
+
+
+def test_snapshot_reports_falling_cooldown_continuously_from_jump_through_its_short_rest():
+    board, engine, arbiter = make_engine(". . .\n. wK .\n. . .")
+    engine.request_jump(Position(1, 1))
+    engine.wait(AIRBORNE_DURATION_MS)
+
+    engine.wait(100)
+    [piece_snapshot] = engine.snapshot().pieces
+
+    assert piece_snapshot.cooldown_remaining_ms == SHORT_REST_DURATION_MS - 100
+    assert piece_snapshot.cooldown_total_ms == AIRBORNE_DURATION_MS + SHORT_REST_DURATION_MS
+
+
 def test_an_accepted_move_notifies_observers_with_the_move_facts():
     # GameEngine reports raw facts (color/kind/source/destination/
     # is_capture), never notation text - see model/game_state.py's
@@ -646,6 +718,35 @@ def test_wait_notifies_observers_of_every_arrival_including_non_captures():
 
     [event] = observer.arrivals
     assert event.captured_piece is None
+
+
+def test_a_piece_that_relocates_before_the_attacker_arrives_survives():
+    # The defender's own destination cell is irrelevant to whether it can
+    # flee - only its own state (idle, not mid-motion/airborne/resting)
+    # gates request_move (see RuleEngine.validate_move) - so nothing stops
+    # it from moving away while an enemy is still mid-flight toward it.
+    # Capture is resolved lazily against the board's live state at the
+    # attacker's actual arrival (RealTimeArbiter._resolve_arrival), not a
+    # snapshot taken when the attack was requested - so a target that's
+    # already gone by then is just... gone, and the attacker lands on the
+    # now-empty square instead of capturing.
+    board, engine, arbiter = make_engine("wR . . bR\n. . . .")
+    observer = RecordingObserver()
+    engine.add_observer(observer)
+
+    attack = engine.request_move(Position(0, 0), Position(0, 3))
+    assert attack.is_accepted is True
+
+    engine.wait(200)  # white is now mid-flight, well short of column 3
+
+    flee = engine.request_move(Position(0, 3), Position(1, 3))
+    assert flee.is_accepted is True
+
+    engine.wait(3 * CELL_DURATION_MS)  # long enough for both motions to land
+
+    assert board.get_piece(Position(1, 3)).color == BLACK  # fled safely
+    assert board.get_piece(Position(0, 3)).color == WHITE  # attacker lands on empty air
+    assert all(event.captured_piece is None for event in observer.arrivals)
 
 
 def test_wait_notifies_observers_of_a_captures_event_with_the_captured_piece():

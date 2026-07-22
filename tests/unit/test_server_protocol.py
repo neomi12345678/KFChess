@@ -200,6 +200,8 @@ def test_snapshot_to_json_is_plain_json_serializable_data():
                 "col": 4.0,
                 "state": "idle",
                 "motion_phase": "idle",
+                "cooldown_remaining_ms": 0,
+                "cooldown_total_ms": 0,
             }
         ],
     }
@@ -257,7 +259,7 @@ def test_panel_to_json_is_plain_json_serializable_data():
     score.on_arrival(ArrivalEvent(piece=Piece(id="wN", color=WHITE, kind=KNIGHT, cell=Position(5, 2)),
                                    captured_piece=Piece(id="bP", color=BLACK, kind=PAWN, cell=Position(5, 2))))
 
-    payload = panel_to_json(move_log, score)
+    payload = panel_to_json(move_log, score, names={WHITE: "alice", BLACK: "bob"})
 
     assert payload == {
         "move_log": {
@@ -265,7 +267,17 @@ def test_panel_to_json_is_plain_json_serializable_data():
             BLACK: [],
         },
         "score": {WHITE: 1, BLACK: 0},
+        "names": {WHITE: "alice", BLACK: "bob"},
     }
+
+
+def test_panel_to_json_defaults_names_to_empty_when_none_are_given():
+    move_log = MoveLogObserver(board_height=8)
+    score = ScoreObserver()
+
+    payload = panel_to_json(move_log, score)
+
+    assert payload["names"] == {}
 
 
 def test_panel_state_reconstructs_entries_for_and_score_for_from_the_wire_payload():
@@ -281,7 +293,7 @@ def test_panel_state_reconstructs_entries_for_and_score_for_from_the_wire_payloa
                                    captured_piece=Piece(id="bP", color=BLACK, kind=PAWN, cell=Position(5, 2))))
 
     panel_state = PanelState()
-    panel_state.update_from_json(panel_to_json(move_log, score))
+    panel_state.update_from_json(panel_to_json(move_log, score, names={WHITE: "alice", BLACK: "bob"}))
 
     [entry] = panel_state.entries_for(WHITE)
     assert entry.notation == "e4"
@@ -289,6 +301,8 @@ def test_panel_state_reconstructs_entries_for_and_score_for_from_the_wire_payloa
     assert panel_state.entries_for(BLACK) == []
     assert panel_state.score_for(WHITE) == 1
     assert panel_state.score_for(BLACK) == 0
+    assert panel_state.name_for(WHITE) == "alice"
+    assert panel_state.name_for(BLACK) == "bob"
 
 
 def test_panel_state_defaults_to_empty_before_any_update():
@@ -296,3 +310,14 @@ def test_panel_state_defaults_to_empty_before_any_update():
 
     assert panel_state.entries_for(WHITE) == []
     assert panel_state.score_for(WHITE) == 0
+    assert panel_state.name_for(WHITE) is None
+
+
+def test_panel_state_name_for_is_none_when_the_payload_carries_no_names():
+    move_log = MoveLogObserver(board_height=8)
+    score = ScoreObserver()
+    panel_state = PanelState()
+
+    panel_state.update_from_json(panel_to_json(move_log, score))
+
+    assert panel_state.name_for(WHITE) is None

@@ -10,15 +10,21 @@ from view.canvas.sprite_frames import SpriteAnimator
 
 _TEXT_FONT = cv2.FONT_HERSHEY_SIMPLEX
 
+# draw_cooldown_bar's own sizing, as fractions of cell_size - a short bar,
+# not the full width of the square, so it reads as a small clock/timer
+# rather than another cell-wide highlight.
+_COOLDOWN_BAR_LENGTH_FRAC = 0.5
+_COOLDOWN_BAR_HEIGHT_FRAC = 0.1
+
 
 class ImgCanvas:
-    """Implements the draw_rect/draw_image/highlight_cell/draw_text interface
-    that view/renderer.py expects, using only view/canvas/img.py (Img) as the
-    drawing backend. Lives under view/canvas/ rather than beside renderer.py
-    itself because it's the concrete cv2-backed implementation of the
-    canvas port Renderer only ever talks to through that abstract
-    draw_rect/draw_image/highlight_cell/draw_text interface - renderer.py
-    itself never imports this module, or cv2, at all.
+    """Implements the draw_rect/draw_image/highlight_cell/draw_cooldown_bar/
+    draw_text interface that view/renderer.py expects, using only
+    view/canvas/img.py (Img) as the drawing backend. Lives under
+    view/canvas/ rather than beside renderer.py itself because it's the
+    concrete cv2-backed implementation of the canvas port Renderer only
+    ever talks to through that abstract interface - renderer.py itself
+    never imports this module, or cv2, at all.
     """
 
     # board.png's native resolution (828x822) doesn't divide evenly into
@@ -54,7 +60,18 @@ class ImgCanvas:
         skin: piece_config.Skin = piece_config.DEFAULT_SKIN,
     ):
         self._cell_size = cell_size
-        self._board = Img().read(skin.board_path, size=(board_width * cell_size, board_height * cell_size))
+        # INTER_NEAREST, not Img.read's own INTER_AREA default - board.png is
+        # a crisp checkerboard, not a photograph, and INTER_AREA's
+        # area-weighted averaging still blends a stray pixel across each
+        # square boundary even when the source edge itself is perfectly
+        # hard (as it now is - see board.png's own generation). A highlighted
+        # cell (see highlight_cell below) draws a mathematically exact
+        # cell_size-aligned rectangle; this is what keeps the checker square
+        # underneath it just as exact, instead of a soft blurred edge peeking
+        # out from under a crisp highlight.
+        self._board = Img().read(
+            skin.board_path, size=(board_width * cell_size, board_height * cell_size), interpolation=cv2.INTER_NEAREST
+        )
         self._board_offset_x = side_panel_width_px
         self._frame = None
         self._animator = SpriteAnimator(skin=skin)
@@ -131,12 +148,48 @@ class ImgCanvas:
         sprite_h, sprite_w = sprite.img.shape[:2]
         sprite.draw_on(self._frame, self._board_offset_x + x - sprite_w // 2, y - sprite_h // 2)
 
+    # Solid, alpha-preserving fill for the moves-log/score side panel's
+    # decorative card background/border/row-stripe rects (see
+    # view/renderer.py's _draw_panel) - writes only the BGR channels, the
+    # same trick draw_cooldown_bar below already uses, so panel decoration
+    # never resets a frame pixel's alpha back to fully transparent.
+    # Frame-absolute coordinates, not board-relative - same reasoning as
+    # draw_text. Clamped to the frame's own bounds rather than trusting
+    # numpy's slice clipping, since a negative x/y would otherwise wrap
+    # around to the wrong edge instead of just being cropped.
+    def fill_rect(self, x: int, y: int, width: int, height: int, color=(20, 20, 20)) -> None:
+        frame = self._frame.img
+        frame_h, frame_w = frame.shape[:2]
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(frame_w, x + width), min(frame_h, y + height)
+        if x1 <= x0 or y1 <= y0:
+            return
+        frame[y0:y1, x0:x1, :3] = color
+
     def highlight_cell(self, row: int, col: int, color=(0, 255, 255), alpha: float = 0.35) -> None:
         x, y = self._board_offset_x + col * self._cell_size, row * self._cell_size
         region = self._frame.img[y:y + self._cell_size, x:x + self._cell_size]
         overlay = region.copy()
         overlay[:, :, :3] = color
         region[:, :, :3] = (1 - alpha) * region[:, :, :3] + alpha * overlay[:, :, :3]
+
+    # A depleting bar centered along a resting piece's cell's bottom edge -
+    # fraction 1.0 draws it at its full (short) length, fraction 0.0 draws
+    # nothing. Solid fill, not alpha-blended like highlight_cell above: this
+    # is meant to read as a clock/timer, not a tint on the square
+    # underneath it. color is BGR, like every other color this class takes
+    # (cv2's own convention, see debug_mouse.py's HOVER_COLOR/CLICK_COLOR
+    # for the same (B, G, R) ordering) - defaults to red.
+    def draw_cooldown_bar(self, row: int, col: int, fraction: float, color=(0, 0, 255)) -> None:
+        fraction = max(0.0, min(1.0, fraction))
+        if fraction <= 0.0:
+            return
+        bar_height = max(1, round(self._cell_size * _COOLDOWN_BAR_HEIGHT_FRAC))
+        full_bar_width = round(self._cell_size * _COOLDOWN_BAR_LENGTH_FRAC)
+        bar_width = round(full_bar_width * fraction)
+        x = self._board_offset_x + col * self._cell_size + (self._cell_size - full_bar_width) // 2
+        y = row * self._cell_size + self._cell_size - bar_height
+        self._frame.img[y:y + bar_height, x:x + bar_width, :3] = color
 
     # cv2.putText positions (x, y) at the text's baseline, not a top-left
     # corner - without compensating, y=0 (as Renderer's "Game Over" message

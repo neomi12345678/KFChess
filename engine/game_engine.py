@@ -245,6 +245,13 @@ class GameEngine:
                 if motion is not None:
                     board_row, board_col = _interpolated_cell(motion)
 
+                cooldown_remaining_ms, cooldown_total_ms = 0, 0
+                progress = self._real_time_arbiter.unavailable_progress(piece)
+                if progress is not None:
+                    elapsed_ms, duration_ms = progress
+                    cooldown_remaining_ms = max(0, duration_ms - elapsed_ms)
+                    cooldown_total_ms = duration_ms
+
                 pieces.append(
                     PieceSnapshot(
                         id=piece.id,
@@ -254,6 +261,8 @@ class GameEngine:
                         col=board_col,
                         state=piece.state,
                         motion_phase=self._motion_phase(piece),
+                        cooldown_remaining_ms=cooldown_remaining_ms,
+                        cooldown_total_ms=cooldown_total_ms,
                     )
                 )
 

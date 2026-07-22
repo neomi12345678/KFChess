@@ -24,6 +24,14 @@ from physics.motion import Motion, TimedState
 from realtime.route_planner import RoutePlan, plan_route, retreat_cell
 from rules.rule_engine import LastRankPromotion, PromotionRule
 
+# Resolved once at import time, same fixed values start_jump/_start_short_rest/
+# _start_long_rest each already computed inline - pulled out here too so
+# unavailable_progress (below) can combine airborne+short_rest into one
+# continuous span without re-deriving either constant itself.
+_AIRBORNE_DURATION_MS = round(AIRBORNE_BASE_DURATION_MS * AIRBORNE_DURATION_MULTIPLIER)
+_SHORT_REST_DURATION_MS = round(SHORT_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
+_LONG_REST_DURATION_MS = round(LONG_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
+
 
 # A capture scheduled for the future, not resolved the instant it's
 # discovered - see _intercept_motion's opposite-color branch. motion keeps
@@ -82,6 +90,35 @@ class RealTimeArbiter:
     def is_in_long_rest(self, piece: PieceRepresentation) -> bool:
         return any(rest.piece.id == piece.id for rest in self._long_rests)
 
+    # (elapsed_ms, total_ms) covering the *entire* stretch this piece is
+    # unavailable for a new move/jump - not just whichever single TimedState
+    # currently holds it. For a jump, that's airborne time plus its
+    # subsequent short_rest reported as one continuous span (elapsed_ms
+    # keeps counting up through the airborne-to-short_rest handoff, total_ms
+    # is airborne_duration + short_rest_duration throughout) - a piece that
+    # jumped is just as unavailable while airborne as while resting
+    # afterwards (see is_airborne()/is_in_cooldown(), both gate
+    # start_motion/start_jump), so the view's own cooldown clock (see
+    # view/renderer.py) has something to show from the instant the jump is
+    # thrown, not only once short_rest itself begins - a jump's actual
+    # airborne hangtime (AIRBORNE_DURATION_MULTIPLIER, see logic_config.py)
+    # runs far longer than its animation, so waiting for short_rest to
+    # start would leave the clock looking like it started late. An ordinary
+    # move's long_rest has no such mismatch (its own motion animation
+    # already spans the whole move) so that one is reported alone, unchanged.
+    # None if the piece isn't airborne or resting at all.
+    def unavailable_progress(self, piece: PieceRepresentation) -> Optional[Tuple[int, int]]:
+        for airborne in self._airborne_states:
+            if airborne.piece.id == piece.id:
+                return airborne.elapsed_ms, airborne.duration_ms + _SHORT_REST_DURATION_MS
+        for rest in self._short_rests:
+            if rest.piece.id == piece.id:
+                return _AIRBORNE_DURATION_MS + rest.elapsed_ms, _AIRBORNE_DURATION_MS + rest.duration_ms
+        for rest in self._long_rests:
+            if rest.piece.id == piece.id:
+                return rest.elapsed_ms, rest.duration_ms
+        return None
+
     # Whoever is already moving has right of way - see route_planner.plan_route.
     def plan_route(self, piece: PieceRepresentation, source: Position, destination: Position) -> RoutePlan:
         return plan_route(self._active_motions, piece, source, destination)
@@ -133,8 +170,7 @@ class RealTimeArbiter:
         if self.is_airborne(piece) or self.is_in_cooldown(piece):
             return False
 
-        duration_ms = round(AIRBORNE_BASE_DURATION_MS * AIRBORNE_DURATION_MULTIPLIER)
-        self._airborne_states.append(TimedState(piece=piece, duration_ms=duration_ms))
+        self._airborne_states.append(TimedState(piece=piece, duration_ms=_AIRBORNE_DURATION_MS))
         # piece.state stays IDLE for the whole jump - "airborne" only ever
         # lives in self._airborne_states (see is_airborne()), never on the
         # piece itself.
@@ -213,13 +249,11 @@ class RealTimeArbiter:
     # is_in_cooldown()'s own bookkeeping below remembers the cooldown.
     def _start_long_rest(self, piece: PieceRepresentation) -> None:
         self._mark_idle(piece)
-        duration_ms = round(LONG_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
-        self._long_rests.append(TimedState(piece=piece, duration_ms=duration_ms))
+        self._long_rests.append(TimedState(piece=piece, duration_ms=_LONG_REST_DURATION_MS))
 
     def _start_short_rest(self, piece: PieceRepresentation) -> None:
         self._mark_idle(piece)
-        duration_ms = round(SHORT_REST_BASE_DURATION_MS * REST_DURATION_MULTIPLIER)
-        self._short_rests.append(TimedState(piece=piece, duration_ms=duration_ms))
+        self._short_rests.append(TimedState(piece=piece, duration_ms=_SHORT_REST_DURATION_MS))
 
     # The only two places piece.state is ever written after start_motion's
     # own MOVING assignment - every rest, every successful defense, and
@@ -323,24 +357,22 @@ class RealTimeArbiter:
     # existed has no way to know that motion will later land on one of its
     # own remaining path cells. Called right after each add_piece inside
     # _resolve_arrival (both the same-color-race fallback and the normal-
-    # arrival branch) and, recursively, right after _intercept_motion's own
-    # same-color fallback add_piece - a domino: an intercepted motion's new
-    # resting cell can itself sit on a third motion's remaining path,
-    # exactly the same shape of gap this whole mechanism exists to close,
-    # just one step removed. Called immediately rather than deferred in
-    # every case, so a motion this same tick's own later completions
-    # haven't been processed yet is still found, and so an already-
-    # intercepted motion is gone from self._active_motions before any
-    # later, chronologically-later trigger this same tick can double-hit
-    # it.
+    # arrival branch). A same-color interception found here doesn't finish
+    # a motion on the spot - it only shortens the intercepted motion's own
+    # destination (see _intercept_motion) and leaves it flying, so the
+    # domino this same check would need for a *third* motion's path plays
+    # out naturally later, when that shortened motion itself completes and
+    # this same method runs again from advance_time - not recursively here.
     #
-    # The state guard mirrors advance_time's own "already captured earlier
-    # this same tick" guard: list(self._active_motions) is a snapshot taken
-    # once at the top of this call, but an earlier iteration's own
-    # recursive cascade (via _intercept_motion's domino call below) can
-    # already have resolved a *later* entry in that same snapshot before
-    # this loop reaches it - without this check, re-processing it would
-    # call self._active_motions.remove() on a motion no longer in the list.
+    # The state guard below mirrors advance_time's own "already captured
+    # earlier this same tick" guard: list(self._active_motions) is a
+    # snapshot taken once at the top of this call, but multiple motions can
+    # legitimately complete within the same tick (see advance_time's own
+    # chronological sort), and an earlier one's arrival can already have
+    # captured or otherwise removed a *later* entry in that same snapshot
+    # before this loop reaches it - without this check, re-processing it
+    # would call self._active_motions.remove() on a motion no longer in the
+    # list.
     def _intercept_motions_crossing(self, landed_cell: Position, ms: int, completion_offset_ms: int) -> List[ArrivalEvent]:
         events: List[ArrivalEvent] = []
         for motion in list(self._active_motions):
@@ -348,7 +380,7 @@ class RealTimeArbiter:
                 continue
             effective_elapsed_ms = motion.elapsed_ms - ms + completion_offset_ms
             if landed_cell in motion.remaining_cells(as_of_elapsed_ms=effective_elapsed_ms):
-                events.extend(self._intercept_motion(motion, landed_cell, ms, completion_offset_ms))
+                events.extend(self._intercept_motion(motion, landed_cell))
         return events
 
     # The same two outcomes a request-time route conflict already
@@ -356,9 +388,22 @@ class RealTimeArbiter:
     # a motion already granted and mid-flight instead of before
     # start_motion. Same color means it stops one cell short instead of
     # overwriting a teammate, reusing retreat_cell exactly as a normal
-    # same-color arrival does - it still counts as having completed a
-    # motion, so it still earns a long_rest, and its own new fallback cell
-    # is immediately re-checked against every other still-active motion.
+    # same-color arrival does - but unlike a request-time truncation (which
+    # starts the shortened motion fresh from elapsed_ms=0), this motion is
+    # already partway through its original, longer flight. Snapping it
+    # straight to the fallback cell here would cut that remaining travel
+    # time to zero and jump the sprite there instantly instead of letting it
+    # glide the rest of the way. So this only shortens the motion's
+    # destination in place (duration_ms is derived from source/destination,
+    # so it shrinks to match, while elapsed_ms - and therefore the piece's
+    # current interpolated position - is untouched); the motion stays in
+    # _active_motions and is left for advance_time's normal completion path
+    # to resolve once its own elapsed_ms genuinely catches up to the new,
+    # shorter duration. That normal path (_resolve_arrival) already re-checks
+    # the landing cell for a same-color occupant and re-triggers
+    # _intercept_motions_crossing on arrival, so the domino cascade a further
+    # truncation might need still happens - just at the right simulated
+    # instant instead of immediately.
     #
     # Opposite color means motion.piece - already flying toward or through
     # this cell before occupant ever landed there - has right of way (see
@@ -379,27 +424,15 @@ class RealTimeArbiter:
     # standing at a motion's own destination the moment it naturally
     # arrives - the exact same "wait until it's really there" behavior,
     # for free.
-    #
-    # ms/completion_offset_ms are still threaded through to the same-color
-    # branch's own domino - a cascade that branch triggers happens at the
-    # exact same simulated instant as the trigger that caused it, not later
-    # in the tick.
-    def _intercept_motion(self, motion: Motion, cell: Position, ms: int, completion_offset_ms: int) -> List[ArrivalEvent]:
-        # landed_cell is always freshly occupied here - either by whatever
-        # _resolve_arrival (or this same method's own same-color branch,
-        # below) just placed there, immediately before this call - so
-        # there's always a real occupant to check against.
+    def _intercept_motion(self, motion: Motion, cell: Position) -> List[ArrivalEvent]:
+        # landed_cell is always freshly occupied here - by whatever
+        # _resolve_arrival just placed there, immediately before this call -
+        # so there's always a real occupant to check against.
         occupant = self._board.get_piece(cell)
 
         if occupant.color == motion.piece.color:
-            self._active_motions.remove(motion)
-            fallback = retreat_cell(self._board, motion.source, cell)
-            self._board.remove_piece(motion.source)
-            self._board.add_piece(fallback, motion.piece)
-            self._start_long_rest(motion.piece)
-            events = [ArrivalEvent(piece=motion.piece, captured_piece=None)]
-            events.extend(self._intercept_motions_crossing(fallback, ms, completion_offset_ms))
-            return events
+            motion.destination = retreat_cell(self._board, motion.source, cell)
+            return []
 
         if cell == motion.destination:
             return []

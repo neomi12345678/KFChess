@@ -18,11 +18,18 @@ class FakeCanvas:
     rects: List[Tuple[int, int, int, int]] = field(default_factory=list)
     images: List[Tuple[str, int, int]] = field(default_factory=list)
     highlighted_cells: List[Tuple[int, int]] = field(default_factory=list)
+    # (row, col, fraction) triples, one per _draw_cooldown_bars call.
+    cooldown_bars: List[Tuple[int, int, float]] = field(default_factory=list)
     texts: List[str] = field(default_factory=list)
     # (text, x) pairs, in addition to `texts` above - new panel-placement
     # tests need the x each line was drawn at; existing tests only ever
     # assert on `texts` itself, so that stays a plain list of strings.
     text_positions: List[Tuple[str, int]] = field(default_factory=list)
+    # (x, y, width, height) tuples, one per Renderer._draw_panel/
+    # _draw_card_frame fill_rect call (card background/border/row stripes) -
+    # no test currently asserts on these, but the method must exist for
+    # Renderer to draw a panel at all.
+    fills: List[Tuple[int, int, int, int]] = field(default_factory=list)
 
     def draw_rect(self, x, y, width, height):
         self.rects.append((x, y, width, height))
@@ -33,9 +40,15 @@ class FakeCanvas:
     def highlight_cell(self, row, col):
         self.highlighted_cells.append((row, col))
 
+    def draw_cooldown_bar(self, row, col, fraction, color=(255, 140, 0)):
+        self.cooldown_bars.append((row, col, fraction))
+
     def draw_text(self, text, x, y, font_size=1.0, color=(255, 255, 255, 255)):
         self.texts.append(text)
         self.text_positions.append((text, x))
+
+    def fill_rect(self, x, y, width, height, color=(20, 20, 20)):
+        self.fills.append((x, y, width, height))
 
 
 def make_engine(board_text):
@@ -86,6 +99,46 @@ def test_renderer_draws_no_highlight_without_a_selection():
     Renderer(canvas).draw(build_ui_snapshot(snapshot))
 
     assert canvas.highlighted_cells == []
+
+
+def test_renderer_draws_no_cooldown_bar_for_a_piece_that_is_not_resting():
+    board, engine = make_engine("wK . .\n. . .\n. . .")
+    snapshot = engine.snapshot()
+    canvas = FakeCanvas()
+
+    Renderer(canvas).draw(build_ui_snapshot(snapshot))
+
+    assert canvas.cooldown_bars == []
+
+
+def test_renderer_draws_a_cooldown_bar_for_a_resting_piece_sized_by_the_remaining_fraction():
+    from model.game_state import GameSnapshot, PieceSnapshot
+    from model.piece import IDLE, PHASE_LONG_REST, WHITE
+
+    snapshot = GameSnapshot(
+        board_width=3,
+        board_height=3,
+        pieces=(
+            PieceSnapshot(
+                id="wK-0-0",
+                kind="king",
+                color=WHITE,
+                row=0.0,
+                col=0.0,
+                state=IDLE,
+                motion_phase=PHASE_LONG_REST,
+                cooldown_remaining_ms=250,
+                cooldown_total_ms=1000,
+            ),
+        ),
+        selected_cell=None,
+        game_over=False,
+    )
+    canvas = FakeCanvas()
+
+    Renderer(canvas).draw(build_ui_snapshot(snapshot))
+
+    assert canvas.cooldown_bars == [(0, 0, 0.25)]
 
 
 def test_renderer_shows_game_over_message():
@@ -148,15 +201,17 @@ def test_renderer_draws_no_panel_text_when_side_panels_are_not_configured():
     assert canvas.texts == []
 
 
-def test_renderer_draws_default_name_and_zero_score_when_no_observers_are_given():
+def test_renderer_draws_no_name_line_and_zero_score_when_no_player_names_are_given():
+    # player_names defaults to empty (see Renderer.__init__) - no name to
+    # show means no name line at all, not a "White"/"Black" placeholder.
     board, engine = make_engine("wK . .\n. . .\n. . .")
     snapshot = engine.snapshot()
     canvas = FakeCanvas()
 
     Renderer(canvas, side_panel_width_px=200).draw(build_ui_snapshot(snapshot))
 
-    assert "White" in canvas.texts
-    assert "Black" in canvas.texts
+    assert "White" not in canvas.texts
+    assert "Black" not in canvas.texts
     assert canvas.texts.count("Score: 0") == 2
 
 
@@ -202,7 +257,10 @@ def test_renderer_draws_move_log_entries_for_each_color_with_formatted_time():
 
     Renderer(canvas, side_panel_width_px=200).draw(build_ui_snapshot(snapshot, move_log=move_log))
 
-    assert "00:04.105  e4" in canvas.texts
+    # Time and move now live in separate table columns (see
+    # Renderer._draw_panel) instead of one combined string.
+    assert "00:04.105" in canvas.texts
+    assert "e4" in canvas.texts
 
 
 def test_renderer_only_shows_the_most_recent_moves_up_to_the_configured_limit():
@@ -215,8 +273,8 @@ def test_renderer_only_shows_the_most_recent_moves_up_to_the_configured_limit():
 
     Renderer(canvas, side_panel_width_px=200, max_visible_moves=2).draw(build_ui_snapshot(snapshot, move_log=move_log))
 
-    shown = [text for text in canvas.texts if text.startswith("00:00.00") and len(text) > len("00:00.000")]
-    assert shown == ["00:00.003  d4", "00:00.004  e4"]
+    shown = [text for text in canvas.texts if text.startswith("00:00.00")]
+    assert shown == ["00:00.003", "00:00.004"]
 
 
 def test_renderer_draws_blacks_panel_on_the_left_and_whites_on_the_right():
@@ -229,10 +287,14 @@ def test_renderer_draws_blacks_panel_on_the_left_and_whites_on_the_right():
 
     Renderer(canvas, side_panel_width_px=200).draw(build_ui_snapshot(snapshot, move_log=move_log))
 
-    black_x = dict(canvas.text_positions)["00:00.000  e5"]
-    white_x = dict(canvas.text_positions)["00:00.000  e4"]
-    assert black_x == 10
-    assert white_x == 200 + 3 * 100 + 10  # side_panel_width_px + board_px_width + margin
+    # Both colors' time text is the identical "00:00.000" string, so the
+    # move-notation column (which differs, e5 vs e4) is what distinguishes
+    # black's card from white's here. move_x = card_x + padding + the move
+    # column's own offset from the card's left edge (8 + 90).
+    black_move_x = dict(canvas.text_positions)["e5"]
+    white_move_x = dict(canvas.text_positions)["e4"]
+    assert black_move_x == 10 + 98
+    assert white_move_x == 200 + 3 * 100 + 10 + 98  # side_panel_width_px + board_px_width + margin + column offset
 
 
 def _arrival_with_capture():

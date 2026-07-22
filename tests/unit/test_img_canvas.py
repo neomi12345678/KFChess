@@ -4,7 +4,7 @@ import piece_config
 from boardio.board_parser import parse
 from display_config import CELL_SIZE
 from engine.game_engine import GameEngine
-from view.canvas.img_canvas import ImgCanvas
+from view.canvas.img_canvas import _COOLDOWN_BAR_HEIGHT_FRAC, _COOLDOWN_BAR_LENGTH_FRAC, ImgCanvas
 from model.piece import COLOR_BY_LETTER, KIND_BY_LETTER
 from model.position import Position
 from realtime.real_time_arbiter import RealTimeArbiter
@@ -174,6 +174,71 @@ def test_highlight_cell_is_shifted_right_by_the_side_panel_width():
     # The panel region (before the board even starts) is untouched.
     assert np.array_equal(canvas.frame()[:, 0:200], before[:, 0:200])
     # The actual board's first cell, now offset by the panel width, changed.
+    assert not np.array_equal(
+        canvas.frame()[0:CELL_SIZE, 200:200 + CELL_SIZE],
+        before[0:CELL_SIZE, 200:200 + CELL_SIZE],
+    )
+
+
+_BAR_HEIGHT = round(CELL_SIZE * _COOLDOWN_BAR_HEIGHT_FRAC)
+_BAR_FULL_WIDTH = round(CELL_SIZE * _COOLDOWN_BAR_LENGTH_FRAC)
+_BAR_LEFT_MARGIN = (CELL_SIZE - _BAR_FULL_WIDTH) // 2
+
+
+def test_draw_cooldown_bar_paints_a_short_strip_along_the_cells_bottom_edge():
+    canvas = ImgCanvas()
+    canvas.begin_frame()
+    before = canvas.frame().copy()
+
+    canvas.draw_cooldown_bar(row=0, col=0, fraction=1.0, color=(0, 0, 255))
+
+    x0, x1 = _BAR_LEFT_MARGIN, _BAR_LEFT_MARGIN + _BAR_FULL_WIDTH
+    bottom_strip_before = before[CELL_SIZE - _BAR_HEIGHT:CELL_SIZE, x0:x1, :3]
+    bottom_strip_after = canvas.frame()[CELL_SIZE - _BAR_HEIGHT:CELL_SIZE, x0:x1, :3]
+    assert not np.array_equal(bottom_strip_before, bottom_strip_after)
+    assert np.array_equal(bottom_strip_after, np.full_like(bottom_strip_after, [0, 0, 255]))
+
+    # Above the bar, and outside its shorter-than-the-cell length, nothing changed.
+    above_bar_before = before[0:CELL_SIZE - _BAR_HEIGHT, 0:CELL_SIZE]
+    above_bar_after = canvas.frame()[0:CELL_SIZE - _BAR_HEIGHT, 0:CELL_SIZE]
+    assert np.array_equal(above_bar_before, above_bar_after)
+    left_margin_before = before[CELL_SIZE - _BAR_HEIGHT:CELL_SIZE, 0:_BAR_LEFT_MARGIN]
+    left_margin_after = canvas.frame()[CELL_SIZE - _BAR_HEIGHT:CELL_SIZE, 0:_BAR_LEFT_MARGIN]
+    assert np.array_equal(left_margin_before, left_margin_after)
+
+
+def test_draw_cooldown_bar_shrinks_its_width_with_a_smaller_fraction():
+    canvas = ImgCanvas()
+    canvas.begin_frame()
+
+    canvas.draw_cooldown_bar(row=0, col=0, fraction=0.5, color=(0, 0, 255))
+
+    half_width = round(_BAR_FULL_WIDTH * 0.5)
+    x0 = _BAR_LEFT_MARGIN
+    painted_half = canvas.frame()[CELL_SIZE - _BAR_HEIGHT:CELL_SIZE, x0:x0 + half_width, :3]
+    untouched_rest = canvas.frame()[CELL_SIZE - _BAR_HEIGHT:CELL_SIZE, x0 + half_width:x0 + _BAR_FULL_WIDTH, :3]
+    assert np.array_equal(painted_half, np.full_like(painted_half, [0, 0, 255]))
+    assert not np.array_equal(untouched_rest, np.full_like(untouched_rest, [0, 0, 255]))
+
+
+def test_draw_cooldown_bar_draws_nothing_at_zero_fraction():
+    canvas = ImgCanvas()
+    canvas.begin_frame()
+    before = canvas.frame().copy()
+
+    canvas.draw_cooldown_bar(row=0, col=0, fraction=0.0)
+
+    assert np.array_equal(canvas.frame(), before)
+
+
+def test_draw_cooldown_bar_is_shifted_right_by_the_side_panel_width():
+    canvas = ImgCanvas(board_width=3, board_height=3, side_panel_width_px=200)
+    canvas.begin_frame()
+    before = canvas.frame().copy()
+
+    canvas.draw_cooldown_bar(row=0, col=0, fraction=1.0, color=(0, 0, 255))
+
+    assert np.array_equal(canvas.frame()[:, 0:200], before[:, 0:200])
     assert not np.array_equal(
         canvas.frame()[0:CELL_SIZE, 200:200 + CELL_SIZE],
         before[0:CELL_SIZE, 200:200 + CELL_SIZE],

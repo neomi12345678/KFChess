@@ -73,11 +73,11 @@ def test_frame_starts_at_one_the_instant_a_piece_enters_a_state():
 
 
 def test_frame_advances_as_time_passes_in_a_looping_state():
-    # idle: 6 frames_per_sec, is_loop=true, 5 sprites (assets/pieces/KW/states/idle).
+    # idle: 4 frames_per_sec, is_loop=true, 5 sprites (assets/pieces/KW/states/idle).
     animator, clock = make_animator()
     animator.sprite_path("p1", "KW", PHASE_IDLE)  # frame 1 at t=0
 
-    clock.now = 0.2  # 0.2 * 6fps = 1.2 -> 1 whole frame elapsed
+    clock.now = 0.3  # 0.3 * 4fps = 1.2 -> 1 whole frame elapsed
 
     path = animator.sprite_path("p1", "KW", PHASE_IDLE)
 
@@ -85,11 +85,11 @@ def test_frame_advances_as_time_passes_in_a_looping_state():
 
 
 def test_frame_loops_back_to_one_after_a_full_cycle_in_a_looping_state():
-    # 5 frames at 6fps -> one full cycle is 5/6s.
+    # 5 frames at 4fps -> one full cycle is 5/4s.
     animator, clock = make_animator()
     animator.sprite_path("p1", "KW", PHASE_IDLE)
 
-    clock.now = 5 / 6 + 0.01
+    clock.now = 5 / 4 + 0.01
 
     path = animator.sprite_path("p1", "KW", PHASE_IDLE)
 
@@ -97,7 +97,7 @@ def test_frame_loops_back_to_one_after_a_full_cycle_in_a_looping_state():
 
 
 def test_frame_freezes_on_the_last_frame_for_a_non_looping_state():
-    # jump: 8 frames_per_sec, is_loop=false, 5 sprites - it should never wrap
+    # jump: 10 frames_per_sec, is_loop=false, 5 sprites - it should never wrap
     # around and never run past the last frame once its cycle has elapsed.
     animator, clock = make_animator()
     animator.sprite_path("p1", "KW", PHASE_JUMP)
@@ -140,8 +140,8 @@ def test_each_piece_id_tracks_its_own_animation_clock_independently():
     animator, clock = make_animator()
     animator.sprite_path("piece-a", "KW", PHASE_IDLE)  # enters idle at t=0
 
-    clock.now = 0.2  # 1 frame in for piece-a
-    animator.sprite_path("piece-b", "KW", PHASE_IDLE)  # piece-b enters idle now, at t=0.2
+    clock.now = 0.3  # 1 frame in for piece-a
+    animator.sprite_path("piece-b", "KW", PHASE_IDLE)  # piece-b enters idle now, at t=0.3
 
     path_a = animator.sprite_path("piece-a", "KW", PHASE_IDLE)
     path_b = animator.sprite_path("piece-b", "KW", PHASE_IDLE)

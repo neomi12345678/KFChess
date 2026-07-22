@@ -37,14 +37,21 @@ class InputError(Exception):
 # (which sees that message) and _read_commands (which needs the seat to
 # build a move) can share the one piece of state that changes after login.
 class _ClientState:
+    # message type -> the new seat value it carries. Both cases (see observe
+    # below) fully replace the seat rather than modifying it, so a plain
+    # lookup is all that's needed.
+    _SEAT_BY_MESSAGE_TYPE = {
+        "seat": lambda payload: payload["color"],
+        "game_over": lambda payload: None,
+    }
+
     def __init__(self, seat: Optional[str] = None):
         self.seat = seat
 
     def observe(self, payload: dict) -> None:
-        if payload.get("type") == "seat":
-            self.seat = payload["color"]
-        elif payload.get("type") == "game_over":
-            self.seat = None
+        seat_getter = self._SEAT_BY_MESSAGE_TYPE.get(payload.get("type"))
+        if seat_getter is not None:
+            self.seat = seat_getter(payload)
 
 
 # Typed shorthand -> wire command (see server/protocol.py). The connection's

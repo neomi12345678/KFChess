@@ -54,33 +54,32 @@ class GameWindow:  # pragma: no cover
     def __init__(self, title: str):
         _disable_windows_dpi_scaling()
         self._title = title
-        self._click_handler = None
-        self._jump_handler = None
-        self._move_handler = None
+        # cv2 mouse event code -> the handler registered for it, e.g.
+        # {cv2.EVENT_LBUTTONDOWN: <on_click handler>}. Absent (rather than
+        # None) until on_click/on_jump/on_move register one, so _on_mouse
+        # stays a single dict lookup instead of an event-by-event if/elif.
+        self._handlers = {}
         cv2.namedWindow(title, cv2.WINDOW_AUTOSIZE)
         cv2.setMouseCallback(title, self._on_mouse)
 
     def on_click(self, handler) -> None:
-        self._click_handler = handler
+        self._handlers[cv2.EVENT_LBUTTONDOWN] = handler
 
     # Right-click triggers a jump - the only in-game action besides an
     # ordinary move, and left-click is already taken for select/move.
     def on_jump(self, handler) -> None:
-        self._jump_handler = handler
+        self._handlers[cv2.EVENT_RBUTTONDOWN] = handler
 
     # Fires on every hover position, not just clicks - debug_mouse.py is
     # the only current user, to visually confirm pixel->cell mapping is
     # correct without waiting for a click.
     def on_move(self, handler) -> None:
-        self._move_handler = handler
+        self._handlers[cv2.EVENT_MOUSEMOVE] = handler
 
     def _on_mouse(self, event, x, y, flags, userdata) -> None:
-        if event == cv2.EVENT_LBUTTONDOWN and self._click_handler is not None:
-            self._click_handler(x, y)
-        elif event == cv2.EVENT_RBUTTONDOWN and self._jump_handler is not None:
-            self._jump_handler(x, y)
-        elif event == cv2.EVENT_MOUSEMOVE and self._move_handler is not None:
-            self._move_handler(x, y)
+        handler = self._handlers.get(event)
+        if handler is not None:
+            handler(x, y)
 
     # Displays one frame and pumps the event queue (mouse callback, key
     # presses). Returns False once the user closes the window or hits Esc.

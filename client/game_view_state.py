@@ -61,6 +61,18 @@ class GameViewState:
         self._saw_snapshot_this_batch = False
         self._saw_countdown_this_batch = False
 
+        # message.get("type") -> handler, the one thing apply_message needs
+        # per-instance state (self.bus, self._saw_countdown_this_batch, ...)
+        # for, so it's built once here instead of as a class-level dict of
+        # unbound methods.
+        self._message_handlers = {
+            "move_logged": self._apply_move_logged,
+            "capture": self._apply_capture,
+            "game_over": self._apply_game_over,
+            "disconnect_countdown": self._apply_disconnect_countdown,
+            "ack": self._apply_ack,
+        }
+
     # Called once before draining a poll_messages() batch - see end_batch,
     # which reacts to what apply_message saw (or didn't see) across the
     # whole batch just finished.
@@ -73,36 +85,47 @@ class GameViewState:
             self.snapshot = snapshot_from_json(message)
             self.panel_state.update_from_json(message)
             self._saw_snapshot_this_batch = True
-        elif message.get("type") == "move_logged":
-            self.bus.publish(
-                MoveLoggedEvent(
-                    color="",
-                    kind="",
-                    source=None,
-                    destination=None,
-                    is_capture=False,
-                    is_jump=message["is_jump"],
-                    elapsed_ms=0,
-                    piece_id="",
-                )
+            return
+
+        handler = self._message_handlers.get(message.get("type"))
+        if handler is not None:
+            handler(message)
+
+    def _apply_move_logged(self, message: dict) -> None:
+        self.bus.publish(
+            MoveLoggedEvent(
+                color="",
+                kind="",
+                source=None,
+                destination=None,
+                is_capture=False,
+                is_jump=message["is_jump"],
+                elapsed_ms=0,
+                piece_id="",
             )
-        elif message.get("type") == "capture":
-            self.bus.publish(ArrivalEvent(piece=None, captured_piece=_CAPTURED_PIECE_PLACEHOLDER))
-        elif message.get("type") == "game_over":
-            print(f"Game over. New ratings: {message['ratings']}")
-            # arrival=None - unlike every other GameEndedEvent, there's no
-            # ArrivalEvent behind a networked game-over at all (see
-            # server/session.py's resign(), a disconnect timeout rather
-            # than a king-capture ArrivalEvent), and neither SoundCues nor
-            # GameAnimationCues ever reads this field anyway (see this
-            # module's own docstring).
-            self.bus.publish(GameEndedEvent(arrival=None))
-        elif message.get("type") == "disconnect_countdown":
-            self.disconnect_countdown_text = (
-                f"Opponent disconnected - resigning in {message['seconds_remaining']}s unless they return"
-            )
-            self._saw_countdown_this_batch = True
-        elif message.get("type") == "ack" and not message.get("accepted"):
+        )
+
+    def _apply_capture(self, message: dict) -> None:
+        self.bus.publish(ArrivalEvent(piece=None, captured_piece=_CAPTURED_PIECE_PLACEHOLDER))
+
+    def _apply_game_over(self, message: dict) -> None:
+        print(f"Game over. New ratings: {message['ratings']}")
+        # arrival=None - unlike every other GameEndedEvent, there's no
+        # ArrivalEvent behind a networked game-over at all (see
+        # server/session.py's resign(), a disconnect timeout rather
+        # than a king-capture ArrivalEvent), and neither SoundCues nor
+        # GameAnimationCues ever reads this field anyway (see this
+        # module's own docstring).
+        self.bus.publish(GameEndedEvent(arrival=None))
+
+    def _apply_disconnect_countdown(self, message: dict) -> None:
+        self.disconnect_countdown_text = (
+            f"Opponent disconnected - resigning in {message['seconds_remaining']}s unless they return"
+        )
+        self._saw_countdown_this_batch = True
+
+    def _apply_ack(self, message: dict) -> None:
+        if not message.get("accepted"):
             self.illegal_move_text = f"Illegal move: {message.get('reason')}"
             self._illegal_move_expires_at = time.monotonic() + ILLEGAL_MOVE_MESSAGE_S
 

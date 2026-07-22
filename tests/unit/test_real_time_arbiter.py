@@ -108,6 +108,57 @@ def test_is_in_long_rest_is_true_and_is_in_short_rest_is_false_after_an_ordinary
     assert arbiter.is_in_short_rest(piece) is False
 
 
+def test_unavailable_progress_is_none_for_a_piece_that_is_idle():
+    board = parse(". . .\n. wR .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    piece = board.get_piece(Position(1, 1))
+
+    assert arbiter.unavailable_progress(piece) is None
+
+
+def test_unavailable_progress_reports_elapsed_and_duration_during_a_long_rest():
+    board = parse(". . .\n. wR .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    piece = board.get_piece(Position(1, 1))
+    arbiter.start_motion(piece, Position(1, 1), Position(0, 1))
+    arbiter.advance_time(CELL_DURATION_MS)
+
+    arbiter.advance_time(100)
+
+    assert arbiter.unavailable_progress(piece) == (100, LONG_REST_DURATION_MS)
+
+
+def test_unavailable_progress_counts_from_the_jump_itself_while_still_airborne():
+    # A jump's own airborne hangtime is reported too, not just the
+    # short_rest that follows it - so a view-facing cooldown clock has
+    # something to show from the instant the jump is thrown, not only once
+    # short_rest actually starts (see RealTimeArbiter.unavailable_progress's
+    # own docstring for why - airborne badly outlasts the jump animation).
+    board = parse(". . .\n. wK .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    piece = board.get_piece(Position(1, 1))
+    arbiter.start_jump(piece)
+
+    arbiter.advance_time(50)
+
+    assert arbiter.unavailable_progress(piece) == (50, AIRBORNE_DURATION_MS + SHORT_REST_DURATION_MS)
+
+
+def test_unavailable_progress_keeps_counting_continuously_into_the_short_rest_that_follows_a_jump():
+    board = parse(". . .\n. wK .\n. . .")
+    arbiter = RealTimeArbiter(board)
+    piece = board.get_piece(Position(1, 1))
+    arbiter.start_jump(piece)
+    arbiter.advance_time(AIRBORNE_DURATION_MS)
+
+    arbiter.advance_time(50)
+
+    assert arbiter.unavailable_progress(piece) == (
+        AIRBORNE_DURATION_MS + 50,
+        AIRBORNE_DURATION_MS + SHORT_REST_DURATION_MS,
+    )
+
+
 def test_partial_wait_followed_by_remaining_wait_equals_one_full_wait():
     board = parse(". . .\n. wR .\n. . .")
     arbiter = RealTimeArbiter(board)
@@ -568,12 +619,23 @@ def test_a_faster_same_color_piece_lands_in_a_slower_motions_path_and_stops_it_o
     # still lands squarely on the rook's remaining path.
     arbiter.start_motion(fast_rook, Position(1, 3), Position(0, 3))
 
-    # Only far enough for fast_rook's own 1-cell move to complete -
-    # slow_rook's full 5-cell motion (3335ms) is nowhere near done, so this
-    # isolates the interception from slow_rook's own eventual arrival.
+    # Only far enough for fast_rook's own 1-cell move to complete. The
+    # interception shortens slow_rook's destination to (0, 2) right here,
+    # but doesn't teleport it there - it's still mid-flight, only 1 of its
+    # own now-2-cell trip elapsed, so it keeps gliding at its own pace
+    # instead of the sprite jumping straight to the fallback cell.
     events = arbiter.advance_time(CELL_DURATION_MS + 100)
 
     assert board.get_piece(Position(0, 3)) is fast_rook
+    assert board.get_piece(Position(0, 0)) is slow_rook
+    assert slow_rook.state == MOVING
+    assert arbiter.is_in_cooldown(slow_rook) is False
+    assert ArrivalEvent(piece=slow_rook, captured_piece=None) not in events
+
+    # slow_rook's own flight time (now just 2 cells, shortened from 5) only
+    # actually completes once its elapsed_ms genuinely gets there.
+    events = arbiter.advance_time(CELL_DURATION_MS - 100)
+
     # Stopped one cell short instead of overwriting a teammate.
     assert board.get_piece(Position(0, 2)) is slow_rook
     assert slow_rook.state == IDLE
@@ -656,18 +718,19 @@ def test_a_still_flying_target_intercepts_every_enemy_landing_on_its_remaining_p
 
 def test_an_intercepted_motions_own_fallback_cell_can_itself_domino_into_a_third_motion():
     # m1 (white, fast) lands at (0, 3), intercepting m2 (white, slow,
-    # still crossing that cell) into a same-color truncation - m2 stops
-    # short at (0, 2), resting there (a friendly-race stop, not a capture -
-    # nobody dies over it, so it isn't deferred the way a capture is). That
-    # fallback cell (0, 2) is itself on the remaining path of m3 (black,
-    # also still in flight, already heading there before m2 ever retreated
-    # onto it) - a domino one step removed from the original trigger, which
-    # only a recursive re-check (not a single one-shot intercept pass) can
-    # catch. (0, 2) also happens to be m3's own requested destination, so
-    # this doesn't even need the deferred-interception bookkeeping at all:
-    # m3's own ordinary _resolve_arrival captures whatever's still standing
-    # there once its own full travel time has actually elapsed, exactly
-    # like any other plain capture-on-arrival.
+    # still crossing that cell) into a same-color truncation - m2's own
+    # destination shortens to (0, 2) right here, but m2 keeps gliding at its
+    # own pace instead of being teleported there: it's still mid-flight,
+    # only 1 of its now-2-cell trip elapsed, so it only actually settles at
+    # (0, 2) once its own elapsed_ms genuinely gets there. That fallback
+    # cell (0, 2) is itself on the remaining path of m3 (black, also still
+    # in flight, already heading there before m2 ever retreated onto it) -
+    # a domino one step removed from the original trigger. (0, 2) also
+    # happens to be m3's own requested destination, so this doesn't even
+    # need the deferred-interception bookkeeping at all: m3's own ordinary
+    # _resolve_arrival captures whatever's still standing there once its
+    # own full travel time has actually elapsed, exactly like any other
+    # plain capture-on-arrival.
     board = parse(
         "wR . . . . . .\n"
         ". . . wR . . .\n"
@@ -689,18 +752,27 @@ def test_an_intercepted_motions_own_fallback_cell_can_itself_domino_into_a_third
     events = arbiter.advance_time(CELL_DURATION_MS + 100)
 
     assert board.get_piece(Position(0, 3)) is m1_fast_rook
-    # m2 safely reached its fallback cell - very much alive, just resting;
-    # m3 hasn't actually gotten there yet, so there's no capture yet.
+    # m2's destination just got shortened to (0, 2), but it hasn't arrived
+    # there yet - still mid-flight from (0, 0), only 1 of its new 2-cell
+    # trip elapsed.
+    assert board.get_piece(Position(0, 0)) is m2_slow_rook
+    assert m2_slow_rook.state == MOVING
+    assert arbiter.is_in_cooldown(m2_slow_rook) is False
+    assert ArrivalEvent(piece=m2_slow_rook, captured_piece=None) not in events
+    assert board.get_piece(Position(5, 2)) is m3_black_rook
+    assert m3_black_rook.state == MOVING
+
+    # m2's own (now-shortened) flight completes here - it safely reaches its
+    # fallback cell under its own steam; m3 is nowhere near there yet.
+    events = arbiter.advance_time(CELL_DURATION_MS - 100)
     assert board.get_piece(Position(0, 2)) is m2_slow_rook
     assert m2_slow_rook.state == IDLE
     assert arbiter.is_in_cooldown(m2_slow_rook) is True
     assert ArrivalEvent(piece=m2_slow_rook, captured_piece=None) in events
-    assert board.get_piece(Position(5, 2)) is m3_black_rook
-    assert m3_black_rook.state == MOVING
 
     # m3's own motion (5 cells) only actually completes later - only then
     # does it capture m2, exactly like any other arrival.
-    events = arbiter.advance_time(4 * CELL_DURATION_MS)
+    events = arbiter.advance_time(3 * CELL_DURATION_MS + 100)
     assert board.get_piece(Position(0, 2)) is m3_black_rook
     assert board.get_piece(Position(5, 2)) is None
     assert m2_slow_rook.state == CAPTURED

@@ -32,7 +32,7 @@ square_name, just inverted.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from events.observers import MoveLogObserver, ScoreObserver
 from model.game_state import GameSnapshot, PieceSnapshot
@@ -189,6 +189,8 @@ def snapshot_to_json(snapshot) -> dict:
                 "col": piece.col,
                 "state": piece.state,
                 "motion_phase": piece.motion_phase,
+                "cooldown_remaining_ms": piece.cooldown_remaining_ms,
+                "cooldown_total_ms": piece.cooldown_total_ms,
             }
             for piece in snapshot.pieces
         ],
@@ -220,6 +222,8 @@ def snapshot_from_json(payload: dict) -> GameSnapshot:
                 col=piece["col"],
                 state=piece["state"],
                 motion_phase=piece["motion_phase"],
+                cooldown_remaining_ms=piece["cooldown_remaining_ms"],
+                cooldown_total_ms=piece["cooldown_total_ms"],
             )
             for piece in payload["pieces"]
         ),
@@ -236,13 +240,23 @@ def snapshot_from_json(payload: dict) -> GameSnapshot:
 # (events.observers.MoveLogObserver did that conversion synchronously,
 # server-side), so this never needs boardio's own notation grammar - the
 # isolation this module's docstring promises stays intact.
-def panel_to_json(move_log: MoveLogObserver, score: ScoreObserver) -> dict:
+#
+# names is the real {color: username} pair a GameSession already knows (see
+# server/session.py's username_for) - optional (and defaulting to {}, not
+# omitted from the payload) so callers that broadcast panel data without a
+# real session at hand (there are none today, but nothing here assumes
+# there never will be) still get a JSON-stable "names" key rather than one
+# the client has to branch on the presence of. An absent color in the
+# reconstructed dict (see PanelState.name_for) is what tells view/renderer.py
+# not to draw a name line at all, rather than a placeholder string.
+def panel_to_json(move_log: MoveLogObserver, score: ScoreObserver, names: Optional[Dict[str, str]] = None) -> dict:
     return {
         "move_log": {
             color: [{"notation": entry.notation, "elapsed_ms": entry.elapsed_ms} for entry in move_log.entries_for(color)]
             for color in (WHITE, BLACK)
         },
         "score": {color: score.score_for(color) for color in (WHITE, BLACK)},
+        "names": dict(names) if names else {},
     }
 
 
@@ -263,6 +277,7 @@ class PanelState:
     def __init__(self):
         self._entries_by_color: dict = {}
         self._score_by_color: dict = {}
+        self._name_by_color: dict = {}
 
     def update_from_json(self, payload: dict) -> None:
         self._entries_by_color = {
@@ -270,9 +285,20 @@ class PanelState:
             for color, entries in payload["move_log"].items()
         }
         self._score_by_color = payload["score"]
+        # .get, not a bare payload["names"] - payload may be an older/other
+        # caller's panel_to_json() dict (or a hand-built test fixture, see
+        # tests/unit/test_game_view_state.py) from before "names" existed.
+        self._name_by_color = payload.get("names", {})
 
     def entries_for(self, color: str) -> List[_PanelMoveLine]:
         return self._entries_by_color.get(color, [])
 
     def score_for(self, color: str) -> int:
         return self._score_by_color.get(color, 0)
+
+    # None (not a placeholder like "White"/color itself) when this color's
+    # real name hasn't been told to us - see view/renderer.py's Renderer,
+    # which treats a missing name the same way: no name line at all rather
+    # than a guess.
+    def name_for(self, color: str) -> Optional[str]:
+        return self._name_by_color.get(color)

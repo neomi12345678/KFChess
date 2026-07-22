@@ -24,7 +24,17 @@ def test_a_snapshot_message_updates_the_board_and_panel_state():
     state = make_state()
     payload = _snapshot_payload()
     payload["pieces"] = [
-        {"id": "p1", "kind": "rook", "color": WHITE, "row": 0, "col": 0, "state": "idle", "motion_phase": "idle"}
+        {
+            "id": "p1",
+            "kind": "rook",
+            "color": WHITE,
+            "row": 0,
+            "col": 0,
+            "state": "idle",
+            "motion_phase": "idle",
+            "cooldown_remaining_ms": 0,
+            "cooldown_total_ms": 0,
+        }
     ]
     payload["move_log"][WHITE] = [{"notation": "a1a2", "elapsed_ms": 5}]
 

@@ -99,9 +99,22 @@ def main() -> None:  # pragma: no cover
         cell_size=cell_size,
         skin=piece_config.DEFAULT_SKIN,
     )
+    # {color: real username} for whichever colors the server's first
+    # snapshot actually named (see server/ws_server.py's _names_for and
+    # server/protocol.py's PanelState.name_for) - never a "White"/"Black"
+    # placeholder. A color PanelState has no name for (there shouldn't be
+    # one in practice; every networked GameSession names both seats up
+    # front) is simply left out, so Renderer draws that side's card with no
+    # name line at all instead of a guess (see view/renderer.py's own
+    # comment on player_names defaulting to empty).
+    player_names = {
+        color: name
+        for color in (WHITE, BLACK)
+        if (name := state.panel_state.name_for(color)) is not None
+    }
     renderer = Renderer(
         canvas,
-        player_names={WHITE: "White", BLACK: "Black"},
+        player_names=player_names,
         side_panel_width_px=side_panel_width_px,
         cell_size=cell_size,
     )

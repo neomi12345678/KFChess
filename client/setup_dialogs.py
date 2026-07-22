@@ -276,6 +276,42 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
 
         start(worker)
 
+    def _handle_info(payload) -> None:
+        status_var.set(payload)
+
+    def _handle_room_created(payload) -> None:
+        # Create ignores whatever was typed in the field (the server
+        # always assigns its own id, see server/rooms.py) - filling it
+        # in with the real id here (read-only, so it reads as assigned
+        # rather than editable) is what makes that id available to type
+        # into a Join elsewhere, instead of only ever showing up in the
+        # status label below.
+        room_id_var.set(payload)
+        room_entry.configure(state="readonly")
+
+    def _handle_retry(payload) -> None:
+        idle(payload)
+
+    def _handle_spectate(payload) -> None:
+        outcome["value"] = None
+        root.quit()
+
+    def _handle_seated(payload) -> None:
+        outcome["value"] = payload
+        root.quit()
+
+    # result_queue's kind -> handler. "spectate"/"seated" end the dialog
+    # (root.quit()), so they're also the ones poll() must not reschedule
+    # itself after - see _ENDING_KINDS below.
+    _KIND_HANDLERS = {
+        "info": _handle_info,
+        "room_created": _handle_room_created,
+        "retry": _handle_retry,
+        "spectate": _handle_spectate,
+        "seated": _handle_seated,
+    }
+    _ENDING_KINDS = {"spectate", "seated"}
+
     def poll() -> None:
         try:
             kind, payload = result_queue.get_nowait()
@@ -283,29 +319,9 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
             root.after(50, poll)
             return
 
-        if kind == "info":
-            status_var.set(payload)
-        elif kind == "room_created":
-            # Create ignores whatever was typed in the field (the server
-            # always assigns its own id, see server/rooms.py) - filling it
-            # in with the real id here (read-only, so it reads as assigned
-            # rather than editable) is what makes that id available to type
-            # into a Join elsewhere, instead of only ever showing up in the
-            # status label below.
-            room_id_var.set(payload)
-            room_entry.configure(state="readonly")
-        elif kind == "retry":
-            idle(payload)
-        elif kind == "spectate":
-            outcome["value"] = None
-            root.quit()
-            return
-        elif kind == "seated":
-            outcome["value"] = payload
-            root.quit()
-            return
-
-        root.after(50, poll)
+        _KIND_HANDLERS[kind](payload)
+        if kind not in _ENDING_KINDS:
+            root.after(50, poll)
 
     def cancel() -> None:
         outcome["cancelled"] = True
