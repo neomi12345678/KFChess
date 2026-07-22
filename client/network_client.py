@@ -24,7 +24,18 @@ from typing import List, Optional
 
 import websockets
 
-from net_protocol import CREATE_ROOM_ACK, JOIN_ROOM_ACK, LOGIN_ACK, MATCHMAKING_TIMEOUT, PLAY_ACK, SEAT
+from net_protocol import (
+    CREATE_ROOM_ACK,
+    JOIN_ROOM_ACK,
+    LOGIN_ACK,
+    MATCHMAKING_TIMEOUT,
+    PLAY_ACK,
+    SEAT,
+    build_create_room,
+    build_join_room,
+    build_login,
+    build_play,
+)
 
 
 class NetworkClientError(Exception):
@@ -113,11 +124,11 @@ class NetworkGameClient:
     # the GUI window opens and poll_messages() takes over - nothing else
     # is draining self._incoming concurrently at that point.
     def login(self, username: str, password: str, timeout: float = 10.0) -> dict:
-        self.send_command(f"LOGIN {username} {password}")
+        self.send_command(build_login(username, password))
         return self._wait_for_type(LOGIN_ACK, timeout)
 
     def play(self, timeout: float = 10.0) -> dict:
-        self.send_command("PLAY")
+        self.send_command(build_play())
         return self._wait_for_type(PLAY_ACK, timeout)
 
     # timeout is a defensive upper bound, not the expected path - the server
@@ -134,11 +145,11 @@ class NetworkGameClient:
     # instead (opponent vs spectator, see play_online.py's own handling of
     # each), decided by the server, not requested by the caller.
     def create_room(self, timeout: float = 10.0) -> dict:
-        self.send_command("CREATE_ROOM")
+        self.send_command(build_create_room())
         return self._wait_for_type(CREATE_ROOM_ACK, timeout)
 
     def join_room(self, room_id: str, timeout: float = 10.0) -> dict:
-        self.send_command(f"JOIN_ROOM {room_id}")
+        self.send_command(build_join_room(room_id))
         return self._wait_for_type(JOIN_ROOM_ACK, timeout)
 
     # Loops past any interleaved message of a different type rather than

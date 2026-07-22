@@ -37,7 +37,7 @@ from display_config import compute_cell_size, screen_resolution_px, side_panel_w
 from events.game_events import GameEndedEvent
 from input.board_mapper import BoardMapper
 from model.piece import BLACK, WHITE
-from net_protocol import COLOR_PREFIX, HOST, PORT
+from net_protocol import HOST, PORT, build_jump, build_move
 from view.canvas.img_canvas import ImgCanvas
 from view.canvas.window import GameWindow
 from view.renderer import Renderer
@@ -133,7 +133,6 @@ def main() -> None:  # pragma: no cover
     )
 
     controller = None if is_spectator else NetworkController(my_color)
-    my_letter = None if is_spectator else COLOR_PREFIX[my_color]
 
     def handle_click(x: int, y: int) -> None:
         if controller is None:
@@ -143,7 +142,7 @@ def main() -> None:  # pragma: no cover
         if isinstance(request, MoveRequest):
             source = square_name(request.source, state.snapshot.board_height)
             destination = square_name(request.destination, state.snapshot.board_height)
-            client.send_command(f"{my_letter}{source}{destination}")
+            client.send_command(build_move(my_color, source, destination))
 
     def handle_jump(x: int, y: int) -> None:
         if controller is None:
@@ -152,7 +151,7 @@ def main() -> None:  # pragma: no cover
         request = controller.jump(cell)
         if isinstance(request, JumpRequest):
             square = square_name(request.position, state.snapshot.board_height)
-            client.send_command(f"{my_letter}J{square}")
+            client.send_command(build_jump(my_color, square))
 
     window = GameWindow("KFChess (online)")
     window.on_click(handle_click)

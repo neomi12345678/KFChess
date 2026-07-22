@@ -44,6 +44,7 @@ detected well inside DISCONNECT_GRACE_MS, not after it.
 """
 
 import asyncio
+import logging
 from typing import Callable, Optional
 
 import websockets
@@ -93,6 +94,8 @@ from server.session import DISCONNECT_GRACE_MS
 PING_INTERVAL_S = 10.0
 PING_TIMEOUT_S = 10.0
 CLOSE_TIMEOUT_S = 5.0
+
+_logger = logging.getLogger(__name__)
 
 
 class GameServer:
@@ -353,7 +356,7 @@ class GameServer:
             return
 
         room = self._rooms.create(username)
-        print(f"[room] '{username}' created room {room.room_id}")
+        _logger.info("'%s' created room %s", username, room.room_id)
         await self._connections.send(websocket, CreateRoomAckMessage(accepted=True, room_id=room.room_id))
 
     async def _handle_join_room(self, websocket, username: str, room_id: str) -> None:
@@ -369,7 +372,7 @@ class GameServer:
             return
 
         role = "opponent" if room.opponent == username else "spectator"
-        print(f"[room] '{username}' joined room {room_id} as {role}")
+        _logger.info("'%s' joined room %s as %s", username, room_id, role)
         await self._connections.send(
             websocket, JoinRoomAckMessage(accepted=True, room_id=room_id, role=role)
         )
@@ -395,7 +398,7 @@ class GameServer:
             await self._connections.send(websocket, CancelRoomAckMessage(accepted=False, reason=str(error)))
             return
 
-        print(f"[room] '{username}' cancelled their room")
+        _logger.info("'%s' cancelled their room", username)
         await self._connections.send(websocket, CancelRoomAckMessage(accepted=True))
 
     # Shared by _handle_play/_handle_create_room/_handle_join_room - a

@@ -17,7 +17,20 @@ from typing import Optional
 
 import websockets
 
-from net_protocol import COLOR_PREFIX, GAME_OVER, HOST, LOGIN_ACK, PORT, SEAT
+from net_protocol import (
+    COLOR_PREFIX,
+    GAME_OVER,
+    HOST,
+    LOGIN_ACK,
+    PORT,
+    SEAT,
+    build_cancel_room,
+    build_create_room,
+    build_join_room,
+    build_jump,
+    build_login,
+    build_play,
+)
 
 _PLAY_INPUT = "play"
 _CREATE_ROOM_INPUT = "create room"
@@ -68,29 +81,9 @@ def build_command(raw_input: str, seat: str) -> str:
     if parts[0].lower() == "jump":
         if len(parts) < 2 or not parts[1].strip():
             raise InputError("jump requires a square, e.g. 'jump e4'")
-        return f"{letter}J{parts[1].strip()}"
+        return build_jump(seat, parts[1].strip())
 
     return f"{letter}{text}"
-
-
-def build_login(username: str, password: str) -> str:
-    return f"LOGIN {username} {password}"
-
-
-def build_play() -> str:
-    return "PLAY"
-
-
-def build_create_room() -> str:
-    return "CREATE_ROOM"
-
-
-def build_cancel_room() -> str:
-    return "CANCEL_ROOM"
-
-
-def build_join_room(room_id: str) -> str:
-    return f"JOIN_ROOM {room_id}"
 
 
 # A connection's own reply to something it just sent (login_ack, play_ack,

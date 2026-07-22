@@ -7,9 +7,12 @@ of main()'s wiring, minus those two things.
 """
 
 import piece_config
-from app import App, build_game
+from app import App
 from boardio.board_parser import parse as parse_board
+from boardio.starting_position import STARTING_BOARD
 from display_config import compute_cell_size, screen_resolution_px, side_panel_width_for
+from engine.game_builder import build_game
+from input.controller_builder import build_controller
 from view.canvas.img_canvas import ImgCanvas
 from model.game_state import ArrivalEvent, MoveLoggedEvent
 from model.piece import BLACK, WHITE
@@ -20,18 +23,6 @@ from events.game_events import GameStartedEvent
 from events.observers import MoveLogObserver, ScoreObserver
 from events.sound import SoundCues
 from view.renderer import Renderer
-
-STARTING_BOARD = """
-bR bN bB bQ bK bB bN bR
-bP bP bP bP bP bP bP bP
-.  .  .  .  .  .  .  .
-.  .  .  .  .  .  .  .
-.  .  .  .  .  .  .  .
-.  .  .  .  .  .  .  .
-wP wP wP wP wP wP wP wP
-wR wN wB wQ wK wB wN wR
-""".strip()
-
 
 # screen_size is injectable (see display_config.compute_cell_size) so tests
 # can fix the "screen" instead of depending on whatever display this happens
@@ -47,8 +38,9 @@ def build_app(
     board = parse_board(STARTING_BOARD)
     cell_size = compute_cell_size(board.width, board.height, screen_size=screen_size)
     side_panel_width_px = side_panel_width_for(cell_size)
-    game_engine, controller, board_mapper = build_game(
-        board, board_offset_x=side_panel_width_px, cell_size=cell_size
+    game_engine = build_game(board)
+    controller, board_mapper = build_controller(
+        game_engine, width=board.width, height=board.height, board_offset_x=side_panel_width_px, cell_size=cell_size
     )
 
     # The GUI's own moves-log/score/sound/animation display, not something

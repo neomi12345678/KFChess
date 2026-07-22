@@ -10,6 +10,14 @@ server/protocol.py builds its server-only half (text command grammar:
 parsing "We2e4"/"LOGIN ..."/"PLAY"/room commands) on top of this - nothing
 in server/protocol.py duplicates what's here, it only imports COLOR_PREFIX
 back for its own parsing.
+
+The grammar's *building* half (build_login/build_play/build_create_room/
+build_cancel_room/build_join_room/build_move/build_jump, below) lives here
+too, not in server/protocol.py - a client only ever builds a command, never
+parses one back apart, so it has no reason to import the server package for
+this either. Every command-sending call site (client/client_cli.py,
+client/network_client.py, play_online.py) uses these instead of each
+hand-rolling its own copy of the same literal wire text.
 """
 
 from dataclasses import dataclass
@@ -32,6 +40,35 @@ PORT = 8765
 # parse_command parses commands back out of, instead of each hand-rolling
 # its own copy of this mapping.
 COLOR_PREFIX = {WHITE: "W", BLACK: "B"}
+
+
+def build_login(username: str, password: str) -> str:
+    return f"LOGIN {username} {password}"
+
+
+def build_play() -> str:
+    return "PLAY"
+
+
+def build_create_room() -> str:
+    return "CREATE_ROOM"
+
+
+def build_cancel_room() -> str:
+    return "CANCEL_ROOM"
+
+
+def build_join_room(room_id: str) -> str:
+    return f"JOIN_ROOM {room_id}"
+
+
+def build_move(color: str, source: str, destination: str) -> str:
+    return f"{COLOR_PREFIX[color]}{source}{destination}"
+
+
+def build_jump(color: str, square: str) -> str:
+    return f"{COLOR_PREFIX[color]}J{square}"
+
 
 # Wire message "type" values - the vocabulary server/ws_server.py,
 # server/game_loop.py, and server/session.py send, and client/network_client.py,

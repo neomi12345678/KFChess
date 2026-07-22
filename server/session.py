@@ -15,7 +15,7 @@ front instead of exposing an assign_seat()/login() step of its own.
 import math
 from typing import Dict, List, Optional, Union
 
-from app import build_game
+from engine.game_builder import build_game
 from events.bus import Bus
 from events.bus_bridge import BusBridge
 from events.game_events import GameStartedEvent
@@ -68,7 +68,7 @@ class GameSession:
         disconnect_grace_ms: int = DISCONNECT_GRACE_MS,
     ):
         self._board = board
-        self.game_engine, _controller, _board_mapper = build_game(board)
+        self.game_engine = build_game(board)
         self._account_store = account_store
         self._usernames: Dict[str, str] = {WHITE: white_username, BLACK: black_username}
 

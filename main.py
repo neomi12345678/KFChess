@@ -2,8 +2,9 @@
 import sys
 from typing import IO, Optional
 
-from app import build_game
 from boardio.board_parser import BoardParseError, parse as parse_board
+from engine.game_builder import build_game
+from input.controller_builder import build_controller
 from texttests.script_parser import split_sections
 from texttests.script_runner import run_commands
 
@@ -17,7 +18,8 @@ def run(text: str) -> str:
     except BoardParseError as error:
         return f"ERROR {error.code}"
 
-    game_engine, controller, board_mapper = build_game(board)
+    game_engine = build_game(board)
+    controller, board_mapper = build_controller(game_engine, width=board.width, height=board.height)
 
     # Same command dispatcher the .kfc integration tests use - one
     # implementation of click/jump/wait/print board, not two.
