@@ -61,6 +61,7 @@ from net_protocol import (
     JoinRoomAckMessage,
     LoginAckMessage,
     PlayAckMessage,
+    Role,
     panel_to_json,
     snapshot_to_json,
 )
@@ -371,13 +372,13 @@ class GameServer:
             await self._connections.send(websocket, JoinRoomAckMessage(accepted=False, reason=str(error)))
             return
 
-        role = "opponent" if room.opponent == username else "spectator"
+        role = Role.OPPONENT if room.opponent == username else Role.SPECTATOR
         _logger.info("'%s' joined room %s as %s", username, room_id, role)
         await self._connections.send(
             websocket, JoinRoomAckMessage(accepted=True, room_id=room_id, role=role)
         )
 
-        if role == "opponent":
+        if role == Role.OPPONENT:
             await self._loop.start_room_game(room)
             return
 

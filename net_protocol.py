@@ -21,6 +21,7 @@ hand-rolling its own copy of the same literal wire text.
 """
 
 from dataclasses import dataclass, fields
+from enum import Enum
 from typing import Dict, List, Optional, Type
 
 from events.observers import MoveLogObserver, ScoreObserver
@@ -136,12 +137,30 @@ class CreateRoomAckMessage:
     type: str = CREATE_ROOM_ACK
 
 
+# The two things a successful JOIN_ROOM can seat a connection as (see
+# server/rooms.py's RoomRegistry.join: the first joiner past the creator
+# becomes the opponent, everyone after that a spectator). A str subclass,
+# not a plain Enum, for the same reason Color/ActionResultReason
+# (model/piece.py) are: server/ws_server.py's `role == Role.OPPONENT`
+# check, this dataclass's own JSON serialization, and
+# client/setup_dialogs.py's `join_ack["role"] == Role.SPECTATOR` (the
+# client only ever gets the plain decoded dict back, never this class
+# itself) all keep comparing against the same "opponent"/"spectator" wire
+# text either way.
+class Role(str, Enum):
+    OPPONENT = "opponent"
+    SPECTATOR = "spectator"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 @dataclass(frozen=True)
 class JoinRoomAckMessage:
     accepted: bool
     reason: Optional[str] = None
     room_id: Optional[str] = None
-    role: Optional[str] = None
+    role: Optional[Role] = None
     type: str = JOIN_ROOM_ACK
 
 
