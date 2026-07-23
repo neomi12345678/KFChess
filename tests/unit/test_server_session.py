@@ -5,6 +5,7 @@ from logic_config import MOVE_CELL_DURATION_MS
 from model.game_state import GameSnapshot
 from model.piece import BLACK, WHITE
 from model.position import Position
+from net_protocol import CaptureMessage, MoveLoggedMessage
 from server.accounts import AccountStore
 from server.protocol import JUMP, MOVE, Command
 from server.session import DISCONNECT_GRACE_MS, GameSession
@@ -242,7 +243,7 @@ def test_drain_wire_events_reports_a_plain_move_as_move_logged_not_a_jump(accoun
 
     session.apply_command(Command(color=WHITE, kind=MOVE, source=Position(0, 0), destination=Position(0, 2)))
 
-    assert session.drain_wire_events() == [{"type": "move_logged", "is_jump": False}]
+    assert session.drain_wire_events() == [MoveLoggedMessage(is_jump=False)]
 
 
 def test_drain_wire_events_reports_a_jump_as_move_logged_with_is_jump_true(account_store):
@@ -250,7 +251,7 @@ def test_drain_wire_events_reports_a_jump_as_move_logged_with_is_jump_true(accou
 
     session.apply_command(Command(color=WHITE, kind=JUMP, source=Position(0, 0), destination=None))
 
-    assert session.drain_wire_events() == [{"type": "move_logged", "is_jump": True}]
+    assert session.drain_wire_events() == [MoveLoggedMessage(is_jump=True)]
 
 
 def test_drain_wire_events_reports_a_capture_once_the_piece_actually_arrives(account_store):
@@ -260,11 +261,11 @@ def test_drain_wire_events_reports_a_capture_once_the_piece_actually_arrives(acc
     session = make_session("wR bP", account_store)
     session.apply_command(Command(color=WHITE, kind=MOVE, source=Position(0, 0), destination=Position(0, 1)))
 
-    assert session.drain_wire_events() == [{"type": "move_logged", "is_jump": False}]
+    assert session.drain_wire_events() == [MoveLoggedMessage(is_jump=False)]
 
     session.tick(MOVE_CELL_DURATION_MS + 1)
 
-    assert session.drain_wire_events() == [{"type": "capture"}]
+    assert session.drain_wire_events() == [CaptureMessage()]
 
 
 def test_drain_wire_events_is_empty_when_nothing_happened(account_store):

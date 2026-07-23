@@ -20,8 +20,8 @@ client/network_client.py, play_online.py) uses these instead of each
 hand-rolling its own copy of the same literal wire text.
 """
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from dataclasses import dataclass, fields
+from typing import Dict, List, Optional, Type
 
 from events.observers import MoveLogObserver, ScoreObserver
 from model.game_state import GameSnapshot, PieceSnapshot
@@ -192,6 +192,45 @@ class MoveLoggedMessage:
 @dataclass(frozen=True)
 class CaptureMessage:
     type: str = CAPTURE
+
+
+# type string -> the dataclass above it decodes to - the one place that
+# knows this mapping, so a caller decoding an incoming dict (see
+# message_from_dict) never re-lists each message's own fields by hand the
+# way client/network_message_adapter.py's factories used to.
+_MESSAGE_CLASSES: Dict[str, Type] = {
+    LOGIN_ACK: LoginAckMessage,
+    PLAY_ACK: PlayAckMessage,
+    CREATE_ROOM_ACK: CreateRoomAckMessage,
+    JOIN_ROOM_ACK: JoinRoomAckMessage,
+    CANCEL_ROOM_ACK: CancelRoomAckMessage,
+    SEAT: SeatMessage,
+    ACK: AckMessage,
+    ERROR: ErrorMessage,
+    GAME_OVER: GameOverMessage,
+    DISCONNECT_COUNTDOWN: DisconnectCountdownMessage,
+    MATCHMAKING_TIMEOUT: MatchmakingTimeoutMessage,
+    MOVE_LOGGED: MoveLoggedMessage,
+    CAPTURE: CaptureMessage,
+}
+
+
+# Reconstructs the dataclass a wire dict's own "type" says it is, or None
+# for a type this table doesn't recognize - covers both the per-tick
+# snapshot broadcast (which carries no "type" at all, see snapshot_to_json)
+# and any other payload that isn't one of the messages above, the same
+# "unknown is a no-op" contract client/network_message_adapter.py's
+# NetworkMessageAdapter.apply already has for a message type it has no
+# factory for. Filters payload down to the dataclass's own field names
+# first, rather than passing it through as **payload, so an extra key
+# (e.g. a stale "clock_ms" from some other caller) is silently ignored
+# instead of raising a TypeError here.
+def message_from_dict(payload: dict) -> Optional[object]:
+    cls = _MESSAGE_CLASSES.get(payload.get("type"))
+    if cls is None:
+        return None
+    field_names = {f.name for f in fields(cls)}
+    return cls(**{key: value for key, value in payload.items() if key in field_names})
 
 
 def _position_to_json(position: Optional[Position]) -> Optional[dict]:

@@ -24,7 +24,7 @@ from model.board import BoardRepresentation
 from model.game_state import ArrivalEvent, GameObserver, JumpResult, MoveLoggedEvent, MoveResult
 from model.piece import ActionResultReason, BLACK, KING, WHITE
 from model.position import Position
-from net_protocol import CAPTURE, MOVE_LOGGED
+from net_protocol import CaptureMessage, MoveLoggedMessage
 from server.accounts import AccountStore
 from server.protocol import JUMP, Command
 from server.rating import updated_ratings
@@ -98,7 +98,7 @@ class GameSession:
         # each entry as its own message, instead of a networked client
         # re-guessing "was that a capture?" from the move-log's own notation
         # text the way it used to.
-        self._pending_wire_events: List[dict] = []
+        self._pending_wire_events: List[Union[MoveLoggedMessage, CaptureMessage]] = []
         self._bus.subscribe(MoveLoggedEvent, self._buffer_move_logged)
         self._bus.subscribe(ArrivalEvent, self._buffer_capture)
 
@@ -112,7 +112,7 @@ class GameSession:
         self._disconnected_ms: Dict[str, int] = {}
 
     def _buffer_move_logged(self, event: MoveLoggedEvent) -> None:
-        self._pending_wire_events.append({"type": MOVE_LOGGED, "is_jump": event.is_jump})
+        self._pending_wire_events.append(MoveLoggedMessage(is_jump=event.is_jump))
 
     # Fires on every arrival, but only ever buffered for a capture - a
     # networked client's SoundCues only reacts to ArrivalEvent.captured_piece
@@ -125,11 +125,11 @@ class GameSession:
     # MoveLogObserver.on_arrival).
     def _buffer_capture(self, event: ArrivalEvent) -> None:
         if event.captured_piece is not None:
-            self._pending_wire_events.append({"type": CAPTURE})
+            self._pending_wire_events.append(CaptureMessage())
 
     # Drains every wire event buffered since the last call, in order - see
     # server/ws_server.py's _advance_game, the only caller, once per tick.
-    def drain_wire_events(self) -> List[dict]:
+    def drain_wire_events(self) -> List[Union[MoveLoggedMessage, CaptureMessage]]:
         events = self._pending_wire_events
         self._pending_wire_events = []
         return events
