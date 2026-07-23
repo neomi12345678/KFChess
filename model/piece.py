@@ -6,8 +6,31 @@ from model.position import Position
 
 # Semantic values, not board-notation letters - keeps rules/engine/arbiter
 # code free of the "w"/"K" text tokens used only for parsing and printing.
-WHITE = "white"
-BLACK = "black"
+# A str subclass, not a plain Enum, for the same reason ActionResultReason
+# below is one: every existing `color == WHITE`-style comparison, dict-key
+# lookup (COLOR_BY_LETTER, net_protocol.py's COLOR_PREFIX), and
+# json.dumps(piece.color) call site keeps working unchanged, since a str
+# Enum member compares equal to - and serializes as - its own string value.
+# __str__ is overridden back to the plain value on purpose: Python 3.11+
+# changed Enum.__format__ to render a mixed-in member as "Color.WHITE" in
+# an f-string/str() instead of the mixin's own value (only ==/hash/
+# json.dumps were left alone) - piece_config.py's piece_code and view/
+# renderer.py's f-string draw-image key both interpolate color directly and
+# need the plain "white"/"black" text, not the enum's repr.
+class Color(str, Enum):
+    WHITE = "white"
+    BLACK = "black"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+# Back-compat aliases - every existing `model.piece.WHITE`/`from model.piece
+# import WHITE, BLACK` call site (rules/, server/, client/, net_protocol.py,
+# tests/) keeps working unchanged, now backed by a real enum member instead
+# of a bare string.
+WHITE = Color.WHITE
+BLACK = Color.BLACK
 
 KING = "king"
 QUEEN = "queen"
@@ -60,7 +83,7 @@ class PieceRepresentation(Protocol):
     """
 
     id: str
-    color: str
+    color: Color
     kind: str
     cell: Position
     state: str
@@ -69,7 +92,7 @@ class PieceRepresentation(Protocol):
 @dataclass
 class Piece:
     id: str
-    color: str
+    color: Color
     kind: str
     cell: Position
     state: str = IDLE
