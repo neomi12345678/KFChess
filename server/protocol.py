@@ -1,10 +1,11 @@
 """Server-only half of the wire protocol: parsing text commands in
 ("We2e4"/"WJe4"/"LOGIN ..."/"PLAY"/room commands). The JSON snapshot/panel
 encoding both sides share, plus the server endpoint and color-letter
-mapping, live in net_protocol.py instead - a client (client/client_cli.py,
-client/game_view_state.py, play_online.py) only ever needs that half, never
-the command-parsing grammar below, so it imports net_protocol directly
-rather than reaching into this package.
+mapping, live in the top-level protocol/ package instead - a client
+(client/client_cli.py, client/game_view_state.py, play_online.py) only ever
+needs that half, never the command-parsing grammar below, so it imports
+protocol.types/protocol.snapshot_codec/etc. directly rather than reaching
+into this package.
 
 Kept fully isolated from boardio/ - this is a network-facing vocabulary
 (uppercase "W"/"B" color letters, no piece letter, a bare "J" jump marker)
@@ -42,7 +43,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from model.position import Position
-from net_protocol import COLOR_PREFIX
+from protocol.types import COLOR_PREFIX
 
 _COLOR_BY_PREFIX = {letter: color for color, letter in COLOR_PREFIX.items()}
 _LOGIN_PREFIX = "LOGIN "

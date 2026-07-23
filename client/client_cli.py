@@ -17,20 +17,9 @@ from typing import Optional
 
 import websockets
 
-from net_protocol import (
-    COLOR_PREFIX,
-    GAME_OVER,
-    HOST,
-    LOGIN_ACK,
-    PORT,
-    SEAT,
-    build_cancel_room,
-    build_create_room,
-    build_join_room,
-    build_jump,
-    build_login,
-    build_play,
-)
+from protocol.game_messages import build_jump
+from protocol.lobby_messages import build_cancel_room, build_create_room, build_join_room, build_login, build_play
+from protocol.types import COLOR_PREFIX, GAME_OVER, HOST, LOGIN_ACK, PORT, SEAT
 
 _PLAY_INPUT = "play"
 _CREATE_ROOM_INPUT = "create room"

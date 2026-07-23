@@ -5,7 +5,7 @@ from logic_config import MOVE_CELL_DURATION_MS
 from model.game_state import GameSnapshot
 from model.piece import BLACK, WHITE
 from model.position import Position
-from net_protocol import CaptureMessage, MoveLoggedMessage
+from protocol.game_messages import CaptureMessage, MoveLoggedMessage
 from server.accounts import AccountStore
 from server.protocol import JUMP, MOVE, Command
 from server.session import DISCONNECT_GRACE_MS, GameSession

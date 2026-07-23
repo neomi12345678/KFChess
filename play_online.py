@@ -5,7 +5,7 @@ GUI window before the game window opens (see client/setup_dialogs.py - cv2,
 which the game window itself is built on, has no text-entry/button widgets
 of its own; client/client_cli.py remains the separate, terminal-only shell
 client the Home screen's own "shell, not GUI" login step uses); once
-seated, this renders whatever net_protocol.py's snapshot broadcasts say
+seated, this renders whatever protocol/snapshot_codec.py's snapshot broadcasts say
 the board looks like, and turns clicks into wire commands via
 client/network_controller.py instead of a local Controller. A room
 (server/rooms.py) joined as a spectator instead of the opponent renders
@@ -37,7 +37,8 @@ from display_config import compute_cell_size, screen_resolution_px, side_panel_w
 from events.game_events import GameEndedEvent
 from input.board_mapper import BoardMapper
 from model.piece import BLACK, WHITE
-from net_protocol import HOST, PORT, build_jump, build_move
+from protocol.game_messages import build_jump, build_move
+from protocol.types import HOST, PORT
 from view.canvas.img_canvas import ImgCanvas
 from view.canvas.window import GameWindow
 from view.renderer import Renderer
@@ -114,7 +115,7 @@ def main() -> None:  # pragma: no cover
     )
     # {color: real username} for whichever colors the server's first
     # snapshot actually named (see server/ws_server.py's _names_for and
-    # net_protocol.py's PanelState.name_for) - never a "White"/"Black"
+    # protocol/panel_state.py's PanelState.name_for) - never a "White"/"Black"
     # placeholder. A color PanelState has no name for (there shouldn't be
     # one in practice; every networked GameSession names both seats up
     # front) is simply left out, so Renderer draws that side's card with no

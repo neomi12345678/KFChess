@@ -1,6 +1,6 @@
 """GUI-side click/jump selection logic for the networked client
 (play_online.py) - the counterpart to input/controller.py's Controller,
-but working off the last-received GameSnapshot (see net_protocol.py's
+but working off the last-received GameSnapshot (see protocol/snapshot_codec.py's
 snapshot_from_json) instead of a live GameEngine, since there's no local
 Board to query over the network. Legality is still entirely the server's
 call (see server/session.py's apply_command) - a rejected MoveRequest/

@@ -18,16 +18,11 @@ from typing import Callable, Dict, Optional, Set
 
 from model.board import BoardRepresentation
 from model.piece import BLACK, WHITE
-from net_protocol import (
-    DisconnectCountdownMessage,
-    GameOverMessage,
-    MatchmakingTimeoutMessage,
-    SeatMessage,
-    panel_to_json,
-    snapshot_to_json,
-)
-from server.accounts import AccountStore
-from server.connections import ConnectionRegistry, WirePayload
+from protocol.game_messages import DisconnectCountdownMessage, GameOverMessage, SeatMessage
+from protocol.lobby_messages import MatchmakingTimeoutMessage
+from protocol.snapshot_codec import panel_to_json, snapshot_to_json
+from server.connections import WirePayload
+from server.interfaces import MessageSender, RatingRepository
 from server.matchmaking import MatchmakingQueue
 from server.rooms import Room, RoomRegistry
 from server.session import OTHER_SEAT, GameSession
@@ -40,7 +35,7 @@ DEFAULT_TICK_INTERVAL_S = 0.05
 
 
 # {color: username} for panel_to_json's own names argument (see
-# net_protocol.py) - both seats' real usernames were already fixed at
+# protocol/snapshot_codec.py) - both seats' real usernames were already fixed at
 # GameSession construction (see server/session.py's own __init__), so this
 # is never anything but a real logged-in name, never a "White"/"Black"
 # placeholder for a networked game. Not private: server/ws_server.py's own
@@ -66,9 +61,9 @@ class GameLoop:
     def __init__(
         self,
         board_factory: Callable[[], BoardRepresentation],
-        account_store: AccountStore,
+        account_store: RatingRepository,
         rooms: RoomRegistry,
-        connections: ConnectionRegistry,
+        connections: MessageSender,
         matchmaking_timeout_ms: int,
         disconnect_grace_ms: int,
         tick_interval_s: float = DEFAULT_TICK_INTERVAL_S,
