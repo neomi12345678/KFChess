@@ -30,6 +30,7 @@ from tkinter import ttk
 from typing import List, Optional
 
 from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
+from net_protocol import Role
 
 _root: Optional[tk.Tk] = None
 
@@ -299,7 +300,7 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
             if not join_ack["accepted"]:
                 result_queue.put(("retry", f"Could not join room {room_id}: {join_ack['reason']}"))
                 return
-            if join_ack["role"] == "spectator":
+            if join_ack["role"] == Role.SPECTATOR:
                 result_queue.put(("spectate", None))
                 return
             result_queue.put(("info", f"Joined room {room_id} - waiting to be seated..."))
