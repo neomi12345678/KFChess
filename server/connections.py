@@ -10,18 +10,20 @@ from typing import Dict, Union
 
 import websockets
 
-from net_protocol import ErrorMessage
+from protocol.game_messages import ErrorMessage
 
-# Every outgoing control message is one of net_protocol.py's frozen
-# dataclasses (ErrorMessage stands in for the whole family here just for
-# the type hint) - the per-tick snapshot broadcast is the one exception,
-# still a plain dict from snapshot_to_json/panel_to_json (see net_protocol.py's
-# own docstring on why that one has no dataclass).
+# Every outgoing control message is one of protocol.lobby_messages/
+# protocol.game_messages' frozen dataclasses (ErrorMessage stands in for the
+# whole family here just for the type hint) - the per-tick snapshot
+# broadcast is the one exception, still a plain dict from
+# snapshot_to_json/panel_to_json (see protocol/snapshot_codec.py's own
+# docstring on why that one has no dataclass).
 WirePayload = Union[ErrorMessage, dict]
 
 
 # A dataclass field only has a default (None) when that message genuinely
-# omits it sometimes (see net_protocol.py's own docstring on each message) -
+# omits it sometimes (see protocol/lobby_messages.py's and
+# protocol/game_messages.py's own docstrings on each message) -
 # stripping those Nones here, in the one place every send funnels through,
 # is what keeps the actual bytes on the wire identical to before these
 # dataclasses existed, so no client-side parsing needed to change.

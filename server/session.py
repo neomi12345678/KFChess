@@ -24,8 +24,8 @@ from model.board import BoardRepresentation
 from model.game_state import ArrivalEvent, GameObserver, JumpResult, MoveLoggedEvent, MoveResult
 from model.piece import ActionResultReason, BLACK, KING, WHITE
 from model.position import Position
-from net_protocol import CaptureMessage, MoveLoggedMessage
-from server.accounts import AccountStore
+from protocol.game_messages import CaptureMessage, MoveLoggedMessage
+from server.interfaces import RatingRepository
 from server.protocol import JUMP, Command
 from server.rating import updated_ratings
 
@@ -62,7 +62,7 @@ class GameSession:
     def __init__(
         self,
         board: BoardRepresentation,
-        account_store: AccountStore,
+        account_store: RatingRepository,
         white_username: str,
         black_username: str,
         disconnect_grace_ms: int = DISCONNECT_GRACE_MS,
@@ -78,7 +78,7 @@ class GameSession:
         # in their own right. GameEngine itself only ever sees BusBridge
         # (see events/bus_bridge.py); server/ws_server.py has no notion of
         # this bus itself, only of the move_log/score it accumulates (see
-        # net_protocol.py's panel_to_json) and the wire events it buffers
+        # protocol/snapshot_codec.py's panel_to_json) and the wire events it buffers
         # for a networked client's own sound cues (see drain_wire_events).
         self._bus = Bus()
         self._king_capture_watcher = _KingCaptureWatcher()

@@ -8,7 +8,7 @@ from model.position import Position
 # code free of the "w"/"K" text tokens used only for parsing and printing.
 # A str subclass, not a plain Enum, for the same reason ActionResultReason
 # below is one: every existing `color == WHITE`-style comparison, dict-key
-# lookup (COLOR_BY_LETTER, net_protocol.py's COLOR_PREFIX), and
+# lookup (COLOR_BY_LETTER, protocol/types.py's COLOR_PREFIX), and
 # json.dumps(piece.color) call site keeps working unchanged, since a str
 # Enum member compares equal to - and serializes as - its own string value.
 # __str__ is overridden back to the plain value on purpose: Python 3.11+
@@ -26,7 +26,7 @@ class Color(str, Enum):
 
 
 # Back-compat aliases - every existing `model.piece.WHITE`/`from model.piece
-# import WHITE, BLACK` call site (rules/, server/, client/, net_protocol.py,
+# import WHITE, BLACK` call site (rules/, server/, client/, protocol/,
 # tests/) keeps working unchanged, now backed by a real enum member instead
 # of a bare string.
 WHITE = Color.WHITE

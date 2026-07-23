@@ -1,7 +1,7 @@
 """Aggregates everything view/renderer.py's Renderer needs to draw one frame
 into a single immutable value, built once per frame by build_ui_snapshot()
 below. Before this existed, Renderer held long-lived references to
-MoveLogObserver/ScoreObserver (or net_protocol.py's PanelState stand-in)
+MoveLogObserver/ScoreObserver (or protocol/panel_state.py's PanelState stand-in)
 and pulled from them mid-draw - now Renderer.draw() takes one self-contained
 value and never reaches out to a live collaborator itself, which is what
 lets it be exercised with nothing but plain data in tests.
@@ -24,7 +24,7 @@ _PANEL_COLORS = (WHITE, BLACK)
 
 
 # The shape a moves-log entry must have for _draw_panel to read it - not
-# MoveLogEntry itself, since net_protocol.PanelState's own entries
+# MoveLogEntry itself, since protocol.panel_state.PanelState's own entries
 # (_PanelMoveLine) are a different concrete class with the same two fields
 # and no business importing events.observers just to satisfy this.
 class MoveLogEntryLike(Protocol):
@@ -34,7 +34,7 @@ class MoveLogEntryLike(Protocol):
 
 # The two duck-typed collaborators build_ui_snapshot below accepts - formal
 # stand-ins for events.observers.MoveLogObserver/ScoreObserver (real local
-# play) and net_protocol.PanelState (the client-side networked-play stand-in
+# play) and protocol.panel_state.PanelState (the client-side networked-play stand-in
 # described in its own docstring), so a signature drift between the two
 # implementations is a type-checking error here instead of only a runtime
 # AttributeError wherever build_ui_snapshot happens to be called.
@@ -56,7 +56,7 @@ class UiSnapshot:
 
 # move_log/score are duck-typed (entries_for(color)/score_for(color)) so
 # either the real events.observers.MoveLogObserver/ScoreObserver or
-# net_protocol.PanelState's client-side stand-in works here unchanged -
+# protocol.panel_state.PanelState's client-side stand-in works here unchanged -
 # both None by default, matching Renderer's own former no-panels default,
 # so a caller that doesn't track either still gets a valid UiSnapshot.
 def build_ui_snapshot(

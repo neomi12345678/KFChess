@@ -6,7 +6,7 @@ import os
 
 from boardio.board_parser import parse as parse_board
 from boardio.starting_position import STARTING_BOARD
-from net_protocol import HOST, PORT
+from protocol.types import HOST, PORT
 from server.accounts import AccountStore
 from server.rooms import RoomStore
 from server.ws_server import GameServer

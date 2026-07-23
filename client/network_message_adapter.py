@@ -4,8 +4,9 @@ published on an events/bus.py Bus - the network counterpart to
 events/bus_bridge.py's BusBridge, which does the same job translating a
 local GameEngine's own on_move_logged/on_arrival calls instead of wire JSON.
 
-Decoding a raw dict into its own net_protocol.py dataclass (net_protocol.py's
-message_from_dict - the "which type has which fields" table) is deliberately
+Decoding a raw dict into its own protocol.lobby_messages/protocol.game_messages
+dataclass (protocol/registry.py's message_from_dict - the "which type has
+which fields" table) is deliberately
 not this class's own job, so apply() never re-lists a message's fields by
 hand; this class only ever decides which *typed* wire message translates to
 which Bus event, if any. It never decides what a DisconnectCountdownEvent or
@@ -26,14 +27,14 @@ from typing import Optional
 
 from events.bus import Bus
 from events.game_events import GameEndedEvent, RemoteCaptureEvent, RemoteMoveEvent
-from net_protocol import (
+from protocol.game_messages import (
     AckMessage,
     CaptureMessage,
     DisconnectCountdownMessage,
     GameOverMessage,
     MoveLoggedMessage,
-    message_from_dict,
 )
+from protocol.registry import message_from_dict
 
 # Network-only events - nothing about a local game (play.py/game_builder.py)
 # ever produces or subscribes to these, unlike RemoteCaptureEvent/
@@ -53,7 +54,7 @@ class NetworkMessageAdapter:
     def __init__(self, bus: Bus):
         self._bus = bus
         # Keyed by the *decoded* wire dataclass's own type (see
-        # net_protocol.py's message_from_dict), not the raw "type" string -
+        # protocol/registry.py's message_from_dict), not the raw "type" string -
         # decoding a message's own fields is message_from_dict's job alone;
         # this table only ever decides which Bus event (if any) a given
         # wire message translates to.

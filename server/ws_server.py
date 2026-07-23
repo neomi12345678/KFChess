@@ -51,20 +51,18 @@ import websockets
 
 from model.board import BoardRepresentation
 from model.piece import BLACK, WHITE
-from net_protocol import HOST as DEFAULT_HOST
-from net_protocol import PORT as DEFAULT_PORT
-from net_protocol import (
-    AckMessage,
+from protocol.game_messages import AckMessage, ErrorMessage
+from protocol.lobby_messages import (
     CancelRoomAckMessage,
     CreateRoomAckMessage,
-    ErrorMessage,
     JoinRoomAckMessage,
     LoginAckMessage,
     PlayAckMessage,
-    Role,
-    panel_to_json,
-    snapshot_to_json,
 )
+from protocol.snapshot_codec import panel_to_json, snapshot_to_json
+from protocol.types import HOST as DEFAULT_HOST
+from protocol.types import PORT as DEFAULT_PORT
+from protocol.types import Role
 from server.accounts import AccountStore, InvalidCredentialsError
 from server.connections import ConnectionRegistry
 from server.game_loop import DEFAULT_TICK_INTERVAL_S, GameLoop, names_for

@@ -4,7 +4,8 @@ from events.observers import MoveLogObserver, ScoreObserver
 from model.game_state import ArrivalEvent, MoveLoggedEvent
 from model.piece import BLACK, KNIGHT, PAWN, Piece, WHITE
 from model.position import Position
-from net_protocol import PanelState, panel_to_json, snapshot_from_json, snapshot_to_json
+from protocol.panel_state import PanelState
+from protocol.snapshot_codec import panel_to_json, snapshot_from_json, snapshot_to_json
 from server.protocol import (
     JUMP,
     MOVE,

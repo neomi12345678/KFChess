@@ -24,18 +24,8 @@ from typing import List, Optional
 
 import websockets
 
-from net_protocol import (
-    CREATE_ROOM_ACK,
-    JOIN_ROOM_ACK,
-    LOGIN_ACK,
-    MATCHMAKING_TIMEOUT,
-    PLAY_ACK,
-    SEAT,
-    build_create_room,
-    build_join_room,
-    build_login,
-    build_play,
-)
+from protocol.lobby_messages import build_create_room, build_join_room, build_login, build_play
+from protocol.types import CREATE_ROOM_ACK, JOIN_ROOM_ACK, LOGIN_ACK, MATCHMAKING_TIMEOUT, PLAY_ACK, SEAT
 
 
 class NetworkClientError(Exception):

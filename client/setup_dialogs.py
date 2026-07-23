@@ -30,7 +30,7 @@ from tkinter import ttk
 from typing import List, Optional
 
 from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
-from net_protocol import Role
+from protocol.types import Role
 
 _root: Optional[tk.Tk] = None
 
