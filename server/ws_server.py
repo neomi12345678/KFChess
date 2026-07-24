@@ -63,7 +63,7 @@ from protocol.lobby_messages import (
     LoginMessage,
     PlayMessage,
 )
-from protocol.registry import message_from_dict
+from protocol.registry import decode_json_message
 from protocol.types import HOST as DEFAULT_HOST
 from protocol.types import PORT as DEFAULT_PORT
 from protocol.types import Reason
@@ -191,14 +191,14 @@ class GameServer:
     # since a plain local variable there can't be updated from in here.
     async def _handle_message(self, websocket, username: Optional[str], message: str) -> Optional[str]:
         try:
-            decoded = message_from_dict(json.loads(message))
+            decoded = decode_json_message(message)
         except (json.JSONDecodeError, TypeError, KeyError):
             # A malformed message: not valid JSON at all, or a recognized
             # "type" tag whose payload is missing/mistyped a required field
-            # (message_from_dict's cls(**kwargs) is what raises TypeError/
-            # KeyError for that) - never a message this table simply
-            # doesn't recognize, see the `decoded is None` branch below for
-            # that case instead.
+            # (message_from_dict's cls(**kwargs), which decode_json_message
+            # calls internally, is what raises TypeError/KeyError for that) -
+            # never a message this table simply doesn't recognize, see the
+            # `decoded is None` branch below for that case instead.
             await self._connections.send(websocket, ErrorMessage(message=f"malformed message: {message!r}"))
             return username
 

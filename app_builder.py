@@ -14,13 +14,10 @@ from display_config import compute_cell_size, screen_resolution_px, side_panel_w
 from engine.game_builder import build_game
 from input.controller_builder import build_controller
 from view.canvas.img_canvas import ImgCanvas
-from model.game_state import ArrivalEvent, MoveLoggedEvent
 from model.piece import BLACK, WHITE
-from events.bus import Bus
-from events.bus_bridge import BusBridge
 from events.game_animations import GameAnimationCues
 from events.game_events import GameStartedEvent
-from events.observers import MoveLogObserver, ScoreObserver
+from events.game_wiring import wire_game_events
 from events.sound import SoundCues
 from view.renderer import Renderer
 
@@ -49,16 +46,12 @@ def build_app(
     # registered as GameEngine observers directly - move_log/score/sound/
     # animations each subscribe to the event types they care about, and
     # BusBridge (the one actual GameObserver here) is all GameEngine itself
-    # ever sees (see events/bus_bridge.py).
-    move_log = MoveLogObserver(board_height=board.height)
-    score = ScoreObserver()
-    bus = Bus()
-    bus.subscribe(MoveLoggedEvent, move_log.on_move_logged)
-    bus.subscribe(ArrivalEvent, move_log.on_arrival)
-    bus.subscribe(ArrivalEvent, score.on_arrival)
+    # ever sees (see events/bus_bridge.py). The move_log/score/BusBridge half
+    # of this is shared with server/session.py's own GameSession - see
+    # events/game_wiring.py's wire_game_events.
+    bus, move_log, score = wire_game_events(game_engine, board_height=board.height)
     sound_cues = SoundCues(bus)
     game_animation_cues = GameAnimationCues(bus)
-    game_engine.add_observer(BusBridge(bus))
     bus.publish(GameStartedEvent())
 
     canvas = ImgCanvas(
