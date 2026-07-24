@@ -22,7 +22,12 @@ from typing import Optional, Union
 from model.position import Position
 from protocol.game_messages import JumpMessage, MoveMessage
 from protocol.snapshot_codec import position_from_json
-from protocol.types import JUMP, MOVE
+from protocol.types import MessageType
+
+# Command.kind reuses the same "move"/"jump" wire tags rather than its own
+# vocabulary - see this module's own docstring on why Command exists at all.
+JUMP = MessageType.JUMP
+MOVE = MessageType.MOVE
 
 
 @dataclass(frozen=True)

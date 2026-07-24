@@ -1,5 +1,5 @@
 """Translates already-decoded wire messages (typed items, as put on
-client/network_client.py's queue by its own _decode_incoming - see that
+client/network_client.py's queue by its own decode_incoming - see that
 module's own docstring) into typed domain events published on an
 events/bus.py Bus - the network counterpart to events/bus_bridge.py's
 BusBridge, which does the same job translating a local GameEngine's own
@@ -36,7 +36,7 @@ from protocol.game_messages import (
     MoveLoggedMessage,
 )
 
-# Network-only events - nothing about a local game (play.py/game_builder.py)
+# Network-only events - nothing about a local game (play.py/app_builder.py)
 # ever produces or subscribes to these, unlike RemoteCaptureEvent/
 # RemoteMoveEvent/GameEndedEvent (events/game_events.py), which SoundCues/
 # GameAnimationCues already react to for both local and networked play.

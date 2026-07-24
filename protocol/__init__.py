@@ -16,7 +16,7 @@ Split by concern rather than one flat module:
 
 Every message in either direction is one of this package's own registered
 dataclasses, decoded through the same registry.decode_json_message
-regardless of which side sent it - see server/protocol.py's own docstring
-for the one place server-side that still turns a decoded MoveMessage/
-JumpMessage into the engine-facing Command shape.
+regardless of which side sent it - see server/command_translation.py's own
+docstring for the one place server-side that still turns a decoded
+MoveMessage/JumpMessage into the engine-facing Command shape.
 """

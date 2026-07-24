@@ -7,7 +7,7 @@ from model.piece import BLACK, WHITE
 from model.position import Position
 from server.accounts import UserStore
 from server.accounts_db import open_accounts_database
-from server.protocol import JUMP, MOVE, Command
+from server.command_translation import JUMP, MOVE, Command
 from server.rating_store import RatingStore
 from server.session import DISCONNECT_GRACE_MS, GameSession
 

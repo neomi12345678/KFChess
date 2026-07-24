@@ -1,14 +1,17 @@
 """The lobby/game command router, split out of server/ws_server.py's
 GameServer so the actual routing *decisions* (is this PLAY allowed right
 now, does this JOIN_ROOM seat an opponent or a spectator, is this move
-legal for the seat that sent it) can be exercised with plain Python values
+legal for the seat that sent it, what does a dropped connection mean for
+matchmaking/its game/its room) can be exercised with plain Python values
 - a username, an already-decoded wire message (protocol/lobby_messages.py's/
 protocol/game_messages.py's own registered dataclasses), a room id - and
 none of this class's own methods are async or ever touch a websocket, JSON,
 or a raw dict: every method here takes typed arguments and returns a typed
 decision (one of protocol/lobby_messages.py's or protocol/game_messages.py's
 ack dataclasses, or a small decision dataclass bundling one with what the
-caller must still do asynchronously - send it, and/or start a room's game).
+caller must still do asynchronously - send it, and/or start a room's game),
+except decide_disconnect, which has no ack to send back and so just performs
+its mutations directly (see its own docstring).
 
 server/ws_server.py stays the async half: accepting connections, decoding
 raw wire text into the typed values this class expects (see its own
@@ -31,12 +34,11 @@ from protocol.lobby_messages import (
     LoginAckMessage,
     PlayAckMessage,
 )
-from protocol.snapshot_codec import panel_to_json, snapshot_to_json
-from protocol.types import Role
-from server.game_loop import GameLoop, names_for
+from protocol.types import Reason, Role
+from server.game_loop import GameLoop, full_broadcast_payload
 from server.interfaces import MessageSender, RatingRepository
 from server.participant import ParticipantState, participant_state
-from server.protocol import command_from_message
+from server.command_translation import command_from_message
 from server.rooms import Room, RoomError, RoomRegistry
 
 _logger = logging.getLogger(__name__)
@@ -45,8 +47,8 @@ _logger = logging.getLogger(__name__)
 # strings tests/integration/test_server_ws.py already asserts on, carried
 # over unchanged from GameServer's own former _busy_reason.
 _BUSY_REASON_BY_STATE = {
-    ParticipantState.IN_ROOM: "already_in_game",
-    ParticipantState.SEARCHING: "already_queued",
+    ParticipantState.IN_ROOM: Reason.ALREADY_IN_GAME,
+    ParticipantState.SEARCHING: Reason.ALREADY_QUEUED,
 }
 
 
@@ -130,7 +132,7 @@ class CommandRouter:
 
         rating = self._rating_store.rating_for(username)
         self._loop.matchmaking.enqueue(username, rating)
-        return PlayAckMessage(accepted=True, reason="queued")
+        return PlayAckMessage(accepted=True, reason=Reason.QUEUED)
 
     def decide_create_room(self, username: str) -> CreateRoomAckMessage:
         reason = self._busy_reason(username)
@@ -163,8 +165,7 @@ class CommandRouter:
             return JoinRoomDecision(ack=ack)
 
         game.spectator_usernames.add(username)
-        spectator_snapshot = snapshot_to_json(game.session.snapshot())
-        spectator_snapshot.update(panel_to_json(game.session.move_log, game.session.score, names_for(game.session)))
+        spectator_snapshot = full_broadcast_payload(game.session)
         return JoinRoomDecision(ack=ack, spectator_snapshot=spectator_snapshot)
 
     def decide_cancel_room(self, username: str) -> CancelRoomAckMessage:
@@ -180,13 +181,13 @@ class CommandRouter:
         game = self._loop.active_game_for(username)
         seat = game.session.seat_for_username(username) if game is not None else None
         if seat is None:
-            return AckMessage(accepted=False, reason="not_in_game")
+            return AckMessage(accepted=False, reason=Reason.NOT_IN_GAME)
 
         # A connection may only move the color it was seated as - the
         # message's own color is otherwise just a client-asserted claim, not
         # something GameEngine checks (see server/session.py).
         if message.color != seat:
-            return AckMessage(accepted=False, reason="wrong_seat")
+            return AckMessage(accepted=False, reason=Reason.WRONG_SEAT)
 
         command = command_from_message(message)
         result = game.session.apply_command(command)
@@ -202,3 +203,36 @@ class CommandRouter:
         if state is None:
             return None
         return _BUSY_REASON_BY_STATE[state]
+
+    # What "this username's connection just dropped" means across matchmaking/
+    # game/room state - the one non-login/lobby-command decision this router
+    # makes, called from server/ws_server.py's _handle_connection `finally`
+    # block instead of living inline there. Kept here rather than in
+    # GameServer for the same reason every other decision above is: no part
+    # of it is async or touches a websocket, so it's exercisable with plain
+    # Python values (see tests/unit/test_router.py) instead of only through a
+    # real socket at the integration-test level. Mutates state directly
+    # (matchmaking removal, marking a seat disconnected, dropping a
+    # spectator, cancelling a still-pending room) rather than returning a
+    # decision for the caller to apply - there's no ack to send back for a
+    # disconnect, unlike decide_play/decide_create_room/decide_join_room,
+    # which mutate matchmaking/rooms too but still owe the caller a reply.
+    def decide_disconnect(self, username: str) -> None:
+        self._loop.matchmaking.remove(username)
+
+        game = self._loop.active_game_for(username)
+        if game is not None:
+            seat = game.session.seat_for_username(username)
+            if seat is not None:
+                game.session.mark_disconnected(seat)
+            else:
+                game.spectator_usernames.discard(username)
+            return
+
+        # Only a still-pending room (no opponent yet, so no game exists for
+        # active_game_for to have found above) can be unwound outright on
+        # disconnect - once a room's game has started, the seat's disconnect
+        # grace handled above is what applies instead.
+        room = self._rooms.room_for_username(username)
+        if room is not None and room.is_pending:
+            self._rooms.cancel(username)

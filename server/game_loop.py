@@ -13,10 +13,10 @@ _advance_game's own self._rooms.close on game over).
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional, Set
 
+from frame_clock import FrameClock
 from model.board import BoardRepresentation
 from model.piece import BLACK, WHITE
 from protocol.game_messages import DisconnectCountdownMessage, ErrorMessage, GameOverMessage, SeatMessage
@@ -47,6 +47,19 @@ DEFAULT_TICK_INTERVAL_S = 0.05
 # username} shape for its own one-off snapshot send.
 def names_for(session: GameSession) -> dict:
     return {WHITE: session.username_for(WHITE), BLACK: session.username_for(BLACK)}
+
+
+# The full per-tick broadcast for one session: its board snapshot plus the
+# side-panel move-log/score/names data merged into the same dict (see
+# protocol/snapshot_codec.py's own docstring on why panel data is merged
+# in rather than a GameSnapshot field). The one place that combines the
+# two - every broadcast site (the ordinary tick below, a room's freshly
+# reconnected spectators, server/router.py's own one-off spectator-join
+# snapshot) needs the exact same payload, just addressed differently.
+def full_broadcast_payload(session: GameSession) -> dict:
+    payload = snapshot_to_json(session.snapshot())
+    payload.update(panel_to_json(session.move_log, session.score, names_for(session)))
+    return payload
 
 
 # One running game plus the server-layer-only facts GameSession itself has
@@ -114,23 +127,17 @@ class GameLoop:
             spectator_websocket = self._connections.get(spectator_username)
             if spectator_websocket is not None:
                 game.spectator_usernames.add(spectator_username)
-                payload = snapshot_to_json(session.snapshot())
-                payload.update(panel_to_json(session.move_log, session.score, names_for(session)))
-                await self._connections.send(spectator_websocket, payload)
+                await self._connections.send(spectator_websocket, full_broadcast_payload(session))
 
-    # Mirrors play.py's frame loop (real elapsed wall-clock time, fractional
-    # ms carried into the next tick rather than truncated away) so every
-    # networked game's simulated clock keeps the same feel as local play.
+    # Uses the same FrameClock play.py's own frame loop does (real elapsed
+    # wall-clock time, fractional ms carried into the next tick rather than
+    # truncated away) so every networked game's simulated clock keeps the
+    # same feel as local play.
     async def run_forever(self) -> None:
-        last_tick = time.monotonic()
-        carried_ms = 0.0
+        clock = FrameClock()
         while True:
             await asyncio.sleep(self._tick_interval_s)
-            now = time.monotonic()
-            elapsed_ms = (now - last_tick) * 1000 + carried_ms
-            whole_ms = int(elapsed_ms)
-            carried_ms = elapsed_ms - whole_ms
-            last_tick = now
+            whole_ms = clock.tick()
 
             await self._advance_matchmaking(whole_ms)
             await self._try_start_a_match()
@@ -222,9 +229,7 @@ class GameLoop:
                     DisconnectCountdownMessage(seat=seat, seconds_remaining=session.seconds_remaining_for(seat)),
                 )
 
-        payload = snapshot_to_json(session.snapshot())
-        payload.update(panel_to_json(session.move_log, session.score, names_for(session)))
-        await self._broadcast_to_game(game, payload)
+        await self._broadcast_to_game(game, full_broadcast_payload(session))
 
     # Ends `game` the same way a normal game-over does (drop it from
     # self._games, close its room if any) but for an unhandled exception

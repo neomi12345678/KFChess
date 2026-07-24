@@ -1,5 +1,5 @@
 from display_config import CELL_SIZE, SIDE_PANEL_WIDTH_PX, compute_cell_size, side_panel_width_for
-from game_builder import STARTING_BOARD, build_app
+from app_builder import STARTING_BOARD, build_app
 
 # (None, None) forces compute_cell_size's real-screen-detection fallback (see
 # display_config.py), so these tests get the fixed default CELL_SIZE instead

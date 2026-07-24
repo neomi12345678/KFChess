@@ -25,7 +25,7 @@ from model.game_state import ArrivalEvent, GameObserver, JumpResult, MoveLoggedE
 from model.piece import ActionResultReason, BLACK, KING, WHITE
 from model.position import Position
 from server.interfaces import RatingRepository
-from server.protocol import JUMP, Command
+from server.command_translation import JUMP, Command
 from server.rating import updated_ratings
 
 # Shared with server/ws_server.py (see its own import of this constant) -
@@ -71,7 +71,7 @@ class GameSession:
         self._rating_store = rating_store
         self._usernames: Dict[str, str] = {WHITE: white_username, BLACK: black_username}
 
-        # Same Bus/BusBridge wiring game_builder.py's build_app uses for the
+        # Same Bus/BusBridge wiring app_builder.py's build_app uses for the
         # local GUI's sound/animation cues - the king-capture watcher, move
         # log, and score are subscribers here too, not GameEngine observers
         # in their own right. GameEngine itself only ever sees BusBridge

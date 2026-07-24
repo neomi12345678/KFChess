@@ -131,7 +131,7 @@ class GameViewState:
         self.panel_state.update_from_json(first_snapshot_payload)
 
         # This client's own local Bus - the network counterpart to
-        # game_builder.py's build_app wiring the same subscribers to a
+        # app_builder.py's build_app wiring the same subscribers to a
         # GameEngine-fed Bus for local play (see this module's own docstring).
         self.bus = Bus()
         SoundCues(self.bus)

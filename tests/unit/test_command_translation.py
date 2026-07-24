@@ -5,7 +5,7 @@ from model.position import Position
 from protocol.game_messages import build_jump, build_move
 from protocol.panel_state import PanelState
 from protocol.snapshot_codec import panel_to_json, snapshot_from_json, snapshot_to_json
-from server.protocol import JUMP, MOVE, command_from_message
+from server.command_translation import JUMP, MOVE, command_from_message
 
 
 def test_command_from_message_reads_a_move_messages_color_source_and_destination():

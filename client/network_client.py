@@ -1,7 +1,7 @@
 """Background-thread WebSocket transport for the networked GUI client
 (play_online.py) - bridges the async server protocol (see
-server/protocol.py, server/ws_server.py) to the synchronous, single-
-threaded GUI frame loop view/canvas/window.py's GameWindow requires.
+server/command_translation.py, server/ws_server.py) to the synchronous,
+single-threaded GUI frame loop view/canvas/window.py's GameWindow requires.
 
 The asyncio event loop and the real websocket connection live entirely on
 a dedicated background thread, for this object's whole lifetime - the GUI
@@ -47,6 +47,7 @@ from protocol.lobby_messages import (
     PlayMessage,
 )
 from protocol.registry import encode_json_message, message_from_dict
+from protocol.snapshot_codec import is_snapshot_payload
 
 
 # The one wire payload with no registered dataclass of its own - see
@@ -73,6 +74,15 @@ class MatchmakingTimeoutError(NetworkClientError):
     simply having stopped listening too soon."""
 
 
+# A day-long stand-in for "wait indefinitely", passed as wait_for_seat's own
+# timeout by both callers that wait on the room flow (play_online.py,
+# client/setup_dialogs.py) - unlike PLAY's own matchmaking, a room has no
+# server-side timeout of its own (see server/rooms.py), so there's nothing
+# for a shorter default to defend against here the way wait_for_seat's own
+# 65s default defends against PLAY's matchmaking_timeout never arriving.
+INDEFINITE_WAIT_S = 86_400.0
+
+
 # json.loads(raw) always succeeds for anything the server actually sends,
 # but never assumes the "type" tag is one this table recognizes - see
 # message_from_dict's own None-on-unknown contract; a message this decodes
@@ -80,9 +90,14 @@ class MatchmakingTimeoutError(NetworkClientError):
 # passes through as the raw dict, the same "unknown is harmlessly ignored"
 # behavior every existing consumer already relies on, rather than raising
 # and killing this background thread's receive loop over it.
-def _decode_incoming(raw_text: str) -> object:
+#
+# Public (not just this class's own receive loop) - client/client_cli.py's
+# terminal client shares this exact decode step too, instead of keeping its
+# own second, raw-dict-based interpretation of the same wire vocabulary (see
+# its own docstring).
+def decode_incoming(raw_text: str) -> object:
     payload = json.loads(raw_text)
-    if "pieces" in payload:
+    if is_snapshot_payload(payload):
         return SnapshotBroadcast(payload=payload)
     decoded = message_from_dict(payload)
     return decoded if decoded is not None else payload
@@ -125,7 +140,7 @@ class NetworkGameClient:
         self._connected.set()
         try:
             async for message in self._websocket:
-                self._incoming.put(_decode_incoming(message))
+                self._incoming.put(decode_incoming(message))
         except websockets.exceptions.ConnectionClosed:
             pass
 
@@ -148,7 +163,7 @@ class NetworkGameClient:
     # Non-blocking - called once per GUI frame (see play_online.py) to
     # drain whatever arrived since the last poll, in order. Each item is
     # already a typed value (a registered protocol dataclass, or
-    # SnapshotBroadcast) - see _decode_incoming.
+    # SnapshotBroadcast) - see decode_incoming.
     def poll_messages(self) -> List[object]:
         messages = []
         while True:

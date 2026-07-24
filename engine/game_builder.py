@@ -1,5 +1,5 @@
 """Builds a headless GameEngine from a parsed board - the one place every
-caller (server/session.py, main.py's text-script runner, game_builder.py's
+caller (server/session.py, main.py's text-script runner, app_builder.py's
 build_app) gets this wiring from, so a constructor change to
 GameEngine/RuleEngine/RealTimeArbiter only needs updating here.
 

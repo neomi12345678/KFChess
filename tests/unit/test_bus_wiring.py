@@ -1,5 +1,5 @@
 """Proves the whole events/bus.py wiring works together against a real
-GameEngine - the same shape game_builder.py's build_app() wires up (BusBridge as
+GameEngine - the same shape app_builder.py's build_app() wires up (BusBridge as
 the one GameObserver, everything else a bus subscriber), not just each
 piece in isolation.
 """

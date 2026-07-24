@@ -2,7 +2,7 @@
 feed events/bus.py's Bus - GameEngine's own move/jump pipeline never
 changes, and never learns a bus exists (see engine/game_engine.py's own
 add_observer: notify whoever is registered, then move on). Registered once
-(see game_builder.py's build_app), in place of registering each individual
+(see app_builder.py's build_app), in place of registering each individual
 consumer (move log, score, sound, animations) directly - they subscribe to
 the bus instead, so a new consumer never needs GameEngine.add_observer'd
 at all, only bus.subscribe'd.

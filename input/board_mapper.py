@@ -9,7 +9,7 @@ class BoardMapper:
     # a constructor argument rather than reading the config module directly
     # in pixel_to_cell - a caller (or a test) can supply a different value
     # without monkeypatching config. This is what makes pixel_to_cell work
-    # for any screen size, not just the fixed default: game_builder.py's
+    # for any screen size, not just the fixed default: app_builder.py's
     # build_app picks a cell_size once at launch (see display_config.compute_cell_size,
     # decided from the real screen resolution) and threads that same value
     # into both this mapper and the renderer, so a click always lands on the

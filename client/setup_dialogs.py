@@ -27,9 +27,9 @@ import queue
 import threading
 import tkinter as tk
 from tkinter import ttk
-from typing import List, Optional
+from typing import Callable, List, Optional
 
-from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
+from client.network_client import INDEFINITE_WAIT_S, MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
 from protocol.lobby_messages import LoginAckMessage
 from protocol.types import Role
 
@@ -87,6 +87,38 @@ def _set_widgets_enabled(widgets: List[tk.Widget], enabled: bool) -> None:
         widget.configure(state=state)
 
 
+# Shared by run_login/run_game_setup: both drive their own background-thread
+# network calls through a result_queue (a Tk mainloop can't itself block on
+# a queue.Queue) and poll it every 50ms via root.after. `handle` gets each
+# (kind, payload) tuple as it arrives and returns whether to keep polling -
+# False is what a terminal outcome (an accepted login, a seated/spectating
+# game, ...) uses to stop rescheduling itself, the same job each dialog's
+# own accepted-check/_ENDING_KINDS used to do inline before this existed.
+def _start_dialog_poll_loop(root: tk.Tk, result_queue: "queue.Queue[tuple]", handle: Callable[[str, object], bool]) -> None:
+    def poll() -> None:
+        try:
+            kind, payload = result_queue.get_nowait()
+        except queue.Empty:
+            root.after(50, poll)
+            return
+        if handle(kind, payload):
+            root.after(50, poll)
+
+    root.after(50, poll)
+
+
+# Shared "closing the window cancels" wiring - both dialogs treat the OS
+# close button the same as their own Cancel action (run_game_setup's is also
+# a real button, wired to the same function this returns).
+def _bind_cancel(root: tk.Tk, outcome: dict) -> Callable[[], None]:
+    def cancel() -> None:
+        outcome["cancelled"] = True
+        root.quit()
+
+    root.protocol("WM_DELETE_WINDOW", cancel)
+    return cancel
+
+
 # Prompts for username/password, mirroring the old _prompt_login's "loop on
 # rejection, let them try again" UX. Returns the accepted LoginAckMessage, or
 # raises SetupCancelled if the window is closed. Does NOT destroy the root
@@ -140,45 +172,32 @@ def run_login(client: NetworkGameClient) -> LoginAckMessage:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def poll() -> None:
-        try:
-            kind, payload = result_queue.get_nowait()
-        except queue.Empty:
-            root.after(50, poll)
-            return
-
-        # A connection error or a rejected login both let the player retry
-        # (re-enabled controls above are exactly what submit() needs to fire
-        # again) - so, unlike an accepted login below, this must keep
-        # polling: nothing else ever reschedules poll() once this call
-        # returns, and a later submit() only ever puts a new result on
-        # result_queue, it doesn't restart the polling loop itself.
+    # A connection error or a rejected login both let the player retry
+    # (re-enabled controls are exactly what submit() needs to fire again),
+    # so both keep the poll loop going (return True) - only an accepted
+    # login ends it.
+    def handle(kind: str, payload) -> bool:
         if kind == "error":
             _set_widgets_enabled(controls, enabled=True)
             status_var.set(f"Connection error: {payload}")
-            root.after(50, poll)
-            return
+            return True
 
         if not payload.accepted:
             _set_widgets_enabled(controls, enabled=True)
             status_var.set(f"Login failed: {payload.reason}")
-            root.after(50, poll)
-            return
+            return True
 
         outcome["value"] = payload
         root.quit()
-
-    def cancel() -> None:
-        outcome["cancelled"] = True
-        root.quit()
+        return False
 
     login_button.configure(command=submit)
     username_entry.bind("<Return>", submit)
     password_entry.bind("<Return>", submit)
-    root.protocol("WM_DELETE_WINDOW", cancel)
+    _bind_cancel(root, outcome)
 
     username_entry.focus_set()
-    root.after(50, poll)
+    _start_dialog_poll_loop(root, result_queue, handle)
     root.mainloop()
 
     if outcome.get("cancelled"):
@@ -278,9 +297,8 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
             try:
                 # No fixed timeout on the wire for this (unlike PLAY's own
                 # matchmaking_timeout) - a room just waits until someone
-                # joins or the player closes this window. Mirrors the old
-                # terminal flow's own day-long stand-in for "indefinitely".
-                seat_message = client.wait_for_seat(timeout=86_400.0)
+                # joins or the player closes this window.
+                seat_message = client.wait_for_seat(timeout=INDEFINITE_WAIT_S)
             except NetworkClientError:
                 result_queue.put(("retry", "Lost connection while waiting for an opponent."))
                 return
@@ -350,29 +368,17 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
     }
     _ENDING_KINDS = {"spectate", "seated"}
 
-    def poll() -> None:
-        try:
-            kind, payload = result_queue.get_nowait()
-        except queue.Empty:
-            root.after(50, poll)
-            return
-
+    def handle(kind: str, payload) -> bool:
         _KIND_HANDLERS[kind](payload)
-        if kind not in _ENDING_KINDS:
-            root.after(50, poll)
-
-    def cancel() -> None:
-        outcome["cancelled"] = True
-        root.quit()
+        return kind not in _ENDING_KINDS
 
     play_button.configure(command=do_play)
     create_button.configure(command=do_create)
     join_button.configure(command=do_join)
     room_entry.bind("<Return>", lambda event: do_join())
-    cancel_button.configure(command=cancel)
-    root.protocol("WM_DELETE_WINDOW", cancel)
+    cancel_button.configure(command=_bind_cancel(root, outcome))
 
-    root.after(50, poll)
+    _start_dialog_poll_loop(root, result_queue, handle)
     root.mainloop()
     _destroy_root()
 
