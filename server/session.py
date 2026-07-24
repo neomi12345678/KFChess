@@ -16,16 +16,14 @@ import math
 from typing import Dict, Optional, Union
 
 from engine.game_builder import build_game
-from events.bus import Bus
-from events.bus_bridge import BusBridge
 from events.game_events import GameStartedEvent
-from events.observers import MoveLogObserver, ScoreObserver
+from events.game_wiring import wire_game_events
 from model.board import BoardRepresentation
-from model.game_state import ArrivalEvent, GameObserver, JumpResult, MoveLoggedEvent, MoveResult
+from model.game_state import ArrivalEvent, GameObserver, JumpResult, MoveResult
 from model.piece import ActionResultReason, BLACK, KING, WHITE
 from model.position import Position
 from server.interfaces import RatingRepository
-from server.protocol import JUMP, Command
+from server.command_translation import JUMP, Command
 from server.rating import updated_ratings
 
 # Shared with server/ws_server.py (see its own import of this constant) -
@@ -71,26 +69,20 @@ class GameSession:
         self._rating_store = rating_store
         self._usernames: Dict[str, str] = {WHITE: white_username, BLACK: black_username}
 
-        # Same Bus/BusBridge wiring game_builder.py's build_app uses for the
-        # local GUI's sound/animation cues - the king-capture watcher, move
-        # log, and score are subscribers here too, not GameEngine observers
-        # in their own right. GameEngine itself only ever sees BusBridge
-        # (see events/bus_bridge.py). Public (not _bus) - server/publisher.py's
-        # NetworkPublisher subscribes to this same bus from outside to build
-        # the wire events server/game_loop.py broadcasts each tick, so this
-        # class never has to import protocol/game_messages.py itself (see
-        # this module's own docstring on why it claims no notion of
-        # websockets/broadcasting at all).
-        self.bus = Bus()
+        # Same Bus/BusBridge/move-log/score wiring app_builder.py's build_app
+        # uses for local play - see events/game_wiring.py's wire_game_events,
+        # the one place that wiring lives so it isn't copy-pasted between the
+        # two. The king-capture watcher is a subscriber here too, not a
+        # GameEngine observer in its own right - GameEngine itself only ever
+        # sees BusBridge (see events/bus_bridge.py). Public (not _bus) -
+        # server/publisher.py's NetworkPublisher subscribes to this same bus
+        # from outside to build the wire events server/game_loop.py
+        # broadcasts each tick, so this class never has to import
+        # protocol/game_messages.py itself (see this module's own docstring
+        # on why it claims no notion of websockets/broadcasting at all).
+        self.bus, self.move_log, self.score = wire_game_events(self.game_engine, board_height=board.height)
         self._king_capture_watcher = _KingCaptureWatcher()
         self.bus.subscribe(ArrivalEvent, self._king_capture_watcher.on_arrival)
-        self.move_log = MoveLogObserver(board_height=board.height)
-        self.score = ScoreObserver()
-        self.bus.subscribe(MoveLoggedEvent, self.move_log.on_move_logged)
-        self.bus.subscribe(ArrivalEvent, self.move_log.on_arrival)
-        self.bus.subscribe(ArrivalEvent, self.score.on_arrival)
-
-        self.game_engine.add_observer(BusBridge(self.bus))
         self.bus.publish(GameStartedEvent())
 
         self._ratings_finalized = False

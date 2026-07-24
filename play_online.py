@@ -21,15 +21,16 @@ main() here is only ever responsible for the login/matchmaking setup step,
 wiring GameViewState up to a real NetworkGameClient/GameWindow, and driving
 the render loop - never for deciding what any wire message means.
 
-Run: python play_online.py
+Run: python play_online.py [--host HOST] [--port PORT]
 """
 
+import argparse
 import dataclasses
 import time
 
 import piece_config
 from client.game_view_state import GameViewState
-from client.network_client import NetworkClientError, NetworkGameClient, SnapshotBroadcast
+from client.network_client import INDEFINITE_WAIT_S, NetworkClientError, NetworkGameClient, SnapshotBroadcast
 from client.network_controller import JumpRequest, MoveRequest, NetworkController
 from client.setup_dialogs import SetupCancelled, run_game_setup, run_login
 from display_config import compute_cell_size, screen_resolution_px, side_panel_width_for
@@ -60,8 +61,16 @@ def _wait_for_first_snapshot(client: NetworkGameClient, timeout: float = 5.0) ->
     raise NetworkClientError("timed out waiting for the first board snapshot")
 
 
+def _parse_args() -> argparse.Namespace:  # pragma: no cover
+    parser = argparse.ArgumentParser(description="KFChess networked GUI client")
+    parser.add_argument("--host", default=HOST, help=f"server host (default: {HOST})")
+    parser.add_argument("--port", type=int, default=PORT, help=f"server port (default: {PORT})")
+    return parser.parse_args()
+
+
 def main() -> None:  # pragma: no cover
-    client = NetworkGameClient(HOST, PORT)
+    args = _parse_args()
+    client = NetworkGameClient(args.host, args.port)
 
     try:
         # run_login only ever returns once the server has accepted the
@@ -80,7 +89,7 @@ def main() -> None:  # pragma: no cover
             # again (see server/ws_server.py's _handle_login for the
             # server-side half of this).
             print(f"Resuming room {login_ack.resuming_room_id} - waiting for the other player...")
-            my_color = client.wait_for_seat(timeout=86_400.0).color
+            my_color = client.wait_for_seat(timeout=INDEFINITE_WAIT_S).color
             print(f"Resumed as {my_color}")
         else:
             my_color = run_game_setup(client)

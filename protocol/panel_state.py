@@ -33,7 +33,7 @@ class PanelState:
         self._score_by_color = payload["score"]
         # .get, not a bare payload["names"] - payload may be an older/other
         # caller's panel_to_json() dict (or a hand-built test fixture, see
-        # tests/unit/test_server_protocol.py) from before "names" existed.
+        # tests/unit/test_command_translation.py) from before "names" existed.
         self._name_by_color = payload.get("names", {})
 
     def entries_for(self, color: str) -> List[_PanelMoveLine]:

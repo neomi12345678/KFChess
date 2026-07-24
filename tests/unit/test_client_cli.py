@@ -1,8 +1,9 @@
 import pytest
 
 from client.client_cli import InputError, _ClientState, build_command
+from client.network_client import SnapshotBroadcast
 from model.piece import BLACK, WHITE
-from protocol.game_messages import JumpMessage, MoveMessage
+from protocol.game_messages import AckMessage, GameOverMessage, JumpMessage, MoveMessage, SeatMessage
 
 
 def test_build_command_reads_a_move_for_the_seats_own_color():
@@ -64,7 +65,7 @@ def test_client_state_starts_with_no_seat_or_board_height_by_default():
 def test_client_state_learns_its_seat_from_a_seat_message():
     state = _ClientState()
 
-    state.observe({"type": "seat", "color": WHITE})
+    state.observe(SeatMessage(color=WHITE))
 
     assert state.seat == WHITE
 
@@ -72,7 +73,7 @@ def test_client_state_learns_its_seat_from_a_seat_message():
 def test_client_state_clears_its_seat_when_the_game_ends():
     state = _ClientState(seat=WHITE)
 
-    state.observe({"type": "game_over", "ratings": {"white": 1216, "black": 1184}})
+    state.observe(GameOverMessage(ratings={"white": 1216, "black": 1184}))
 
     assert state.seat is None
 
@@ -80,7 +81,7 @@ def test_client_state_clears_its_seat_when_the_game_ends():
 def test_client_state_ignores_unrelated_messages():
     state = _ClientState(seat=WHITE)
 
-    state.observe({"type": "ack", "accepted": True, "reason": "ok"})
+    state.observe(AckMessage(accepted=True, reason="ok"))
 
     assert state.seat == WHITE
 
@@ -88,6 +89,10 @@ def test_client_state_ignores_unrelated_messages():
 def test_client_state_learns_board_height_from_a_snapshot_broadcast():
     state = _ClientState()
 
-    state.observe({"board_width": 8, "board_height": 8, "pieces": [], "selected_cell": None, "game_over": False})
+    state.observe(
+        SnapshotBroadcast(
+            payload={"board_width": 8, "board_height": 8, "pieces": [], "selected_cell": None, "game_over": False}
+        )
+    )
 
     assert state.board_height == 8

@@ -48,6 +48,7 @@ detected well inside DISCONNECT_GRACE_MS, not after it.
 
 import asyncio
 import json
+import logging
 from typing import Callable, Optional
 
 import websockets
@@ -62,9 +63,10 @@ from protocol.lobby_messages import (
     LoginMessage,
     PlayMessage,
 )
-from protocol.registry import message_from_dict
+from protocol.registry import decode_json_message
 from protocol.types import HOST as DEFAULT_HOST
 from protocol.types import PORT as DEFAULT_PORT
+from protocol.types import Reason
 from server.accounts import InvalidCredentialsError, UserStore
 from server.connections import ConnectionRegistry
 from server.game_loop import DEFAULT_TICK_INTERVAL_S, GameLoop
@@ -73,6 +75,8 @@ from server.matchmaking import TIMEOUT_MS as MATCHMAKING_TIMEOUT_MS
 from server.router import CommandRouter
 from server.rooms import RoomRegistry, RoomStore
 from server.session import DISCONNECT_GRACE_MS
+
+_logger = logging.getLogger(__name__)
 
 # Tighter than `websockets`' own 20s/20s stock defaults (see this module's
 # own docstring for why a dead connection must be caught faster than
@@ -175,27 +179,11 @@ class GameServer:
             # anything else down with it.
             pass
         finally:
-            # discard_if_current is False (and every cleanup below skipped)
-            # if a newer connection already logged this same username back
-            # in - see its own docstring.
+            # discard_if_current is False (and decide_disconnect skipped
+            # entirely) if a newer connection already logged this same
+            # username back in - see its own docstring.
             if username is not None and self._connections.discard_if_current(username, websocket):
-                self._loop.matchmaking.remove(username)
-                game = self._loop.active_game_for(username)
-                if game is not None:
-                    seat = game.session.seat_for_username(username)
-                    if seat is not None:
-                        game.session.mark_disconnected(seat)
-                    else:
-                        game.spectator_usernames.discard(username)
-                else:
-                    # Only a still-pending room (no opponent yet, so no
-                    # GameSession exists for active_game_for to have found
-                    # above) can be unwound outright on disconnect - once a
-                    # room's game has started, its own seat's disconnect
-                    # grace (handled above) is what applies instead.
-                    room = self._rooms.room_for_username(username)
-                    if room is not None and room.is_pending:
-                        self._rooms.cancel(username)
+                self._router.decide_disconnect(username)
 
     # Returns the connection's username going forward - unchanged from
     # whatever was passed in, unless this message was the LOGIN that just
@@ -203,14 +191,14 @@ class GameServer:
     # since a plain local variable there can't be updated from in here.
     async def _handle_message(self, websocket, username: Optional[str], message: str) -> Optional[str]:
         try:
-            decoded = message_from_dict(json.loads(message))
+            decoded = decode_json_message(message)
         except (json.JSONDecodeError, TypeError, KeyError):
             # A malformed message: not valid JSON at all, or a recognized
             # "type" tag whose payload is missing/mistyped a required field
-            # (message_from_dict's cls(**kwargs) is what raises TypeError/
-            # KeyError for that) - never a message this table simply
-            # doesn't recognize, see the `decoded is None` branch below for
-            # that case instead.
+            # (message_from_dict's cls(**kwargs), which decode_json_message
+            # calls internally, is what raises TypeError/KeyError for that) -
+            # never a message this table simply doesn't recognize, see the
+            # `decoded is None` branch below for that case instead.
             await self._connections.send(websocket, ErrorMessage(message=f"malformed message: {message!r}"))
             return username
 
@@ -265,7 +253,7 @@ class GameServer:
                 None, self._user_store.login, login_message.username, login_message.password
             )
         except InvalidCredentialsError:
-            await self._connections.send(websocket, LoginAckMessage(accepted=False, reason="wrong_password"))
+            await self._connections.send(websocket, LoginAckMessage(accepted=False, reason=Reason.WRONG_PASSWORD))
             return None
 
         username = account.username
@@ -284,7 +272,8 @@ class GameServer:
         # split their own ConnectionLifecycle/ClientMessageRouter draw.
         stale_websocket = self._connections.get(username)
         if stale_websocket is not None and stale_websocket is not websocket:
-            asyncio.ensure_future(stale_websocket.close())
+            close_task = asyncio.ensure_future(stale_websocket.close())
+            close_task.add_done_callback(self._log_stale_close_failure)
 
         self._connections.set(username, websocket)
 
@@ -293,6 +282,18 @@ class GameServer:
         if decision.start_room is not None:
             await self._loop.start_room_game(decision.start_room)
         return username
+
+    # Best-effort only - the stale socket is being discarded regardless (a
+    # newer login already superseded it), so a failure here has nothing left
+    # to affect except this log line. Logged through this project's own
+    # _logger rather than left to asyncio's default "unhandled task
+    # exception" handler, so it's visible the same way every other caught
+    # failure in this module is.
+    @staticmethod
+    def _log_stale_close_failure(task: "asyncio.Future") -> None:
+        error = task.exception()
+        if error is not None:
+            _logger.warning("failed to close a stale connection during reconnect", exc_info=error)
 
     async def _handle_join_room(self, websocket, username: str, room_id: str) -> None:
         decision = self._router.decide_join_room(username, room_id)

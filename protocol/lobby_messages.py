@@ -15,53 +15,40 @@ from dataclasses import dataclass
 from typing import Optional
 
 from protocol.registry import register
-from protocol.types import (
-    CANCEL_ROOM,
-    CANCEL_ROOM_ACK,
-    CREATE_ROOM,
-    CREATE_ROOM_ACK,
-    JOIN_ROOM,
-    JOIN_ROOM_ACK,
-    LOGIN,
-    LOGIN_ACK,
-    MATCHMAKING_TIMEOUT,
-    PLAY,
-    PLAY_ACK,
-    Role,
-)
+from protocol.types import MessageType, Role
 
 
-@register(LOGIN)
+@register(MessageType.LOGIN)
 @dataclass(frozen=True)
 class LoginMessage:
     username: str
     password: str
-    type: str = LOGIN
+    type: str = MessageType.LOGIN
 
 
-@register(PLAY)
+@register(MessageType.PLAY)
 @dataclass(frozen=True)
 class PlayMessage:
-    type: str = PLAY
+    type: str = MessageType.PLAY
 
 
-@register(CREATE_ROOM)
+@register(MessageType.CREATE_ROOM)
 @dataclass(frozen=True)
 class CreateRoomMessage:
-    type: str = CREATE_ROOM
+    type: str = MessageType.CREATE_ROOM
 
 
-@register(CANCEL_ROOM)
+@register(MessageType.CANCEL_ROOM)
 @dataclass(frozen=True)
 class CancelRoomMessage:
-    type: str = CANCEL_ROOM
+    type: str = MessageType.CANCEL_ROOM
 
 
-@register(JOIN_ROOM)
+@register(MessageType.JOIN_ROOM)
 @dataclass(frozen=True)
 class JoinRoomMessage:
     room_id: str
-    type: str = JOIN_ROOM
+    type: str = MessageType.JOIN_ROOM
 
 
 # One dataclass per server->client control message. Each mirrors its
@@ -73,7 +60,7 @@ class JoinRoomMessage:
 # provides. Building one of these with a missing required field or a typo'd
 # keyword argument is a TypeError at the send site, not a message a client
 # silently never matches anything in.
-@register(LOGIN_ACK)
+@register(MessageType.LOGIN_ACK)
 @dataclass(frozen=True)
 class LoginAckMessage:
     accepted: bool
@@ -83,45 +70,45 @@ class LoginAckMessage:
     reconnected: Optional[bool] = None
     color: Optional[str] = None
     resuming_room_id: Optional[str] = None
-    type: str = LOGIN_ACK
+    type: str = MessageType.LOGIN_ACK
 
 
-@register(PLAY_ACK)
+@register(MessageType.PLAY_ACK)
 @dataclass(frozen=True)
 class PlayAckMessage:
     accepted: bool
     reason: str
-    type: str = PLAY_ACK
+    type: str = MessageType.PLAY_ACK
 
 
-@register(CREATE_ROOM_ACK)
+@register(MessageType.CREATE_ROOM_ACK)
 @dataclass(frozen=True)
 class CreateRoomAckMessage:
     accepted: bool
     reason: Optional[str] = None
     room_id: Optional[str] = None
-    type: str = CREATE_ROOM_ACK
+    type: str = MessageType.CREATE_ROOM_ACK
 
 
-@register(JOIN_ROOM_ACK)
+@register(MessageType.JOIN_ROOM_ACK)
 @dataclass(frozen=True)
 class JoinRoomAckMessage:
     accepted: bool
     reason: Optional[str] = None
     room_id: Optional[str] = None
     role: Optional[Role] = None
-    type: str = JOIN_ROOM_ACK
+    type: str = MessageType.JOIN_ROOM_ACK
 
 
-@register(CANCEL_ROOM_ACK)
+@register(MessageType.CANCEL_ROOM_ACK)
 @dataclass(frozen=True)
 class CancelRoomAckMessage:
     accepted: bool
     reason: Optional[str] = None
-    type: str = CANCEL_ROOM_ACK
+    type: str = MessageType.CANCEL_ROOM_ACK
 
 
-@register(MATCHMAKING_TIMEOUT)
+@register(MessageType.MATCHMAKING_TIMEOUT)
 @dataclass(frozen=True)
 class MatchmakingTimeoutMessage:
-    type: str = MATCHMAKING_TIMEOUT
+    type: str = MessageType.MATCHMAKING_TIMEOUT

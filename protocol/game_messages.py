@@ -14,17 +14,7 @@ from typing import Dict
 from model.position import Position
 from protocol.registry import register
 from protocol.snapshot_codec import position_to_json
-from protocol.types import (
-    ACK,
-    CAPTURE,
-    DISCONNECT_COUNTDOWN,
-    ERROR,
-    GAME_OVER,
-    JUMP,
-    MOVE,
-    MOVE_LOGGED,
-    SEAT,
-)
+from protocol.types import MessageType
 
 
 # color is the seat this connection was assigned (see SeatMessage) - never
@@ -38,25 +28,25 @@ from protocol.types import (
 # field that itself needs a nested decode step, the same reason
 # GameOverMessage's own ratings field below is a plain Dict[str, int] and
 # not, say, a {color: RatingChange} of some other dataclass. build_move/
-# build_jump are what turn a real Position into one of these; server/
-# protocol.py's command_from_message is the one place a decoded MoveMessage/
-# JumpMessage turns back into a real Position, right before GameSession
-# needs one.
-@register(MOVE)
+# build_jump are what turn a real Position into one of these;
+# server/command_translation.py's command_from_message is the one place a
+# decoded MoveMessage/JumpMessage turns back into a real Position, right
+# before GameSession needs one.
+@register(MessageType.MOVE)
 @dataclass(frozen=True)
 class MoveMessage:
     color: str
     source: dict
     destination: dict
-    type: str = MOVE
+    type: str = MessageType.MOVE
 
 
-@register(JUMP)
+@register(MessageType.JUMP)
 @dataclass(frozen=True)
 class JumpMessage:
     color: str
     source: dict
-    type: str = JUMP
+    type: str = MessageType.JUMP
 
 
 def build_move(color: str, source: Position, destination: Position) -> MoveMessage:
@@ -67,51 +57,51 @@ def build_jump(color: str, source: Position) -> JumpMessage:
     return JumpMessage(color=color, source=position_to_json(source))
 
 
-@register(ERROR)
+@register(MessageType.ERROR)
 @dataclass(frozen=True)
 class ErrorMessage:
     message: str
-    type: str = ERROR
+    type: str = MessageType.ERROR
 
 
-@register(ACK)
+@register(MessageType.ACK)
 @dataclass(frozen=True)
 class AckMessage:
     accepted: bool
     reason: str
-    type: str = ACK
+    type: str = MessageType.ACK
 
 
-@register(SEAT)
+@register(MessageType.SEAT)
 @dataclass(frozen=True)
 class SeatMessage:
     color: str
-    type: str = SEAT
+    type: str = MessageType.SEAT
 
 
-@register(DISCONNECT_COUNTDOWN)
+@register(MessageType.DISCONNECT_COUNTDOWN)
 @dataclass(frozen=True)
 class DisconnectCountdownMessage:
     seat: str
     seconds_remaining: int
-    type: str = DISCONNECT_COUNTDOWN
+    type: str = MessageType.DISCONNECT_COUNTDOWN
 
 
-@register(GAME_OVER)
+@register(MessageType.GAME_OVER)
 @dataclass(frozen=True)
 class GameOverMessage:
     ratings: Dict[str, int]
-    type: str = GAME_OVER
+    type: str = MessageType.GAME_OVER
 
 
-@register(MOVE_LOGGED)
+@register(MessageType.MOVE_LOGGED)
 @dataclass(frozen=True)
 class MoveLoggedMessage:
     is_jump: bool
-    type: str = MOVE_LOGGED
+    type: str = MessageType.MOVE_LOGGED
 
 
-@register(CAPTURE)
+@register(MessageType.CAPTURE)
 @dataclass(frozen=True)
 class CaptureMessage:
-    type: str = CAPTURE
+    type: str = MessageType.CAPTURE

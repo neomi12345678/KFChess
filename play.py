@@ -1,6 +1,5 @@
-import time
-
-from game_builder import build_app
+from app_builder import build_app
+from frame_clock import FrameClock
 from view.canvas.window import GameWindow
 
 
@@ -11,20 +10,10 @@ def main(white_name: str = "White", black_name: str = "Black") -> None:  # pragm
     window.on_click(app.on_click)
     window.on_jump(app.on_jump)
 
-    last_tick = time.monotonic()
-    # Truncating each frame's elapsed time to whole milliseconds and
-    # discarding the remainder would make the simulated clock drift behind
-    # the wall clock - carry the fractional remainder into the next frame
-    # instead so nothing is lost.
-    carried_ms = 0.0
+    clock = FrameClock()
     running = True
     while running:
-        now = time.monotonic()
-        elapsed_ms = (now - last_tick) * 1000 + carried_ms
-        whole_ms = int(elapsed_ms)
-        carried_ms = elapsed_ms - whole_ms
-        last_tick = now
-        game_engine.wait(whole_ms)
+        game_engine.wait(clock.tick())
 
         canvas.begin_frame()
         app.render()

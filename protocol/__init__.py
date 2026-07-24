@@ -15,8 +15,13 @@ Split by concern rather than one flat module:
     panel_state.py      the client-side read model rebuilt from it.
 
 Every message in either direction is one of this package's own registered
-dataclasses, decoded through the same registry.decode_json_message
-regardless of which side sent it - see server/protocol.py's own docstring
-for the one place server-side that still turns a decoded MoveMessage/
-JumpMessage into the engine-facing Command shape.
+dataclasses, decoded through the same registry.message_from_dict regardless
+of which side sent it - server/ws_server.py reaches that through
+registry.decode_json_message directly; client/network_client.py calls
+message_from_dict itself instead, since it needs the parsed payload dict a
+step earlier than decode_json_message would give it (see registry.py's own
+docstring on decode_json_message for why). See
+server/command_translation.py's own docstring for the one place server-side
+that still turns a decoded MoveMessage/JumpMessage into the engine-facing
+Command shape.
 """

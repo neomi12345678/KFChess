@@ -7,21 +7,36 @@ the section-6 room flow (see server/rooms.py) - moves by hand once seated.
 A stand-in until the real GUI talks to the server directly, not a
 replacement for it.
 
-Run: python -m client.client_cli
+Incoming wire messages are decoded through the exact same
+client/network_client.py's decode_incoming this project's real GUI client
+uses, not a second, raw-dict-based interpretation of the same vocabulary -
+_ClientState.observe below pattern-matches on the typed result (a registered
+protocol dataclass, or SnapshotBroadcast for the one payload that isn't one)
+the same way client/game_view_state.py's GameViewState does.
+
+Run: python -m client.client_cli [--host HOST] [--port PORT]
 """
 
+import argparse
 import asyncio
 import getpass
-import json
-from typing import Optional, Union
+from typing import Optional, Type, Union
 
 import websockets
 
 from boardio.algebraic_notation import parse_square
-from protocol.game_messages import JumpMessage, MoveMessage, build_jump, build_move
-from protocol.lobby_messages import CancelRoomMessage, CreateRoomMessage, JoinRoomMessage, LoginMessage, PlayMessage
+from client.network_client import SnapshotBroadcast, decode_incoming
+from protocol.game_messages import GameOverMessage, JumpMessage, MoveMessage, SeatMessage, build_jump, build_move
+from protocol.lobby_messages import (
+    CancelRoomMessage,
+    CreateRoomMessage,
+    JoinRoomMessage,
+    LoginAckMessage,
+    LoginMessage,
+    PlayMessage,
+)
 from protocol.registry import encode_json_message
-from protocol.types import GAME_OVER, HOST, LOGIN_ACK, PORT, SEAT
+from protocol.types import HOST, PORT
 
 _PLAY_INPUT = "play"
 _CREATE_ROOM_INPUT = "create room"
@@ -34,38 +49,38 @@ class InputError(Exception):
 
 
 # The seat this connection is currently playing, if any - unknown until a
-# "seat" message arrives (see _ClientState.observe), since matchmaking (not
-# login) is what assigns one now. board_height is similarly unknown until the
-# first snapshot broadcast (the only wire message that carries it) - both
-# are what build_command needs to turn typed algebraic input into a real
-# Position, now that the wire format itself carries one directly rather than
-# algebraic text (see protocol/game_messages.py's own docstring). A plain
-# mutable holder so _print_incoming (which sees these messages) and
-# _read_commands (which needs them to build a move) can share the state that
-# changes after login.
+# SeatMessage arrives (see observe below), since matchmaking (not login) is
+# what assigns one now. board_height is similarly unknown until the first
+# snapshot broadcast (the only wire message that carries it) - both are what
+# build_command needs to turn typed algebraic input into a real Position,
+# now that the wire format itself carries one directly rather than algebraic
+# text (see protocol/game_messages.py's own docstring). A plain mutable
+# holder so _print_incoming (which sees these messages) and _read_commands
+# (which needs them to build a move) can share the state that changes after
+# login.
 class _ClientState:
-    # message type -> the new seat value it carries. Both cases (see observe
-    # below) fully replace the seat rather than modifying it, so a plain
-    # lookup is all that's needed.
-    _SEAT_BY_MESSAGE_TYPE = {
-        SEAT: lambda payload: payload["color"],
-        GAME_OVER: lambda payload: None,
-    }
-
     def __init__(self, seat: Optional[str] = None, board_height: Optional[int] = None):
         self.seat = seat
         self.board_height = board_height
 
-    def observe(self, payload: dict) -> None:
-        seat_getter = self._SEAT_BY_MESSAGE_TYPE.get(payload.get("type"))
-        if seat_getter is not None:
-            self.seat = seat_getter(payload)
-        if "board_height" in payload:  # the periodic snapshot broadcast (see snapshot_to_json) has no "type" at all
-            self.board_height = payload["board_height"]
+    # message is whatever decode_incoming already decoded it to - a
+    # registered protocol dataclass, SnapshotBroadcast, or (for a "type" this
+    # client doesn't recognize) the raw dict itself. Anything this
+    # isinstance chain doesn't match is silently ignored, the same "unknown
+    # is a no-op" contract every other consumer of decode_incoming's output
+    # already has.
+    def observe(self, message: object) -> None:
+        if isinstance(message, SeatMessage):
+            self.seat = message.color
+        elif isinstance(message, GameOverMessage):
+            self.seat = None
+        elif isinstance(message, SnapshotBroadcast):
+            self.board_height = message.payload["board_height"]
 
 
-# Typed shorthand -> a real MoveMessage/JumpMessage (see server/protocol.py's
-# command_from_message, and boardio.algebraic_notation.parse_square for the
+# Typed shorthand -> a real MoveMessage/JumpMessage (see
+# server/command_translation.py's command_from_message, and
+# boardio.algebraic_notation.parse_square for the
 # text->Position half of this). The connection's own color is implicit
 # (whichever seat matchmaking assigned), so a player never has to type
 # "W"/"B" themselves:
@@ -110,19 +125,19 @@ def _parse_typed_square(square: str, board_height: int):
 # independent tasks on the server (see server/ws_server.py) - either can
 # land first, so this reads past any interleaved broadcast instead of
 # assuming the very next message is the one being waited for.
-async def _recv_of_type(websocket, message_type: str) -> dict:
+async def _recv_of_type(websocket, message_class: Type) -> object:
     while True:
-        message = json.loads(await websocket.recv())
-        if message.get("type") == message_type:
-            return message
+        decoded = decode_incoming(await websocket.recv())
+        if isinstance(decoded, message_class):
+            return decoded
 
 
 async def _print_incoming(websocket, state: _ClientState) -> None:
     async for message in websocket:
-        payload = json.loads(message)
-        state.observe(payload)
-        if "type" in payload:  # a broadcast snapshot (see snapshot_to_json) has none
-            print(payload)
+        decoded = decode_incoming(message)
+        state.observe(decoded)
+        if not isinstance(decoded, SnapshotBroadcast):  # a broadcast snapshot has nothing worth printing here
+            print(decoded)
 
 
 async def _read_commands(websocket, state: _ClientState) -> None:
@@ -164,21 +179,28 @@ async def _read_commands(websocket, state: _ClientState) -> None:
         await websocket.send(encode_json_message(command))
 
 
-async def _main() -> None:  # pragma: no cover
+def _parse_args() -> argparse.Namespace:  # pragma: no cover
+    parser = argparse.ArgumentParser(description="KFChess terminal client")
+    parser.add_argument("--host", default=HOST, help=f"server host (default: {HOST})")
+    parser.add_argument("--port", type=int, default=PORT, help=f"server port (default: {PORT})")
+    return parser.parse_args()
+
+
+async def _main(host: str, port: int) -> None:  # pragma: no cover
     username = input("Username: ").strip()
     password = getpass.getpass("Password: ")
 
-    uri = f"ws://{HOST}:{PORT}"
+    uri = f"ws://{host}:{port}"
     async with websockets.connect(uri) as websocket:
         await websocket.send(encode_json_message(LoginMessage(username=username, password=password)))
-        login_ack = await _recv_of_type(websocket, LOGIN_ACK)
-        if not login_ack["accepted"]:
-            print(f"Login failed: {login_ack['reason']}")
+        login_ack = await _recv_of_type(websocket, LoginAckMessage)
+        if not login_ack.accepted:
+            print(f"Login failed: {login_ack.reason}")
             return
-        print(f"Logged in as {login_ack['username']} (rating {login_ack['rating']})")
+        print(f"Logged in as {login_ack.username} (rating {login_ack.rating})")
 
-        if login_ack.get("reconnected"):
-            state = _ClientState(seat=login_ack["color"])
+        if login_ack.reconnected:
+            state = _ClientState(seat=login_ack.color)
             print(f"Reconnected to your game as {state.seat}")
         else:
             state = _ClientState()
@@ -188,7 +210,8 @@ async def _main() -> None:  # pragma: no cover
 
 
 def main() -> None:  # pragma: no cover
-    asyncio.run(_main())
+    args = _parse_args()
+    asyncio.run(_main(args.host, args.port))
 
 
 if __name__ == "__main__":  # pragma: no cover

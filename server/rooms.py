@@ -22,6 +22,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
+from protocol.types import Reason
+
 _ID_LENGTH = 6
 
 
@@ -44,9 +46,9 @@ class Room:
 class RoomError(Exception):
     """Raised for a room request that can't be granted - not found, the
     caller's already elsewhere, wrong creator, already started. str(error)
-    is itself the wire-ready reason code (see server/ws_server.py's
-    *_room_ack handlers), the same role server/accounts.py's
-    InvalidCredentialsError plays for login."""
+    is itself the wire-ready protocol.types.Reason member (see
+    server/ws_server.py's *_room_ack handlers), the same role
+    server/accounts.py's InvalidCredentialsError plays for login."""
 
 
 class RoomStore:
@@ -151,7 +153,7 @@ class RoomRegistry:
 
     def create(self, username: str) -> Room:
         if username in self._room_id_by_username:
-            raise RoomError("already_in_a_room")
+            raise RoomError(Reason.ALREADY_IN_A_ROOM)
 
         room = Room(room_id=self._new_id(), creator=username)
         self._rooms[room.room_id] = room
@@ -167,9 +169,9 @@ class RoomRegistry:
     def join(self, room_id: str, username: str) -> Room:
         room = self._rooms.get(room_id)
         if room is None:
-            raise RoomError("room_not_found")
+            raise RoomError(Reason.ROOM_NOT_FOUND)
         if username in self._room_id_by_username:
-            raise RoomError("already_in_a_room")
+            raise RoomError(Reason.ALREADY_IN_A_ROOM)
 
         if room.is_pending:
             room.opponent = username
@@ -186,11 +188,11 @@ class RoomRegistry:
     def cancel(self, username: str) -> None:
         room = self.room_for_username(username)
         if room is None:
-            raise RoomError("not_in_a_room")
+            raise RoomError(Reason.NOT_IN_A_ROOM)
         if room.creator != username:
-            raise RoomError("not_the_creator")
+            raise RoomError(Reason.NOT_THE_CREATOR)
         if not room.is_pending:
-            raise RoomError("already_started")
+            raise RoomError(Reason.ALREADY_STARTED)
 
         self._forget(room)
 

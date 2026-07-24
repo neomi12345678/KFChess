@@ -54,7 +54,7 @@ class Renderer:
     # - a color missing from it just gets no name line at all (see
     # _draw_panel), so a caller with no real name to show (e.g. play_online.py
     # before the server's own broadcast has told it who it's playing) doesn't
-    # have to invent one. Local play (game_builder.py's build_app) always
+    # have to invent one. Local play (app_builder.py's build_app) always
     # passes real names explicitly, defaulting to "White"/"Black" itself -
     # this class has no opinion on what a good default name is, only on
     # whether to draw a name line at all.

@@ -65,8 +65,14 @@ def encode_json_message(message) -> str:
 
 
 # The one-step decode a caller reaches for at the actual network boundary
-# (see server/ws_server.py's _handle_message, client/network_client.py) -
-# message_from_dict alone is still what client/network_message_adapter.py
+# (see server/ws_server.py's _handle_message). client/network_client.py's
+# own decode_incoming decodes the exact same wire text but can't call this
+# directly: it needs the parsed payload dict itself first, to tell a
+# snapshot broadcast apart from a registered message (see
+# protocol/snapshot_codec.py's is_snapshot_payload) before message_from_dict
+# ever runs - so it calls json.loads/message_from_dict itself, in the same
+# order this function does, rather than through this wrapper.
+# message_from_dict alone is also what client/network_message_adapter.py
 # uses, since it already has a plain dict off client/network_client.py's own
 # queue rather than raw wire text.
 def decode_json_message(raw: str) -> Optional[object]:

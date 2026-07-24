@@ -7,8 +7,12 @@ panel_to_json's own payload shape.
 Neither the snapshot nor the panel data get a types.py "type" tag or a
 registry.py registration - unlike every message in lobby_messages.py/
 game_messages.py, the per-tick broadcast is the server's whole
-authoritative state as of this tick, not a discrete, typed event (see
-client/game_view_state.py's own "pieces" in message check).
+authoritative state as of this tick, not a discrete, typed event. See
+is_snapshot_payload below for the one shared predicate that tells a
+snapshot broadcast apart from a typed message by shape - client/
+network_client.py's decode_incoming is the one caller (both it and
+client/client_cli.py, which shares that same decode_incoming rather than
+hand-rolling its own check, end up relying on it).
 
 position_to_json/position_from_json are also reused by game_messages.py's
 MoveMessage/JumpMessage, the one piece of this codec that isn't specific to
@@ -21,6 +25,16 @@ from events.observers import MoveLogObserver, ScoreObserver
 from model.game_state import GameSnapshot, PieceSnapshot
 from model.piece import BLACK, WHITE
 from model.position import Position
+
+
+# "pieces" is the one key only a snapshot broadcast ever carries (see
+# snapshot_to_json below) - the single predicate both client/network_client.py
+# and client/client_cli.py use to tell a snapshot apart from a typed message,
+# instead of each hand-rolling its own shape check (they used to check
+# different keys - "pieces" vs "board_height" - which could silently drift
+# apart if the wire shape ever changed).
+def is_snapshot_payload(payload: dict) -> bool:
+    return "pieces" in payload
 
 
 def position_to_json(position: Optional[Position]) -> Optional[dict]:
