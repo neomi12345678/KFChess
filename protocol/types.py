@@ -1,14 +1,10 @@
 """Wire-level constants shared by both sides of the network connection: the
-server endpoint address, the color-letter mapping command text uses (see
-server/protocol.py's own import of COLOR_PREFIX), the message "type" tag
-vocabulary every server->client control message carries (see
-lobby_messages.py/game_messages.py), and Role, the two things a successful
-JOIN_ROOM can seat a connection as.
+server endpoint address, the message "type" tag vocabulary every message in
+either direction carries (see lobby_messages.py/game_messages.py), and Role,
+the two things a successful JOIN_ROOM can seat a connection as.
 """
 
 from enum import Enum
-
-from model.piece import BLACK, WHITE
 
 # The real, well-known server endpoint - a single source both
 # server/main.py (binding) and every connecting client (client_cli.py,
@@ -16,19 +12,21 @@ from model.piece import BLACK, WHITE
 HOST = "localhost"
 PORT = 8765
 
-# The wire format's own color letters - public so a client building a
-# command (client/client_cli.py, play_online.py) can get "W"/"B" for its
-# own seat from the same single source of truth server/protocol.py's
-# parse_command parses commands back out of, instead of each hand-rolling
-# its own copy of this mapping.
-COLOR_PREFIX = {WHITE: "W", BLACK: "B"}
+# Wire message "type" values - the vocabulary every message in either
+# direction carries (see protocol/registry.py's register()/message_to_dict):
+# client->server (LOGIN/PLAY/.../MOVE/JUMP, see lobby_messages.py/
+# game_messages.py's request dataclasses) and server->client (the *_ACK/
+# SEAT/... dataclasses in the same two modules) alike. Centralized so a typo
+# on either side of the connection is a NameError at import time instead of a
+# message that silently never matches anything at runtime.
+LOGIN = "login"
+PLAY = "play"
+CREATE_ROOM = "create_room"
+CANCEL_ROOM = "cancel_room"
+JOIN_ROOM = "join_room"
+MOVE = "move"
+JUMP = "jump"
 
-# Wire message "type" values - the vocabulary server/ws_server.py,
-# server/game_loop.py, and server/session.py send, and client/network_client.py,
-# client/client_cli.py, client/network_message_adapter.py match against.
-# Centralized so a typo on either side of the connection is a NameError at
-# import time instead of a message that silently never matches anything at
-# runtime.
 LOGIN_ACK = "login_ack"
 PLAY_ACK = "play_ack"
 CREATE_ROOM_ACK = "create_room_ack"

@@ -12,6 +12,15 @@ thread-safe queue.Queue the background thread's receive loop pushes into).
 Nothing here does its own asyncio.run() from the calling thread - that
 would require the GUI's own frame loop to be async, which
 view/canvas/window.py's blocking cv2.waitKey() loop isn't.
+
+The receive loop decodes each incoming message exactly once, right here at
+the network boundary - self._incoming (and thus poll_messages()) always
+holds a typed item, never a raw dict a caller still has to decode itself:
+one of protocol/lobby_messages.py's/protocol/game_messages.py's registered
+dataclasses, or SnapshotBroadcast for the one payload that isn't one (see
+its own docstring). client/network_message_adapter.py's NetworkMessageAdapter
+and client/game_view_state.py's GameViewState both work off these typed
+items directly, never a dict's own keys.
 """
 
 import asyncio
@@ -20,12 +29,35 @@ import json
 import queue
 import threading
 import time
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import List, Optional, Type
 
 import websockets
 
-from protocol.lobby_messages import build_create_room, build_join_room, build_login, build_play
-from protocol.types import CREATE_ROOM_ACK, JOIN_ROOM_ACK, LOGIN_ACK, MATCHMAKING_TIMEOUT, PLAY_ACK, SEAT
+from protocol.game_messages import SeatMessage
+from protocol.lobby_messages import (
+    CreateRoomAckMessage,
+    CreateRoomMessage,
+    JoinRoomAckMessage,
+    JoinRoomMessage,
+    LoginAckMessage,
+    LoginMessage,
+    MatchmakingTimeoutMessage,
+    PlayAckMessage,
+    PlayMessage,
+)
+from protocol.registry import encode_json_message, message_from_dict
+
+
+# The one wire payload with no registered dataclass of its own - see
+# protocol/snapshot_codec.py's own docstring on why the per-tick board+panel
+# broadcast stays a plain dict rather than becoming one more registered
+# message. Wrapping it here is what lets self._incoming hold a typed item
+# uniformly, this one included, instead of its one exception forcing every
+# consumer to keep handling a raw dict itself.
+@dataclass(frozen=True)
+class SnapshotBroadcast:
+    payload: dict
 
 
 class NetworkClientError(Exception):
@@ -41,9 +73,24 @@ class MatchmakingTimeoutError(NetworkClientError):
     simply having stopped listening too soon."""
 
 
+# json.loads(raw) always succeeds for anything the server actually sends,
+# but never assumes the "type" tag is one this table recognizes - see
+# message_from_dict's own None-on-unknown contract; a message this decodes
+# to None (some future/foreign type this client doesn't know about yet)
+# passes through as the raw dict, the same "unknown is harmlessly ignored"
+# behavior every existing consumer already relies on, rather than raising
+# and killing this background thread's receive loop over it.
+def _decode_incoming(raw_text: str) -> object:
+    payload = json.loads(raw_text)
+    if "pieces" in payload:
+        return SnapshotBroadcast(payload=payload)
+    decoded = message_from_dict(payload)
+    return decoded if decoded is not None else payload
+
+
 class NetworkGameClient:
     def __init__(self, host: str, port: int, connect_timeout: float = 5.0):
-        self._incoming: "queue.Queue[dict]" = queue.Queue()
+        self._incoming: "queue.Queue[object]" = queue.Queue()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._websocket = None
         self._connected = threading.Event()
@@ -78,7 +125,7 @@ class NetworkGameClient:
         self._connected.set()
         try:
             async for message in self._websocket:
-                self._incoming.put(json.loads(message))
+                self._incoming.put(_decode_incoming(message))
         except websockets.exceptions.ConnectionClosed:
             pass
 
@@ -99,8 +146,10 @@ class NetworkGameClient:
             print(f"NetworkGameClient: failed to send command: {error}")
 
     # Non-blocking - called once per GUI frame (see play_online.py) to
-    # drain whatever arrived since the last poll, in order.
-    def poll_messages(self) -> List[dict]:
+    # drain whatever arrived since the last poll, in order. Each item is
+    # already a typed value (a registered protocol dataclass, or
+    # SnapshotBroadcast) - see _decode_incoming.
+    def poll_messages(self) -> List[object]:
         messages = []
         while True:
             try:
@@ -113,34 +162,34 @@ class NetworkGameClient:
     # terminal login/matchmaking handshake (see play_online.py), before
     # the GUI window opens and poll_messages() takes over - nothing else
     # is draining self._incoming concurrently at that point.
-    def login(self, username: str, password: str, timeout: float = 10.0) -> dict:
-        self.send_command(build_login(username, password))
-        return self._wait_for_type(LOGIN_ACK, timeout)
+    def login(self, username: str, password: str, timeout: float = 10.0) -> LoginAckMessage:
+        self.send_command(encode_json_message(LoginMessage(username=username, password=password)))
+        return self._wait_for_type(LoginAckMessage, timeout)
 
-    def play(self, timeout: float = 10.0) -> dict:
-        self.send_command(build_play())
-        return self._wait_for_type(PLAY_ACK, timeout)
+    def play(self, timeout: float = 10.0) -> PlayAckMessage:
+        self.send_command(encode_json_message(PlayMessage()))
+        return self._wait_for_type(PlayAckMessage, timeout)
 
     # timeout is a defensive upper bound, not the expected path - the server
     # gives up and reports matchmaking_timeout on its own after
     # server/matchmaking.py's TIMEOUT_MS (60s by default), which
     # _wait_for_type's stop_types below reacts to immediately rather than
     # this call silently discarding it and waiting out its own timeout too.
-    def wait_for_seat(self, timeout: float = 65.0) -> dict:
-        return self._wait_for_type(SEAT, timeout, stop_types={MATCHMAKING_TIMEOUT: MatchmakingTimeoutError})
+    def wait_for_seat(self, timeout: float = 65.0) -> SeatMessage:
+        return self._wait_for_type(SeatMessage, timeout, stop_types={MatchmakingTimeoutMessage: MatchmakingTimeoutError})
 
     # The section-6 room flow (see server/rooms.py) - create_room's own
     # reply carries the room id (nothing to wait_for_seat for yet, since a
     # freshly created room has no opponent); join_room's carries "role"
     # instead (opponent vs spectator, see play_online.py's own handling of
     # each), decided by the server, not requested by the caller.
-    def create_room(self, timeout: float = 10.0) -> dict:
-        self.send_command(build_create_room())
-        return self._wait_for_type(CREATE_ROOM_ACK, timeout)
+    def create_room(self, timeout: float = 10.0) -> CreateRoomAckMessage:
+        self.send_command(encode_json_message(CreateRoomMessage()))
+        return self._wait_for_type(CreateRoomAckMessage, timeout)
 
-    def join_room(self, room_id: str, timeout: float = 10.0) -> dict:
-        self.send_command(build_join_room(room_id))
-        return self._wait_for_type(JOIN_ROOM_ACK, timeout)
+    def join_room(self, room_id: str, timeout: float = 10.0) -> JoinRoomAckMessage:
+        self.send_command(encode_json_message(JoinRoomMessage(room_id=room_id)))
+        return self._wait_for_type(JoinRoomAckMessage, timeout)
 
     # Loops past any interleaved message of a different type rather than
     # raising on the first mismatch - mirrors client/client_cli.py's own
@@ -151,22 +200,24 @@ class NetworkGameClient:
     # instead of being silently discarded like any other non-matching
     # message - wait_for_seat's own matchmaking_timeout being the only
     # current use (see above).
-    def _wait_for_type(self, message_type: str, timeout: float, stop_types: Optional[dict] = None) -> dict:
+    def _wait_for_type(self, message_type: Type, timeout: float, stop_types: Optional[dict] = None) -> object:
         stop_types = stop_types or {}
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise NetworkClientError(f"timed out waiting for a '{message_type}' message")
+                raise NetworkClientError(f"timed out waiting for a '{message_type.__name__}' message")
             try:
                 message = self._incoming.get(timeout=remaining)
             except queue.Empty:
-                raise NetworkClientError(f"timed out waiting for a '{message_type}' message")
-            if message.get("type") == message_type:
+                raise NetworkClientError(f"timed out waiting for a '{message_type.__name__}' message")
+            if isinstance(message, message_type):
                 return message
-            stop_error = stop_types.get(message.get("type"))
+            stop_error = stop_types.get(type(message))
             if stop_error is not None:
-                raise stop_error(f"server reported '{message['type']}' while waiting for a '{message_type}' message")
+                raise stop_error(
+                    f"server reported {type(message).__name__} while waiting for a '{message_type.__name__}' message"
+                )
 
     def close(self) -> None:
         if self._websocket is not None and self._loop is not None:

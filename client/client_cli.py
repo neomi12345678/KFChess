@@ -13,13 +13,15 @@ Run: python -m client.client_cli
 import asyncio
 import getpass
 import json
-from typing import Optional
+from typing import Optional, Union
 
 import websockets
 
-from protocol.game_messages import build_jump
-from protocol.lobby_messages import build_cancel_room, build_create_room, build_join_room, build_login, build_play
-from protocol.types import COLOR_PREFIX, GAME_OVER, HOST, LOGIN_ACK, PORT, SEAT
+from boardio.algebraic_notation import parse_square
+from protocol.game_messages import JumpMessage, MoveMessage, build_jump, build_move
+from protocol.lobby_messages import CancelRoomMessage, CreateRoomMessage, JoinRoomMessage, LoginMessage, PlayMessage
+from protocol.registry import encode_json_message
+from protocol.types import GAME_OVER, HOST, LOGIN_ACK, PORT, SEAT
 
 _PLAY_INPUT = "play"
 _CREATE_ROOM_INPUT = "create room"
@@ -33,9 +35,14 @@ class InputError(Exception):
 
 # The seat this connection is currently playing, if any - unknown until a
 # "seat" message arrives (see _ClientState.observe), since matchmaking (not
-# login) is what assigns one now. A plain mutable holder so _print_incoming
-# (which sees that message) and _read_commands (which needs the seat to
-# build a move) can share the one piece of state that changes after login.
+# login) is what assigns one now. board_height is similarly unknown until the
+# first snapshot broadcast (the only wire message that carries it) - both
+# are what build_command needs to turn typed algebraic input into a real
+# Position, now that the wire format itself carries one directly rather than
+# algebraic text (see protocol/game_messages.py's own docstring). A plain
+# mutable holder so _print_incoming (which sees these messages) and
+# _read_commands (which needs them to build a move) can share the state that
+# changes after login.
 class _ClientState:
     # message type -> the new seat value it carries. Both cases (see observe
     # below) fully replace the seat rather than modifying it, so a plain
@@ -45,34 +52,57 @@ class _ClientState:
         GAME_OVER: lambda payload: None,
     }
 
-    def __init__(self, seat: Optional[str] = None):
+    def __init__(self, seat: Optional[str] = None, board_height: Optional[int] = None):
         self.seat = seat
+        self.board_height = board_height
 
     def observe(self, payload: dict) -> None:
         seat_getter = self._SEAT_BY_MESSAGE_TYPE.get(payload.get("type"))
         if seat_getter is not None:
             self.seat = seat_getter(payload)
+        if "board_height" in payload:  # the periodic snapshot broadcast (see snapshot_to_json) has no "type" at all
+            self.board_height = payload["board_height"]
 
 
-# Typed shorthand -> wire command (see server/protocol.py). The connection's
-# own color is implicit (whichever seat matchmaking assigned), so a player
-# never has to type "W"/"B" themselves:
+# Typed shorthand -> a real MoveMessage/JumpMessage (see server/protocol.py's
+# command_from_message, and boardio.algebraic_notation.parse_square for the
+# text->Position half of this). The connection's own color is implicit
+# (whichever seat matchmaking assigned), so a player never has to type
+# "W"/"B" themselves:
 #   "e2e4"     -> move
 #   "jump e4"  -> jump
-def build_command(raw_input: str, seat: str) -> str:
+def build_command(raw_input: str, seat: str, board_height: int) -> Union[MoveMessage, JumpMessage]:
     text = raw_input.strip()
     if not text:
         raise InputError("empty input")
 
-    letter = COLOR_PREFIX[seat]
     parts = text.split(None, 1)
 
     if parts[0].lower() == "jump":
         if len(parts) < 2 or not parts[1].strip():
             raise InputError("jump requires a square, e.g. 'jump e4'")
-        return build_jump(seat, parts[1].strip())
+        return build_jump(seat, _parse_typed_square(parts[1].strip(), board_height))
 
-    return f"{letter}{text}"
+    # A move's source/dest are both fixed-width squares (one file letter,
+    # then digits) with no separator, so the split point is wherever the
+    # rank digits of the first square end and the second square's file
+    # letter begins.
+    split = 1
+    while split < len(text) and text[split].isdigit():
+        split += 1
+    if split >= len(text):
+        raise InputError(f"malformed move: '{text}'")
+
+    source = _parse_typed_square(text[:split], board_height)
+    destination = _parse_typed_square(text[split:], board_height)
+    return build_move(seat, source, destination)
+
+
+def _parse_typed_square(square: str, board_height: int):
+    try:
+        return parse_square(square, board_height)
+    except ValueError as error:
+        raise InputError(str(error)) from error
 
 
 # A connection's own reply to something it just sent (login_ack, play_ack,
@@ -103,15 +133,15 @@ async def _read_commands(websocket, state: _ClientState) -> None:
         lowered = text.lower()
 
         if lowered == _PLAY_INPUT:
-            await websocket.send(build_play())
+            await websocket.send(encode_json_message(PlayMessage()))
             continue
 
         if lowered == _CREATE_ROOM_INPUT:
-            await websocket.send(build_create_room())
+            await websocket.send(encode_json_message(CreateRoomMessage()))
             continue
 
         if lowered == _CANCEL_ROOM_INPUT:
-            await websocket.send(build_cancel_room())
+            await websocket.send(encode_json_message(CancelRoomMessage()))
             continue
 
         if lowered.startswith(_JOIN_ROOM_PREFIX):
@@ -119,19 +149,19 @@ async def _read_commands(websocket, state: _ClientState) -> None:
             if not room_id:
                 print("(usage: 'join room <id>')")
                 continue
-            await websocket.send(build_join_room(room_id))
+            await websocket.send(encode_json_message(JoinRoomMessage(room_id=room_id)))
             continue
 
-        if state.seat is None:
+        if state.seat is None or state.board_height is None:
             print("(not seated yet - type 'play', 'create room', or 'join room <id>')")
             continue
 
         try:
-            command = build_command(text, state.seat)
+            command = build_command(text, state.seat, state.board_height)
         except InputError as error:
             print(f"(ignored: {error})")
             continue
-        await websocket.send(command)
+        await websocket.send(encode_json_message(command))
 
 
 async def _main() -> None:  # pragma: no cover
@@ -140,7 +170,7 @@ async def _main() -> None:  # pragma: no cover
 
     uri = f"ws://{HOST}:{PORT}"
     async with websockets.connect(uri) as websocket:
-        await websocket.send(build_login(username, password))
+        await websocket.send(encode_json_message(LoginMessage(username=username, password=password)))
         login_ack = await _recv_of_type(websocket, LOGIN_ACK)
         if not login_ack["accepted"]:
             print(f"Login failed: {login_ack['reason']}")

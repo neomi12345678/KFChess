@@ -19,12 +19,19 @@ table and had disconnect_countdown/ack write straight into this object's
 own fields - a hand-rolled, string-keyed Subject/Observer that only this
 class could ever add a listener to, and that mixed wire-parsing with view
 state in one place.
+
+apply_message takes whatever client/network_client.py's poll_messages()
+already decoded - a registered protocol dataclass, or SnapshotBroadcast for
+the one payload that isn't one (see that module's own docstring) - never a
+raw dict itself; this class's own snapshot branch just unwraps
+SnapshotBroadcast.payload rather than re-detecting a snapshot by its shape.
 """
 
 import time
 from dataclasses import dataclass
 from typing import Optional
 
+from client.network_client import SnapshotBroadcast
 from client.network_message_adapter import DisconnectCountdownEvent, MoveRejectedEvent, NetworkMessageAdapter
 from events.bus import Bus
 from events.game_animations import GameAnimationCues
@@ -136,10 +143,10 @@ class GameViewState:
     def begin_batch(self) -> None:
         self.status_banner.begin_batch()
 
-    def apply_message(self, message: dict) -> None:
-        if "pieces" in message:
-            self.snapshot = snapshot_from_json(message)
-            self.panel_state.update_from_json(message)
+    def apply_message(self, message: object) -> None:
+        if isinstance(message, SnapshotBroadcast):
+            self.snapshot = snapshot_from_json(message.payload)
+            self.panel_state.update_from_json(message.payload)
             self.bus.publish(SnapshotAppliedEvent())
             return
 

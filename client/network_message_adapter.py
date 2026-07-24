@@ -1,13 +1,14 @@
-"""Translates raw wire messages (JSON dicts, as received by
-client/network_client.py's poll_messages()) into typed domain events
-published on an events/bus.py Bus - the network counterpart to
-events/bus_bridge.py's BusBridge, which does the same job translating a
-local GameEngine's own on_move_logged/on_arrival calls instead of wire JSON.
+"""Translates already-decoded wire messages (typed items, as put on
+client/network_client.py's queue by its own _decode_incoming - see that
+module's own docstring) into typed domain events published on an
+events/bus.py Bus - the network counterpart to events/bus_bridge.py's
+BusBridge, which does the same job translating a local GameEngine's own
+on_move_logged/on_arrival calls instead of wire JSON.
 
 Decoding a raw dict into its own protocol.lobby_messages/protocol.game_messages
-dataclass (protocol/registry.py's message_from_dict - the "which type has
-which fields" table) is deliberately
-not this class's own job, so apply() never re-lists a message's fields by
+dataclass (protocol/registry.py's message_from_dict) already happened before
+apply() ever sees a message - client/network_client.py's own receive loop is
+the one place that runs, so apply() never re-lists a message's fields by
 hand; this class only ever decides which *typed* wire message translates to
 which Bus event, if any. It never decides what a DisconnectCountdownEvent or
 a MoveRejectedEvent *means* to anyone downstream (see
@@ -34,7 +35,6 @@ from protocol.game_messages import (
     GameOverMessage,
     MoveLoggedMessage,
 )
-from protocol.registry import message_from_dict
 
 # Network-only events - nothing about a local game (play.py/game_builder.py)
 # ever produces or subscribes to these, unlike RemoteCaptureEvent/
@@ -69,16 +69,14 @@ class NetworkMessageAdapter:
     # Silently ignores any message this has no factory for - the same
     # "unknown type is a no-op" behavior client/game_view_state.py's
     # apply_message had before this class existed. Covers both a message
-    # type message_from_dict doesn't recognize at all (decoded is None) and
-    # one it decodes fine but this class has no translation for.
-    def apply(self, message: dict) -> None:
-        decoded = message_from_dict(message)
-        if decoded is None:
-            return
-        factory = self._event_factories.get(type(decoded))
+    # type client/network_client.py's own decode step didn't recognize at
+    # all (still a raw dict by the time it gets here) and one that decoded
+    # fine but this class has no translation for.
+    def apply(self, message: object) -> None:
+        factory = self._event_factories.get(type(message))
         if factory is None:
             return
-        event = factory(decoded)
+        event = factory(message)
         if event is not None:
             self._bus.publish(event)
 

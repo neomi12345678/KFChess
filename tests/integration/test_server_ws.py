@@ -17,7 +17,12 @@ import json
 import pytest
 import websockets
 
+from boardio.algebraic_notation import parse_square
 from boardio.board_parser import parse
+from model.piece import BLACK, WHITE
+from protocol.game_messages import build_jump, build_move
+from protocol.lobby_messages import CancelRoomMessage, CreateRoomMessage, JoinRoomMessage, LoginMessage, PlayMessage
+from protocol.registry import encode_json_message
 from server.accounts import UserStore
 from server.accounts_db import open_accounts_database
 from server.rating_store import RatingStore
@@ -41,23 +46,41 @@ async def recv_of_type(websocket, message_type: str, timeout: float = 2.0) -> di
 
 
 async def login(websocket, username: str, password: str = "secret123") -> dict:
-    await websocket.send(f"LOGIN {username} {password}")
+    await websocket.send(encode_json_message(LoginMessage(username=username, password=password)))
     return await recv_of_type(websocket, "login_ack")
 
 
 async def play(websocket) -> dict:
-    await websocket.send("PLAY")
+    await websocket.send(encode_json_message(PlayMessage()))
     return await recv_of_type(websocket, "play_ack")
 
 
 async def create_room(websocket) -> dict:
-    await websocket.send("CREATE_ROOM")
+    await websocket.send(encode_json_message(CreateRoomMessage()))
     return await recv_of_type(websocket, "create_room_ack")
 
 
 async def join_room(websocket, room_id: str) -> dict:
-    await websocket.send(f"JOIN_ROOM {room_id}")
+    await websocket.send(encode_json_message(JoinRoomMessage(room_id=room_id)))
     return await recv_of_type(websocket, "join_room_ack")
+
+
+async def cancel_room(websocket) -> dict:
+    await websocket.send(encode_json_message(CancelRoomMessage()))
+    return await recv_of_type(websocket, "cancel_room_ack")
+
+
+# Algebraic squares in, over the wire as a real Position either way (see
+# protocol/game_messages.py's own docstring on why) - board_height is
+# explicit per call since these tests run against boards of very different
+# sizes (STARTING_BOARD is 3 rows, KING_CAPTURE_BOARD is 1).
+async def send_move(websocket, color: str, source: str, destination: str, board_height: int) -> None:
+    message = build_move(color, parse_square(source, board_height), parse_square(destination, board_height))
+    await websocket.send(encode_json_message(message))
+
+
+async def send_jump(websocket, color: str, square: str, board_height: int) -> None:
+    await websocket.send(encode_json_message(build_jump(color, parse_square(square, board_height))))
 
 
 @contextlib.asynccontextmanager
@@ -135,7 +158,7 @@ def test_play_before_login_is_rejected():
         async with running_server() as server:
             uri = f"ws://localhost:{server.bound_port}"
             async with websockets.connect(uri) as ws:
-                await ws.send("PLAY")
+                await ws.send(encode_json_message(PlayMessage()))
                 message = json.loads(await ws.recv())
 
                 assert message == {"type": "error", "message": "login_required"}
@@ -246,7 +269,7 @@ def test_move_command_when_not_in_any_game_is_rejected():
             async with websockets.connect(uri) as ws:
                 await login(ws, "alice")
                 # Logged in, but never played - no active game to belong to.
-                await ws.send("Wa3c3")
+                await send_move(ws, WHITE, "a3", "c3", board_height=3)
                 ack = await recv_of_type(ws, "ack")
 
                 assert ack == {"type": "ack", "accepted": False, "reason": "not_in_game"}
@@ -273,7 +296,7 @@ def test_move_after_match_gets_an_ack_and_the_next_broadcast_reflects_it():
                 # board_height, see boardio.algebraic_notation.square_name).
                 # Sliding it 2 squares to "c3" (0, 2) is legal for a rook,
                 # unlike a king (see rules/piece_rules.py's KingRule).
-                await a.send("Wa3c3")
+                await send_move(a, WHITE, "a3", "c3", board_height=3)
                 ack = await recv_of_type(a, "ack")
                 assert ack == {"type": "ack", "accepted": True, "reason": "ok"}
 
@@ -308,7 +331,7 @@ def test_broadcast_carries_the_moves_log_and_score_panel_data():
                 await recv_of_type(a, "seat")  # alice = white
                 await recv_of_type(b, "seat")  # bob = black
 
-                await a.send("Wa1b1")
+                await send_move(a, WHITE, "a1", "b1", board_height=1)
                 await recv_of_type(a, "ack")
 
                 # Drains real broadcasts until one carries the just-logged
@@ -351,7 +374,7 @@ def test_broadcast_carries_a_move_logged_and_a_capture_wire_event():
                 await recv_of_type(a, "seat")  # alice = white
                 await recv_of_type(b, "seat")  # bob = black
 
-                await a.send("Wa1b1")
+                await send_move(a, WHITE, "a1", "b1", board_height=1)
                 await recv_of_type(a, "ack")
 
                 move_logged = await recv_of_type(a, "move_logged", timeout=5.0)
@@ -375,8 +398,8 @@ def test_wrong_seat_command_is_rejected_before_reaching_the_engine():
                 await recv_of_type(a, "seat")  # alice = white
                 await recv_of_type(b, "seat")  # bob = black
 
-                # bob (black) tries to move using white's color letter.
-                await b.send("Wa1a2")
+                # bob (black) tries to move using white's own color.
+                await send_move(b, WHITE, "a1", "a2", board_height=3)
                 ack = await recv_of_type(b, "ack")
 
                 assert ack == {"type": "ack", "accepted": False, "reason": "wrong_seat"}
@@ -400,7 +423,7 @@ def test_game_over_broadcasts_ratings_and_frees_the_slot_for_a_new_match():
                 assert (await recv_of_type(a, "seat"))["color"] == "white"
                 assert (await recv_of_type(b, "seat"))["color"] == "black"
 
-                await a.send("Wa1b1")
+                await send_move(a, WHITE, "a1", "b1", board_height=1)
                 ack = await recv_of_type(a, "ack")
                 assert ack == {"type": "ack", "accepted": True, "reason": "ok"}
 
@@ -482,7 +505,7 @@ def test_disconnected_player_can_reconnect_within_the_grace_window_and_resume():
                     # board fails for an unrelated reason - no black piece
                     # exists on STARTING_BOARD - but "not_in_game" is
                     # exactly what reconnection must have prevented).
-                    await b2.send("Ba1a2")
+                    await send_move(b2, BLACK, "a1", "a2", board_height=3)
                     ack = await recv_of_type(b2, "ack")
                     assert ack["reason"] != "not_in_game"
 
@@ -524,7 +547,7 @@ def test_reconnecting_before_the_stale_socket_closes_does_not_evict_the_new_conn
                     # bob, via b2, is still recognized as the seated player -
                     # "not_in_game" is exactly what a wrongful eviction would
                     # produce.
-                    await b2.send("Ba1a2")
+                    await send_move(b2, BLACK, "a1", "a2", board_height=3)
                     ack = await recv_of_type(b2, "ack")
                     assert ack["reason"] != "not_in_game"
 
@@ -608,7 +631,7 @@ def test_a_second_joiner_becomes_a_spectator_and_gets_the_board_immediately():
 
                 # A spectator can't move - it must be rejected before
                 # reaching the engine, same as a wrong-seat player command.
-                await c.send("Wa1a2")
+                await send_move(c, WHITE, "a1", "a2", board_height=3)
                 ack = await recv_of_type(c, "ack")
                 assert ack == {"type": "ack", "accepted": False, "reason": "not_in_game"}
 
@@ -628,8 +651,7 @@ def test_cancel_room_frees_the_creator_before_an_opponent_joins():
                 await login(a, "alice")
                 room_id = (await create_room(a))["room_id"]
 
-                await a.send("CANCEL_ROOM")
-                ack = await recv_of_type(a, "cancel_room_ack")
+                ack = await cancel_room(a)
                 assert ack == {"type": "cancel_room_ack", "accepted": True}
 
                 # alice is free again - she can queue for PLAY without
@@ -651,8 +673,7 @@ def test_cancel_room_after_an_opponent_joined_is_rejected():
                 await join_room(b, room_id)
                 await recv_of_type(a, "seat")
 
-                await a.send("CANCEL_ROOM")
-                ack = await recv_of_type(a, "cancel_room_ack")
+                ack = await cancel_room(a)
                 assert ack == {"type": "cancel_room_ack", "accepted": False, "reason": "already_started"}
 
     asyncio.run(scenario())
@@ -687,7 +708,7 @@ def test_play_and_room_run_as_independent_parallel_tracks():
 
                 # A move in the room game shows up on carol's own board,
                 # not alice's - the two games never cross-talk.
-                await c.send("Wa3c3")
+                await send_move(c, WHITE, "a3", "c3", board_height=3)
                 ack = await recv_of_type(c, "ack")
                 assert ack == {"type": "ack", "accepted": True, "reason": "ok"}
 
@@ -708,7 +729,7 @@ def test_room_game_over_frees_every_member_for_a_new_room_or_match():
                 assert (await recv_of_type(a, "seat"))["color"] == "white"
                 assert (await recv_of_type(b, "seat"))["color"] == "black"
 
-                await a.send("Wa1b1")
+                await send_move(a, WHITE, "a1", "b1", board_height=1)
                 await recv_of_type(a, "ack")
 
                 game_over = await recv_of_type(a, "game_over", timeout=5.0)

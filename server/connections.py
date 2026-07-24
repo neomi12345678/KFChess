@@ -5,12 +5,13 @@ goes through here instead of calling websocket.send directly.
 """
 
 import json
-from dataclasses import asdict, is_dataclass
+from dataclasses import is_dataclass
 from typing import Dict, Union
 
 import websockets
 
 from protocol.game_messages import ErrorMessage
+from protocol.registry import message_to_dict
 
 # Every outgoing control message is one of protocol.lobby_messages/
 # protocol.game_messages' frozen dataclasses (ErrorMessage stands in for the
@@ -21,16 +22,15 @@ from protocol.game_messages import ErrorMessage
 WirePayload = Union[ErrorMessage, dict]
 
 
-# A dataclass field only has a default (None) when that message genuinely
-# omits it sometimes (see protocol/lobby_messages.py's and
-# protocol/game_messages.py's own docstrings on each message) -
-# stripping those Nones here, in the one place every send funnels through,
-# is what keeps the actual bytes on the wire identical to before these
-# dataclasses existed, so no client-side parsing needed to change.
+# The plain-dict snapshot/panel broadcast passes through unchanged; every
+# dataclass payload goes through protocol.registry's own message_to_dict -
+# the same encode step client/network_client.py's outgoing side and
+# server/ws_server.py's incoming decode share, so a dataclass's wire shape
+# is defined in exactly one place regardless of which direction it travels.
 def _as_wire_dict(payload: WirePayload) -> dict:
     if not is_dataclass(payload):
         return payload
-    return {key: value for key, value in asdict(payload).items() if value is not None}
+    return message_to_dict(payload)
 
 
 class ConnectionRegistry:

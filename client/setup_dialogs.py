@@ -30,6 +30,7 @@ from tkinter import ttk
 from typing import List, Optional
 
 from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
+from protocol.lobby_messages import LoginAckMessage
 from protocol.types import Role
 
 _root: Optional[tk.Tk] = None
@@ -87,11 +88,11 @@ def _set_widgets_enabled(widgets: List[tk.Widget], enabled: bool) -> None:
 
 
 # Prompts for username/password, mirroring the old _prompt_login's "loop on
-# rejection, let them try again" UX. Returns the accepted login_ack dict, or
+# rejection, let them try again" UX. Returns the accepted LoginAckMessage, or
 # raises SetupCancelled if the window is closed. Does NOT destroy the root
 # on success - run_game_setup (the only caller that ever follows a
 # successful login) reuses the same window.
-def run_login(client: NetworkGameClient) -> dict:
+def run_login(client: NetworkGameClient) -> LoginAckMessage:
     root = _get_root()
     root.title("KFChess Login")
     for child in root.winfo_children():
@@ -158,9 +159,9 @@ def run_login(client: NetworkGameClient) -> dict:
             root.after(50, poll)
             return
 
-        if not payload["accepted"]:
+        if not payload.accepted:
             _set_widgets_enabled(controls, enabled=True)
-            status_var.set(f"Login failed: {payload['reason']}")
+            status_var.set(f"Login failed: {payload.reason}")
             root.after(50, poll)
             return
 
@@ -248,8 +249,8 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
 
         def worker() -> None:
             play_ack = client.play()
-            if not play_ack["accepted"]:
-                result_queue.put(("retry", f"Could not queue: {play_ack['reason']}"))
+            if not play_ack.accepted:
+                result_queue.put(("retry", f"Could not queue: {play_ack.reason}"))
                 return
             try:
                 seat_message = client.wait_for_seat()
@@ -259,7 +260,7 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
             except NetworkClientError:
                 result_queue.put(("retry", "Lost connection while waiting for a match."))
                 return
-            result_queue.put(("seated", seat_message["color"]))
+            result_queue.put(("seated", seat_message.color))
 
         start(worker)
 
@@ -268,10 +269,10 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
 
         def worker() -> None:
             create_ack = client.create_room()
-            if not create_ack["accepted"]:
-                result_queue.put(("retry", f"Could not create a room: {create_ack['reason']}"))
+            if not create_ack.accepted:
+                result_queue.put(("retry", f"Could not create a room: {create_ack.reason}"))
                 return
-            room_id = create_ack["room_id"]
+            room_id = create_ack.room_id
             result_queue.put(("room_created", room_id))
             result_queue.put(("info", f"Room created: {room_id} - waiting for an opponent..."))
             try:
@@ -283,7 +284,7 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
             except NetworkClientError:
                 result_queue.put(("retry", "Lost connection while waiting for an opponent."))
                 return
-            result_queue.put(("seated", seat_message["color"]))
+            result_queue.put(("seated", seat_message.color))
 
         start(worker)
 
@@ -297,10 +298,10 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
 
         def worker() -> None:
             join_ack = client.join_room(room_id)
-            if not join_ack["accepted"]:
-                result_queue.put(("retry", f"Could not join room {room_id}: {join_ack['reason']}"))
+            if not join_ack.accepted:
+                result_queue.put(("retry", f"Could not join room {room_id}: {join_ack.reason}"))
                 return
-            if join_ack["role"] == Role.SPECTATOR:
+            if join_ack.role == Role.SPECTATOR:
                 result_queue.put(("spectate", None))
                 return
             result_queue.put(("info", f"Joined room {room_id} - waiting to be seated..."))
@@ -309,7 +310,7 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
             except NetworkClientError:
                 result_queue.put(("retry", "Lost connection while waiting to be seated."))
                 return
-            result_queue.put(("seated", seat_message["color"]))
+            result_queue.put(("seated", seat_message.color))
 
         start(worker)
 

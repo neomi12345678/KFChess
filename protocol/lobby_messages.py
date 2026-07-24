@@ -1,11 +1,11 @@
-"""Lobby-family wire vocabulary: the login/matchmaking/room commands a
-client builds and sends as plain text (build_login/build_play/
-build_create_room/build_cancel_room/build_join_room - see
-server/protocol.py's parse_login/is_play_command/is_create_room_command/
-is_cancel_room_command/parse_join_room, which parse these back apart
-server-side), and the dataclasses the server acks each of them with. Each
-ack class registers itself with registry.register() right where it's
-defined - see registry.py's own docstring for why.
+"""Lobby-family wire vocabulary: the login/matchmaking/room messages a
+client sends (LoginMessage/PlayMessage/CreateRoomMessage/CancelRoomMessage/
+JoinRoomMessage), and the dataclasses the server acks each of them with.
+Every class here registers itself with registry.register() right where
+it's defined - see registry.py's own docstring for why, and for
+message_to_dict/encode_json_message/decode_json_message, the same
+encode/decode pair both directions (this family and game_messages.py's)
+share.
 
 game_messages.py holds the sibling family for in-game (not lobby) traffic:
 moves/jumps/captures/game-over/disconnects.
@@ -16,34 +16,52 @@ from typing import Optional
 
 from protocol.registry import register
 from protocol.types import (
+    CANCEL_ROOM,
     CANCEL_ROOM_ACK,
+    CREATE_ROOM,
     CREATE_ROOM_ACK,
+    JOIN_ROOM,
     JOIN_ROOM_ACK,
+    LOGIN,
     LOGIN_ACK,
     MATCHMAKING_TIMEOUT,
+    PLAY,
     PLAY_ACK,
     Role,
 )
 
 
-def build_login(username: str, password: str) -> str:
-    return f"LOGIN {username} {password}"
+@register(LOGIN)
+@dataclass(frozen=True)
+class LoginMessage:
+    username: str
+    password: str
+    type: str = LOGIN
 
 
-def build_play() -> str:
-    return "PLAY"
+@register(PLAY)
+@dataclass(frozen=True)
+class PlayMessage:
+    type: str = PLAY
 
 
-def build_create_room() -> str:
-    return "CREATE_ROOM"
+@register(CREATE_ROOM)
+@dataclass(frozen=True)
+class CreateRoomMessage:
+    type: str = CREATE_ROOM
 
 
-def build_cancel_room() -> str:
-    return "CANCEL_ROOM"
+@register(CANCEL_ROOM)
+@dataclass(frozen=True)
+class CancelRoomMessage:
+    type: str = CANCEL_ROOM
 
 
-def build_join_room(room_id: str) -> str:
-    return f"JOIN_ROOM {room_id}"
+@register(JOIN_ROOM)
+@dataclass(frozen=True)
+class JoinRoomMessage:
+    room_id: str
+    type: str = JOIN_ROOM
 
 
 # One dataclass per server->client control message. Each mirrors its

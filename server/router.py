@@ -2,13 +2,13 @@
 GameServer so the actual routing *decisions* (is this PLAY allowed right
 now, does this JOIN_ROOM seat an opponent or a spectator, is this move
 legal for the seat that sent it) can be exercised with plain Python values
-- a username, an already-parsed server/protocol.py Command/LoginRequest, a
-room id - and none of this class's own methods are async or ever touch a
-websocket, JSON, or a raw dict: every method here takes typed arguments and
-returns a typed decision (one of protocol/lobby_messages.py's or
-protocol/game_messages.py's ack dataclasses, or a small decision dataclass
-bundling one with what the caller must still do asynchronously - send it,
-and/or start a room's game).
+- a username, an already-decoded wire message (protocol/lobby_messages.py's/
+protocol/game_messages.py's own registered dataclasses), a room id - and
+none of this class's own methods are async or ever touch a websocket, JSON,
+or a raw dict: every method here takes typed arguments and returns a typed
+decision (one of protocol/lobby_messages.py's or protocol/game_messages.py's
+ack dataclasses, or a small decision dataclass bundling one with what the
+caller must still do asynchronously - send it, and/or start a room's game).
 
 server/ws_server.py stays the async half: accepting connections, decoding
 raw wire text into the typed values this class expects (see its own
@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 from model.piece import BLACK, WHITE
-from protocol.game_messages import AckMessage, ErrorMessage
+from protocol.game_messages import AckMessage, JumpMessage, MoveMessage
 from protocol.lobby_messages import (
     CancelRoomAckMessage,
     CreateRoomAckMessage,
@@ -36,7 +36,7 @@ from protocol.types import Role
 from server.game_loop import GameLoop, names_for
 from server.interfaces import MessageSender, RatingRepository
 from server.participant import ParticipantState, participant_state
-from server.protocol import ProtocolError, parse_command
+from server.protocol import command_from_message
 from server.rooms import Room, RoomError, RoomRegistry
 
 _logger = logging.getLogger(__name__)
@@ -176,23 +176,19 @@ class CommandRouter:
         _logger.info("'%s' cancelled their room", username)
         return CancelRoomAckMessage(accepted=True)
 
-    def decide_game_command(self, username: str, message: str) -> Union[AckMessage, ErrorMessage]:
+    def decide_game_command(self, username: str, message: Union[MoveMessage, JumpMessage]) -> AckMessage:
         game = self._loop.active_game_for(username)
         seat = game.session.seat_for_username(username) if game is not None else None
         if seat is None:
             return AckMessage(accepted=False, reason="not_in_game")
 
-        try:
-            command = parse_command(message, game.session.board_height)
-        except ProtocolError as error:
-            return ErrorMessage(message=str(error))
-
         # A connection may only move the color it was seated as - the
-        # command's own color letter is otherwise just a client-asserted
-        # claim, not something GameEngine checks (see server/session.py).
-        if command.color != seat:
+        # message's own color is otherwise just a client-asserted claim, not
+        # something GameEngine checks (see server/session.py).
+        if message.color != seat:
             return AckMessage(accepted=False, reason="wrong_seat")
 
+        command = command_from_message(message)
         result = game.session.apply_command(command)
         return AckMessage(accepted=result.is_accepted, reason=result.reason)
 

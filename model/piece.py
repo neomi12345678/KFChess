@@ -8,8 +8,8 @@ from model.position import Position
 # code free of the "w"/"K" text tokens used only for parsing and printing.
 # A str subclass, not a plain Enum, for the same reason ActionResultReason
 # below is one: every existing `color == WHITE`-style comparison, dict-key
-# lookup (COLOR_BY_LETTER, protocol/types.py's COLOR_PREFIX), and
-# json.dumps(piece.color) call site keeps working unchanged, since a str
+# lookup (COLOR_BY_LETTER), and json.dumps(piece.color) call site keeps
+# working unchanged, since a str
 # Enum member compares equal to - and serializes as - its own string value.
 # __str__ is overridden back to the plain value on purpose: Python 3.11+
 # changed Enum.__format__ to render a mixed-in member as "Color.WHITE" in

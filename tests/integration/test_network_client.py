@@ -14,8 +14,13 @@ import contextlib
 
 import pytest
 
+from boardio.algebraic_notation import parse_square
 from boardio.board_parser import parse
-from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
+from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient, SnapshotBroadcast
+from model.piece import BLACK, WHITE
+from protocol.game_messages import AckMessage, SeatMessage, build_move
+from protocol.lobby_messages import JoinRoomAckMessage, LoginAckMessage, PlayAckMessage
+from protocol.registry import encode_json_message
 from server.accounts import UserStore
 from server.accounts_db import open_accounts_database
 from server.rating_store import RatingStore
@@ -59,18 +64,18 @@ def test_login_play_and_get_seated_over_a_real_connection():
             try:
                 login_a = await _in_thread(client_a.login, "alice", "secret123")
                 login_b = await _in_thread(client_b.login, "bob", "hunter2")
-                assert login_a == {"type": "login_ack", "accepted": True, "username": "alice", "rating": 1200}
-                assert login_b["accepted"] is True
+                assert login_a == LoginAckMessage(accepted=True, username="alice", rating=1200)
+                assert login_b.accepted is True
 
                 play_a = await _in_thread(client_a.play)
                 play_b = await _in_thread(client_b.play)
-                assert play_a == {"type": "play_ack", "accepted": True, "reason": "queued"}
-                assert play_b["accepted"] is True
+                assert play_a == PlayAckMessage(accepted=True, reason="queued")
+                assert play_b.accepted is True
 
                 seat_a = await _in_thread(client_a.wait_for_seat)
                 seat_b = await _in_thread(client_b.wait_for_seat)
-                assert seat_a == {"type": "seat", "color": "white"}
-                assert seat_b == {"type": "seat", "color": "black"}
+                assert seat_a == SeatMessage(color=WHITE)
+                assert seat_b == SeatMessage(color=BLACK)
             finally:
                 client_a.close()
                 client_b.close()
@@ -94,7 +99,8 @@ def test_send_command_and_poll_messages_reflect_a_real_move():
                 # Board is 3x3 with a lone white rook at (0, 0) - "a3" in
                 # this board's own square-naming convention. Sliding it to
                 # "c3" (0, 2) is legal for a rook.
-                client_a.send_command("Wa3c3")
+                message = build_move(WHITE, parse_square("a3", board_height=3), parse_square("c3", board_height=3))
+                client_a.send_command(encode_json_message(message))
 
                 deadline = asyncio.get_event_loop().time() + 5.0
                 got_ack = False
@@ -102,11 +108,12 @@ def test_send_command_and_poll_messages_reflect_a_real_move():
                 while asyncio.get_event_loop().time() < deadline and not arrived:
                     await asyncio.sleep(0.05)
                     for message in await _in_thread(client_a.poll_messages):
-                        if message.get("type") == "ack":
-                            assert message == {"type": "ack", "accepted": True, "reason": "ok"}
+                        if isinstance(message, AckMessage):
+                            assert message == AckMessage(accepted=True, reason="ok")
                             got_ack = True
-                        elif "pieces" in message:
-                            if message["pieces"][0]["kind"] == "rook" and message["pieces"][0]["col"] == 2.0:
+                        elif isinstance(message, SnapshotBroadcast):
+                            pieces = message.payload["pieces"]
+                            if pieces and pieces[0]["kind"] == "rook" and pieces[0]["col"] == 2.0:
                                 arrived = True
 
                 assert got_ack
@@ -132,7 +139,7 @@ def test_login_with_the_wrong_password_raises_instead_of_hanging():
             client = await _in_thread(NetworkGameClient, "localhost", server.bound_port)
             try:
                 login_ack = await _in_thread(client.login, "alice", "wrong-password")
-                assert login_ack == {"type": "login_ack", "accepted": False, "reason": "wrong_password"}
+                assert login_ack == LoginAckMessage(accepted=False, reason="wrong_password")
             finally:
                 client.close()
 
@@ -190,16 +197,16 @@ def test_create_room_join_room_and_get_seated_over_a_real_connection():
                 await _in_thread(client_b.login, "bob", "hunter2")
 
                 created = await _in_thread(client_a.create_room)
-                assert created["accepted"] is True
-                room_id = created["room_id"]
+                assert created.accepted is True
+                room_id = created.room_id
 
                 joined = await _in_thread(client_b.join_room, room_id)
-                assert joined == {"type": "join_room_ack", "accepted": True, "room_id": room_id, "role": "opponent"}
+                assert joined == JoinRoomAckMessage(accepted=True, room_id=room_id, role="opponent")
 
                 seat_a = await _in_thread(client_a.wait_for_seat)
                 seat_b = await _in_thread(client_b.wait_for_seat)
-                assert seat_a == {"type": "seat", "color": "white"}
-                assert seat_b == {"type": "seat", "color": "black"}
+                assert seat_a == SeatMessage(color=WHITE)
+                assert seat_b == SeatMessage(color=BLACK)
             finally:
                 client_a.close()
                 client_b.close()
@@ -218,13 +225,13 @@ def test_joining_a_room_that_already_has_an_opponent_makes_a_spectator():
                 await _in_thread(client_b.login, "bob", "hunter2")
                 await _in_thread(client_c.login, "carol", "letmein")
 
-                room_id = (await _in_thread(client_a.create_room))["room_id"]
+                room_id = (await _in_thread(client_a.create_room)).room_id
                 await _in_thread(client_b.join_room, room_id)
                 await _in_thread(client_a.wait_for_seat)
                 await _in_thread(client_b.wait_for_seat)
 
                 joined = await _in_thread(client_c.join_room, room_id)
-                assert joined == {"type": "join_room_ack", "accepted": True, "room_id": room_id, "role": "spectator"}
+                assert joined == JoinRoomAckMessage(accepted=True, room_id=room_id, role="spectator")
 
                 # A spectator gets the board immediately, not just from the
                 # next tick's broadcast - same call play_online.py's own
@@ -233,7 +240,7 @@ def test_joining_a_room_that_already_has_an_opponent_makes_a_spectator():
                 saw_snapshot = False
                 while asyncio.get_event_loop().time() < deadline and not saw_snapshot:
                     for message in await _in_thread(client_c.poll_messages):
-                        if "pieces" in message:
+                        if isinstance(message, SnapshotBroadcast):
                             saw_snapshot = True
                     if not saw_snapshot:
                         await asyncio.sleep(0.05)
