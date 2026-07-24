@@ -7,13 +7,15 @@ import os
 from boardio.board_parser import parse as parse_board
 from boardio.starting_position import STARTING_BOARD
 from protocol.types import HOST, PORT
-from server.accounts import AccountStore
+from server.accounts import UserStore
+from server.accounts_db import open_accounts_database
+from server.rating_store import RatingStore
 from server.rooms import RoomStore
 from server.ws_server import GameServer
 
 # Alongside this file, not CWD-relative - a real, persistent file (unlike
-# tests, which each get their own ":memory:" AccountStore/RoomStore - see
-# server/accounts.py's and server/rooms.py's own db_path docstrings).
+# tests, which each get their own ":memory:" accounts database/RoomStore -
+# see server/accounts_db.py's and server/rooms.py's own db_path docstrings).
 DB_PATH = os.path.join(os.path.dirname(__file__), "accounts.db")
 ROOM_DB_PATH = os.path.join(os.path.dirname(__file__), "rooms.db")
 
@@ -28,9 +30,11 @@ def _new_board():
 
 
 async def _main() -> None:
-    account_store = AccountStore(DB_PATH)
+    accounts_database = open_accounts_database(DB_PATH)
+    user_store = UserStore(accounts_database)
+    rating_store = RatingStore(accounts_database)
     room_store = RoomStore(ROOM_DB_PATH)
-    server = GameServer(_new_board, account_store, host=HOST, port=PORT, room_store=room_store)
+    server = GameServer(_new_board, user_store, rating_store, host=HOST, port=PORT, room_store=room_store)
     _logger.info("KFChess server listening on ws://%s:%s", HOST, PORT)
     await server.run_forever()
 

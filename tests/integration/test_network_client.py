@@ -16,7 +16,9 @@ import pytest
 
 from boardio.board_parser import parse
 from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
-from server.accounts import AccountStore
+from server.accounts import UserStore
+from server.accounts_db import open_accounts_database
+from server.rating_store import RatingStore
 from server.ws_server import GameServer
 
 STARTING_BOARD = "wR . .\n. . .\n. . ."
@@ -24,9 +26,15 @@ STARTING_BOARD = "wR . .\n. . .\n. . ."
 
 @contextlib.asynccontextmanager
 async def running_server(tick_interval_s: float = 0.01, board_text: str = STARTING_BOARD, **server_kwargs):
-    account_store = AccountStore(":memory:")
+    accounts_database = open_accounts_database(":memory:")
     server = GameServer(
-        lambda: parse(board_text), account_store, host="localhost", port=0, tick_interval_s=tick_interval_s, **server_kwargs
+        lambda: parse(board_text),
+        UserStore(accounts_database),
+        RatingStore(accounts_database),
+        host="localhost",
+        port=0,
+        tick_interval_s=tick_interval_s,
+        **server_kwargs,
     )
     task = asyncio.create_task(server.run_forever())
     await server.wait_started()
@@ -36,7 +44,7 @@ async def running_server(tick_interval_s: float = 0.01, board_text: str = STARTI
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-        account_store.close()
+        accounts_database.connection.close()
 
 
 async def _in_thread(func, *args):

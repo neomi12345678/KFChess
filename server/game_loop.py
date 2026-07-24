@@ -24,6 +24,7 @@ from protocol.snapshot_codec import panel_to_json, snapshot_to_json
 from server.connections import WirePayload
 from server.interfaces import MessageSender, RatingRepository
 from server.matchmaking import MatchmakingQueue
+from server.publisher import NetworkPublisher
 from server.rooms import Room, RoomRegistry
 from server.session import OTHER_SEAT, GameSession
 
@@ -47,12 +48,15 @@ def names_for(session: GameSession) -> dict:
 
 # One running game plus the server-layer-only facts GameSession itself has
 # no business knowing: whether it came from a room at all (room_id is None
-# for a PLAY match), and who's merely watching it. GameSession stays exactly
-# as ignorant of rooms/spectators as it already is of websockets - see its
-# own docstring.
+# for a PLAY match), who's merely watching it, and the NetworkPublisher
+# translating this session's own domain events into wire messages (see
+# server/publisher.py - GameSession stays exactly as ignorant of rooms/
+# spectators/wire messages as it already is of websockets, see its own
+# docstring).
 @dataclass
 class ActiveGame:
     session: GameSession
+    publisher: NetworkPublisher
     room_id: Optional[str] = None
     spectator_usernames: Set[str] = field(default_factory=set)
 
@@ -61,7 +65,7 @@ class GameLoop:
     def __init__(
         self,
         board_factory: Callable[[], BoardRepresentation],
-        account_store: RatingRepository,
+        rating_store: RatingRepository,
         rooms: RoomRegistry,
         connections: MessageSender,
         matchmaking_timeout_ms: int,
@@ -69,7 +73,7 @@ class GameLoop:
         tick_interval_s: float = DEFAULT_TICK_INTERVAL_S,
     ):
         self._board_factory = board_factory
-        self._account_store = account_store
+        self._rating_store = rating_store
         self._rooms = rooms
         self._connections = connections
         self.matchmaking = MatchmakingQueue(timeout_ms=matchmaking_timeout_ms)
@@ -96,12 +100,12 @@ class GameLoop:
     async def start_room_game(self, room: Room) -> None:
         session = GameSession(
             self._board_factory(),
-            self._account_store,
+            self._rating_store,
             room.creator,
             room.opponent,
             disconnect_grace_ms=self._disconnect_grace_ms,
         )
-        game = ActiveGame(session=session, room_id=room.room_id)
+        game = ActiveGame(session=session, publisher=NetworkPublisher(session.bus), room_id=room.room_id)
         self._games[room.room_id] = game
 
         for seat, username in ((WHITE, room.creator), (BLACK, room.opponent)):
@@ -159,13 +163,15 @@ class GameLoop:
 
         session = GameSession(
             self._board_factory(),
-            self._account_store,
+            self._rating_store,
             white_username,
             black_username,
             disconnect_grace_ms=self._disconnect_grace_ms,
         )
         self._next_play_game_id += 1
-        self._games[f"play-{self._next_play_game_id}"] = ActiveGame(session=session)
+        self._games[f"play-{self._next_play_game_id}"] = ActiveGame(
+            session=session, publisher=NetworkPublisher(session.bus)
+        )
 
         for seat, username in ((WHITE, white_username), (BLACK, black_username)):
             await self._connections.send_to_username(username, SeatMessage(color=seat))
@@ -184,7 +190,7 @@ class GameLoop:
         # the very same tick() call that also ends the game, and a game that
         # just ended returns from this method early (see below) without
         # reaching the ordinary snapshot broadcast at its end.
-        for wire_event in session.drain_wire_events():
+        for wire_event in game.publisher.drain():
             await self._broadcast_to_game(game, wire_event)
 
         rating_update = session.finalize_ratings_if_game_over()

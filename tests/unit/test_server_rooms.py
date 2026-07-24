@@ -151,7 +151,7 @@ def test_close_of_an_already_gone_room_is_a_no_op():
 def store():
     # ":memory:" - a real SQLite database, just an isolated, disposable one
     # per test (see RoomStore's own db_path docstring, mirroring
-    # server/accounts.py's AccountStore fixture in test_server_accounts.py).
+    # tests/unit/test_user_store.py's own store fixture).
     store = RoomStore(":memory:")
     yield store
     store.close()

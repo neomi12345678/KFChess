@@ -1,25 +1,25 @@
 """Small Protocol shapes for the handful of GameSession/GameLoop
-dependencies that are genuinely narrower than the concrete class handed to
-them - not one per collaborator, just where a caller only ever uses a
-couple of methods off an otherwise much bigger class, so its own
-constructor should say so rather than pinning callers to the concrete
-class's full surface (login()/close()/the sqlite connection it owns, for
-AccountStore; set()/discard_if_current(), for ConnectionRegistry).
+dependencies worth naming as a contract in their own right, rather than
+pinning callers to a concrete class's full surface.
 
-server/accounts.py's AccountStore and server/connections.py's
-ConnectionRegistry already satisfy these structurally, unchanged - nothing
-here requires touching either class, only the type hints of the
-constructors that only ever need this much of them.
+RatingRepository is satisfied by server/rating_store.py's RatingStore
+as-is (the two shapes match on purpose - see RatingStore's own docstring)
+- naming it here still means GameSession/GameLoop's own constructors
+document exactly which two methods they need, without importing
+server/rating_store.py just for a type hint. MessageSender is genuinely
+narrower than server/connections.py's ConnectionRegistry: GameLoop only
+ever broadcasts to already-known usernames/websockets, never set()/
+discard_if_current() (server/ws_server.py's own connection-lifecycle
+bookkeeping alone, see its _handle_connection/_handle_login) - both
+already satisfy these structurally, unchanged.
 """
 
 from typing import Protocol
 
 
-# What server/session.py's GameSession actually calls on the AccountStore
+# What server/session.py's GameSession actually calls on the rating store
 # it's given - see finalize_ratings_if_game_over, the only place a
-# GameSession ever touches accounts at all. Never login()/close()/the
-# sqlite connection itself - those are server/ws_server.py's and
-# server/main.py's concern, not a single in-progress game's.
+# GameSession ever touches ratings at all.
 class RatingRepository(Protocol):
     def rating_for(self, username: str) -> int: ...
 

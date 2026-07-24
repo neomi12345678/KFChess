@@ -12,8 +12,9 @@ opponent, its spectators - so a room survives a server crash or restart
 server/ws_server.py's own docstring on how a room whose game was already
 running resumes as a *fresh* game once both players reconnect, not a replay
 of the board as it stood). Bundled into this module rather than a separate
-file the same way server/accounts.py bundles AccountStore alongside the
-Account/login logic it persists.
+file - unlike server/accounts.py's UserStore/server/rating_store.py's
+RatingStore, room membership and room persistence are one and the same
+concern here, not two genuinely distinct ones sharing a table.
 """
 
 import sqlite3
@@ -50,13 +51,14 @@ class RoomError(Exception):
 
 class RoomStore:
     """db_path has no default on purpose - same reasoning as
-    server/accounts.py's AccountStore: every call site must say explicitly
-    whether it means a real, persistent file (server/main.py) or an
-    isolated ":memory:" database (RoomRegistry's own default below, and
-    tests). Unlike AccountStore, nothing here ever runs off the asyncio
-    event-loop thread (RoomRegistry's mutations are all synchronous calls
-    from message handlers, never offloaded to an executor), so there's no
-    need for check_same_thread=False or a lock.
+    server/accounts_db.py's open_accounts_database: every call site must
+    say explicitly whether it means a real, persistent file
+    (server/main.py) or an isolated ":memory:" database (RoomRegistry's
+    own default below, and tests). Unlike the accounts database, nothing
+    here ever runs off the asyncio event-loop thread (RoomRegistry's
+    mutations are all synchronous calls from message handlers, never
+    offloaded to an executor), so there's no need for
+    check_same_thread=False or a lock.
     """
 
     def __init__(self, db_path: str):
