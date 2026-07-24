@@ -1,7 +1,9 @@
 from client.game_view_state import GameViewState
+from client.network_client import SnapshotBroadcast
 from events.game_animations import GAME_END_ANIMATION, GameAnimationCues
 from events.sound import CAPTURE_CUE, GAME_END_CUE, JUMP_CUE, MOVE_CUE, SoundCues
 from model.piece import BLACK, WHITE
+from protocol.game_messages import AckMessage, CaptureMessage, DisconnectCountdownMessage, GameOverMessage, MoveLoggedMessage
 
 
 def _snapshot_payload():
@@ -38,7 +40,7 @@ def test_a_snapshot_message_updates_the_board_and_panel_state():
     ]
     payload["move_log"][WHITE] = [{"notation": "a1a2", "elapsed_ms": 5}]
 
-    state.apply_message(payload)
+    state.apply_message(SnapshotBroadcast(payload=payload))
 
     assert len(state.snapshot.pieces) == 1
     assert state.panel_state.entries_for(WHITE)[0].notation == "a1a2"
@@ -48,7 +50,7 @@ def test_move_logged_with_is_jump_false_plays_the_move_cue():
     state = make_state()
     sound = SoundCues(state.bus)
 
-    state.apply_message({"type": "move_logged", "is_jump": False})
+    state.apply_message(MoveLoggedMessage(is_jump=False))
 
     assert sound.played == [MOVE_CUE]
 
@@ -57,7 +59,7 @@ def test_move_logged_with_is_jump_true_plays_the_jump_cue():
     state = make_state()
     sound = SoundCues(state.bus)
 
-    state.apply_message({"type": "move_logged", "is_jump": True})
+    state.apply_message(MoveLoggedMessage(is_jump=True))
 
     assert sound.played == [JUMP_CUE]
 
@@ -66,7 +68,7 @@ def test_capture_plays_the_capture_cue():
     state = make_state()
     sound = SoundCues(state.bus)
 
-    state.apply_message({"type": "capture"})
+    state.apply_message(CaptureMessage())
 
     assert sound.played == [CAPTURE_CUE]
 
@@ -79,8 +81,8 @@ def test_a_capturing_move_plays_both_cues_in_wire_order():
     state = make_state()
     sound = SoundCues(state.bus)
 
-    state.apply_message({"type": "move_logged", "is_jump": False})
-    state.apply_message({"type": "capture"})
+    state.apply_message(MoveLoggedMessage(is_jump=False))
+    state.apply_message(CaptureMessage())
 
     assert sound.played == [MOVE_CUE, CAPTURE_CUE]
 
@@ -90,7 +92,7 @@ def test_game_over_fires_a_game_ended_event():
     sound = SoundCues(state.bus)
     animations = GameAnimationCues(state.bus)
 
-    state.apply_message({"type": "game_over", "ratings": {WHITE: 1210, BLACK: 1190}})
+    state.apply_message(GameOverMessage(ratings={WHITE: 1210, BLACK: 1190}))
 
     assert sound.played == [GAME_END_CUE]
     assert animations.triggered == [GAME_END_ANIMATION]
@@ -99,7 +101,7 @@ def test_game_over_fires_a_game_ended_event():
 def test_disconnect_countdown_sets_the_status_message():
     state = make_state()
 
-    state.apply_message({"type": "disconnect_countdown", "seat": WHITE, "seconds_remaining": 7})
+    state.apply_message(DisconnectCountdownMessage(seat=WHITE, seconds_remaining=7))
 
     assert state.status_message == "Opponent disconnected - resigning in 7s unless they return"
 
@@ -107,7 +109,7 @@ def test_disconnect_countdown_sets_the_status_message():
 def test_a_rejected_ack_sets_the_status_message():
     state = make_state()
 
-    state.apply_message({"type": "ack", "accepted": False, "reason": "route_conflict"})
+    state.apply_message(AckMessage(accepted=False, reason="route_conflict"))
 
     assert state.status_message == "Illegal move: route_conflict"
 
@@ -115,7 +117,7 @@ def test_a_rejected_ack_sets_the_status_message():
 def test_an_accepted_ack_leaves_the_status_message_untouched():
     state = make_state()
 
-    state.apply_message({"type": "ack", "accepted": True, "reason": "ok"})
+    state.apply_message(AckMessage(accepted=True, reason="ok"))
 
     assert state.status_message is None
 
@@ -123,8 +125,8 @@ def test_an_accepted_ack_leaves_the_status_message_untouched():
 def test_status_message_prefers_the_disconnect_countdown_over_a_rejected_move():
     state = make_state()
 
-    state.apply_message({"type": "ack", "accepted": False, "reason": "route_conflict"})
-    state.apply_message({"type": "disconnect_countdown", "seat": WHITE, "seconds_remaining": 7})
+    state.apply_message(AckMessage(accepted=False, reason="route_conflict"))
+    state.apply_message(DisconnectCountdownMessage(seat=WHITE, seconds_remaining=7))
 
     assert state.status_message == "Opponent disconnected - resigning in 7s unless they return"
 
@@ -135,12 +137,12 @@ def test_end_batch_clears_a_stale_disconnect_countdown_once_a_snapshot_arrives_w
     # disconnected (see server/ws_server.py's _advance_game).
     state = make_state()
     state.begin_batch()
-    state.apply_message({"type": "disconnect_countdown", "seat": WHITE, "seconds_remaining": 7})
+    state.apply_message(DisconnectCountdownMessage(seat=WHITE, seconds_remaining=7))
     state.end_batch()
     assert state.status_message is not None
 
     state.begin_batch()
-    state.apply_message(_snapshot_payload())
+    state.apply_message(SnapshotBroadcast(payload=_snapshot_payload()))
     state.end_batch()
 
     assert state.status_message is None
@@ -149,8 +151,8 @@ def test_end_batch_clears_a_stale_disconnect_countdown_once_a_snapshot_arrives_w
 def test_end_batch_keeps_the_disconnect_countdown_while_still_being_rebroadcast():
     state = make_state()
     state.begin_batch()
-    state.apply_message(_snapshot_payload())
-    state.apply_message({"type": "disconnect_countdown", "seat": WHITE, "seconds_remaining": 7})
+    state.apply_message(SnapshotBroadcast(payload=_snapshot_payload()))
+    state.apply_message(DisconnectCountdownMessage(seat=WHITE, seconds_remaining=7))
     state.end_batch()
 
     assert state.status_message is not None

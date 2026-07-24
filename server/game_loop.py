@@ -12,13 +12,14 @@ _advance_game's own self._rooms.close on game over).
 """
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional, Set
 
 from model.board import BoardRepresentation
 from model.piece import BLACK, WHITE
-from protocol.game_messages import DisconnectCountdownMessage, GameOverMessage, SeatMessage
+from protocol.game_messages import DisconnectCountdownMessage, ErrorMessage, GameOverMessage, SeatMessage
 from protocol.lobby_messages import MatchmakingTimeoutMessage
 from protocol.snapshot_codec import panel_to_json, snapshot_to_json
 from server.connections import WirePayload
@@ -27,6 +28,8 @@ from server.matchmaking import MatchmakingQueue
 from server.publisher import NetworkPublisher
 from server.rooms import Room, RoomRegistry
 from server.session import OTHER_SEAT, GameSession
+
+_logger = logging.getLogger(__name__)
 
 # Mirrors play.py's frame loop (real elapsed wall-clock time, fractional ms
 # carried into the next tick rather than truncated away) so every networked
@@ -98,18 +101,8 @@ class GameLoop:
     # decided by then (create + join, not a rating-proximity scan), so
     # there's nothing left to wait for.
     async def start_room_game(self, room: Room) -> None:
-        session = GameSession(
-            self._board_factory(),
-            self._rating_store,
-            room.creator,
-            room.opponent,
-            disconnect_grace_ms=self._disconnect_grace_ms,
-        )
-        game = ActiveGame(session=session, publisher=NetworkPublisher(session.bus), room_id=room.room_id)
-        self._games[room.room_id] = game
-
-        for seat, username in ((WHITE, room.creator), (BLACK, room.opponent)):
-            await self._connections.send_to_username(username, SeatMessage(color=seat))
+        game = await self._start_game(room.room_id, room.creator, room.opponent, room_id=room.room_id)
+        session = game.session
 
         # Empty in the ordinary "opponent just joined" path - a room only
         # ever gains spectators after it stops being pending (see
@@ -145,8 +138,16 @@ class GameLoop:
             # list(...) up front - a game finishing mid-loop below mutates
             # self._games (see _advance_game), which would otherwise be
             # unsafe to iterate directly.
+            #
+            # try/except per game, not around the whole loop - every game
+            # shares this one tick task, so an unhandled exception from a
+            # single buggy/corrupted GameSession must not take every other
+            # concurrently-running game down with it (see _fail_game).
             for game_id, game in list(self._games.items()):
-                await self._advance_game(game_id, game, whole_ms)
+                try:
+                    await self._advance_game(game_id, game, whole_ms)
+                except Exception as error:
+                    await self._fail_game(game_id, game, error)
 
     async def _advance_matchmaking(self, whole_ms: int) -> None:
         for username in self.matchmaking.advance_time(whole_ms):
@@ -161,6 +162,19 @@ class GameLoop:
         self.matchmaking.remove(white_username)
         self.matchmaking.remove(black_username)
 
+        self._next_play_game_id += 1
+        await self._start_game(f"play-{self._next_play_game_id}", white_username, black_username)
+
+    # The one place a GameSession gets built and seated - a PLAY match
+    # (white_username/black_username already resolved by matchmaking's own
+    # rating-proximity scan) and a room's game (resolved by creator/opponent
+    # instead) are both just "two known usernames, ready to start now" by the
+    # time either caller gets here; game_id is "play-N" for the former, the
+    # room's own room_id for the latter (see this module's own docstring on
+    # why games are keyed that way).
+    async def _start_game(
+        self, game_id: str, white_username: str, black_username: str, room_id: Optional[str] = None
+    ) -> ActiveGame:
         session = GameSession(
             self._board_factory(),
             self._rating_store,
@@ -168,13 +182,13 @@ class GameLoop:
             black_username,
             disconnect_grace_ms=self._disconnect_grace_ms,
         )
-        self._next_play_game_id += 1
-        self._games[f"play-{self._next_play_game_id}"] = ActiveGame(
-            session=session, publisher=NetworkPublisher(session.bus)
-        )
+        game = ActiveGame(session=session, publisher=NetworkPublisher(session.bus), room_id=room_id)
+        self._games[game_id] = game
 
         for seat, username in ((WHITE, white_username), (BLACK, black_username)):
             await self._connections.send_to_username(username, SeatMessage(color=seat))
+
+        return game
 
     async def _advance_game(self, game_id: str, game: ActiveGame, whole_ms: int) -> None:
         session = game.session
@@ -211,6 +225,27 @@ class GameLoop:
         payload = snapshot_to_json(session.snapshot())
         payload.update(panel_to_json(session.move_log, session.score, names_for(session)))
         await self._broadcast_to_game(game, payload)
+
+    # Ends `game` the same way a normal game-over does (drop it from
+    # self._games, close its room if any) but for an unhandled exception
+    # from its own tick instead - the one difference being there's no
+    # GameOverMessage/ratings to send, since GameEngine itself never got to
+    # decide a winner. Deliberately defensive beyond that: cleanup runs
+    # first and unconditionally (pop/close can't themselves raise), and the
+    # best-effort notification is wrapped separately so a game whose crash
+    # also broke its own broadcast can still be torn down cleanly instead of
+    # re-raising out of here and taking the whole tick loop down anyway.
+    async def _fail_game(self, game_id: str, game: ActiveGame, error: BaseException) -> None:
+        _logger.error("game %s crashed during its tick - ending it", game_id, exc_info=error)
+
+        self._games.pop(game_id, None)
+        if game.room_id is not None:
+            self._rooms.close(game.room_id)
+
+        try:
+            await self._broadcast_to_game(game, ErrorMessage(message="internal_error"))
+        except Exception:
+            _logger.exception("failed to notify game %s's players about its crash", game_id)
 
     async def _broadcast_to_game(self, game: ActiveGame, payload: WirePayload) -> None:
         for seat in (WHITE, BLACK):

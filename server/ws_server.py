@@ -6,10 +6,11 @@ concurrently active GameSessions (see server/session.py) - unlike the
 single-game-at-a-time design this replaced, a PLAY match and any number of
 rooms can all be running games at once.
 
-GameServer itself is only the connection lifecycle: accept, decode raw
-wire text into the typed values server/protocol.py already parses it into
-(a Command, a LoginRequest, a room id, ...), hand those to
-server/router.py's CommandRouter for the actual routing *decision*, then
+GameServer itself is only the connection lifecycle: accept, decode each raw
+wire message exactly once via protocol.registry.decode_json_message into
+whichever of protocol/lobby_messages.py's/protocol/game_messages.py's
+registered dataclasses it is (a LoginMessage, a MoveMessage, ...), hand that
+to server/router.py's CommandRouter for the actual routing *decision*, then
 perform whatever async work that decision calls for - sending the reply,
 and/or awaiting GameLoop.start_room_game. CommandRouter itself is never
 async and never touches a websocket, JSON, or a dict - see its own
@@ -19,20 +20,20 @@ websocket write goes through server/connections.py's ConnectionRegistry
 rather than a raw websocket.send.
 
 Connection lifecycle:
-    connect -> "LOGIN <username> <password>" -> lobby (or straight back
+    connect -> LoginMessage(username, password) -> lobby (or straight back
     into an active game's seat, if this username disconnected from it
     within its 20s grace window - see GameSession.mark_disconnected) ->
-    either "PLAY" -> queued -> matched into a new game, or "CREATE_ROOM"/
-    "JOIN_ROOM <id>" -> a room's game once its opponent seat fills (see
-    server/rooms.py) -> "matchmaking_timeout" after 60s unmatched (see
-    server/matchmaking.py's TIMEOUT_MS).
+    either PlayMessage -> queued -> matched into a new game, or
+    CreateRoomMessage/JoinRoomMessage -> a room's game once its opponent
+    seat fills (see server/rooms.py) -> "matchmaking_timeout" after 60s
+    unmatched (see server/matchmaking.py's TIMEOUT_MS).
 
 A disconnect mid-game starts that seat's 20s grace timer (see
 server/session.py's DISCONNECT_GRACE_MS); the opponent gets a live
 "disconnect_countdown" broadcast, and the disconnected seat auto-resigns
 if the window runs out unreconciled. A room's own pending (not yet
 started) state is separate from this - its creator can withdraw it
-outright with "CANCEL_ROOM" instead.
+outright with CancelRoomMessage instead.
 
 That 20s grace timer only starts once _handle_connection's own recv loop
 actually notices the socket is gone - true immediately for a clean
@@ -46,13 +47,22 @@ detected well inside DISCONNECT_GRACE_MS, not after it.
 """
 
 import asyncio
+import json
 from typing import Callable, Optional
 
 import websockets
 
 from model.board import BoardRepresentation
-from protocol.game_messages import ErrorMessage
-from protocol.lobby_messages import LoginAckMessage
+from protocol.game_messages import ErrorMessage, JumpMessage, MoveMessage
+from protocol.lobby_messages import (
+    CancelRoomMessage,
+    CreateRoomMessage,
+    JoinRoomMessage,
+    LoginAckMessage,
+    LoginMessage,
+    PlayMessage,
+)
+from protocol.registry import message_from_dict
 from protocol.types import HOST as DEFAULT_HOST
 from protocol.types import PORT as DEFAULT_PORT
 from server.accounts import InvalidCredentialsError, UserStore
@@ -60,14 +70,6 @@ from server.connections import ConnectionRegistry
 from server.game_loop import DEFAULT_TICK_INTERVAL_S, GameLoop
 from server.interfaces import RatingRepository
 from server.matchmaking import TIMEOUT_MS as MATCHMAKING_TIMEOUT_MS
-from server.protocol import (
-    ProtocolError,
-    is_cancel_room_command,
-    is_create_room_command,
-    is_play_command,
-    parse_join_room,
-    parse_login,
-)
 from server.router import CommandRouter
 from server.rooms import RoomRegistry, RoomStore
 from server.session import DISCONNECT_GRACE_MS
@@ -201,43 +203,55 @@ class GameServer:
     # since a plain local variable there can't be updated from in here.
     async def _handle_message(self, websocket, username: Optional[str], message: str) -> Optional[str]:
         try:
-            login_request = parse_login(message)
-        except ProtocolError as error:
-            await self._connections.send(websocket, ErrorMessage(message=str(error)))
+            decoded = message_from_dict(json.loads(message))
+        except (json.JSONDecodeError, TypeError, KeyError):
+            # A malformed message: not valid JSON at all, or a recognized
+            # "type" tag whose payload is missing/mistyped a required field
+            # (message_from_dict's cls(**kwargs) is what raises TypeError/
+            # KeyError for that) - never a message this table simply
+            # doesn't recognize, see the `decoded is None` branch below for
+            # that case instead.
+            await self._connections.send(websocket, ErrorMessage(message=f"malformed message: {message!r}"))
             return username
 
-        if login_request is not None:
-            return await self._handle_login(websocket, login_request)
+        # None (an unrecognized "type", or none at all) and a message this
+        # method has no case for below (e.g. a client sending one of the
+        # server->client-only messages this same registry also decodes,
+        # like SeatMessage) are the same "not a message I can act on" fact
+        # to the caller - both fall through to the same rejection at the
+        # bottom instead of two near-identical branches here.
+
+        if isinstance(decoded, LoginMessage):
+            return await self._handle_login(websocket, decoded)
 
         if username is None:
             await self._connections.send(websocket, ErrorMessage(message="login_required"))
             return username
 
-        if is_play_command(message):
+        if isinstance(decoded, PlayMessage):
             await self._connections.send(websocket, self._router.decide_play(username))
             return username
 
-        if is_create_room_command(message):
+        if isinstance(decoded, CreateRoomMessage):
             await self._connections.send(websocket, self._router.decide_create_room(username))
             return username
 
-        if is_cancel_room_command(message):
+        if isinstance(decoded, CancelRoomMessage):
             await self._connections.send(websocket, self._router.decide_cancel_room(username))
             return username
 
-        try:
-            room_id = parse_join_room(message)
-        except ProtocolError as error:
-            await self._connections.send(websocket, ErrorMessage(message=str(error)))
-            return username
-        if room_id is not None:
-            await self._handle_join_room(websocket, username, room_id)
+        if isinstance(decoded, JoinRoomMessage):
+            await self._handle_join_room(websocket, username, decoded.room_id)
             return username
 
-        await self._connections.send(websocket, self._router.decide_game_command(username, message))
+        if isinstance(decoded, (MoveMessage, JumpMessage)):
+            await self._connections.send(websocket, self._router.decide_game_command(username, decoded))
+            return username
+
+        await self._connections.send(websocket, ErrorMessage(message=f"unrecognized message: {message!r}"))
         return username
 
-    async def _handle_login(self, websocket, login_request) -> Optional[str]:
+    async def _handle_login(self, websocket, login_message: LoginMessage) -> Optional[str]:
         # Off the event loop entirely, via the default thread-pool executor
         # - UserStore.login's PBKDF2 hash is real, non-trivial CPU work
         # (see server/accounts.py), and calling it directly here would
@@ -248,7 +262,7 @@ class GameServer:
         loop = asyncio.get_event_loop()
         try:
             account = await loop.run_in_executor(
-                None, self._user_store.login, login_request.username, login_request.password
+                None, self._user_store.login, login_message.username, login_message.password
             )
         except InvalidCredentialsError:
             await self._connections.send(websocket, LoginAckMessage(accepted=False, reason="wrong_password"))

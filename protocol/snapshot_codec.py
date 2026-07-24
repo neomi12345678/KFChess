@@ -9,6 +9,10 @@ registry.py registration - unlike every message in lobby_messages.py/
 game_messages.py, the per-tick broadcast is the server's whole
 authoritative state as of this tick, not a discrete, typed event (see
 client/game_view_state.py's own "pieces" in message check).
+
+position_to_json/position_from_json are also reused by game_messages.py's
+MoveMessage/JumpMessage, the one piece of this codec that isn't specific to
+the snapshot broadcast - a Position is a Position on the wire either way.
 """
 
 from typing import Dict, Optional
@@ -19,7 +23,7 @@ from model.piece import BLACK, WHITE
 from model.position import Position
 
 
-def _position_to_json(position: Optional[Position]) -> Optional[dict]:
+def position_to_json(position: Optional[Position]) -> Optional[dict]:
     if position is None:
         return None
     return {"row": position.row, "col": position.col}
@@ -33,7 +37,7 @@ def snapshot_to_json(snapshot) -> dict:
         "board_width": snapshot.board_width,
         "board_height": snapshot.board_height,
         "game_over": snapshot.game_over,
-        "selected_cell": _position_to_json(snapshot.selected_cell),
+        "selected_cell": position_to_json(snapshot.selected_cell),
         "pieces": [
             {
                 "id": piece.id,
@@ -51,7 +55,7 @@ def snapshot_to_json(snapshot) -> dict:
     }
 
 
-def _position_from_json(payload: Optional[dict]) -> Optional[Position]:
+def position_from_json(payload: Optional[dict]) -> Optional[Position]:
     if payload is None:
         return None
     return Position(payload["row"], payload["col"])
@@ -66,7 +70,7 @@ def snapshot_from_json(payload: dict) -> GameSnapshot:
         board_width=payload["board_width"],
         board_height=payload["board_height"],
         game_over=payload["game_over"],
-        selected_cell=_position_from_json(payload["selected_cell"]),
+        selected_cell=position_from_json(payload["selected_cell"]),
         pieces=tuple(
             PieceSnapshot(
                 id=piece["id"],

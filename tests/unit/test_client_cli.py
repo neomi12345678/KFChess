@@ -1,72 +1,64 @@
 import pytest
 
+from client.client_cli import InputError, _ClientState, build_command
 from model.piece import BLACK, WHITE
-from client.client_cli import (
-    InputError,
-    _ClientState,
-    build_cancel_room,
-    build_command,
-    build_create_room,
-    build_join_room,
-    build_login,
-    build_play,
-)
+from protocol.game_messages import JumpMessage, MoveMessage
 
 
-def test_build_command_prefixes_a_move_with_the_seats_own_color_letter():
-    assert build_command("e2e4", WHITE) == "We2e4"
-    assert build_command("g8f6", BLACK) == "Bg8f6"
+def test_build_command_reads_a_move_for_the_seats_own_color():
+    command = build_command("e2e4", WHITE, board_height=8)
+
+    assert command == MoveMessage(color=WHITE, source={"row": 6, "col": 4}, destination={"row": 4, "col": 4})
+
+
+def test_build_command_reads_a_black_seats_move():
+    command = build_command("g8f6", BLACK, board_height=8)
+
+    assert command == MoveMessage(color=BLACK, source={"row": 0, "col": 6}, destination={"row": 2, "col": 5})
 
 
 def test_build_command_strips_surrounding_whitespace():
-    assert build_command("  e2e4  ", WHITE) == "We2e4"
+    command = build_command("  e2e4  ", WHITE, board_height=8)
+
+    assert command == MoveMessage(color=WHITE, source={"row": 6, "col": 4}, destination={"row": 4, "col": 4})
 
 
 def test_build_command_translates_jump_shorthand():
-    assert build_command("jump e4", WHITE) == "WJe4"
-    assert build_command("JUMP e4", WHITE) == "WJe4"
+    expected = JumpMessage(color=WHITE, source={"row": 4, "col": 4})
+
+    assert build_command("jump e4", WHITE, board_height=8) == expected
+    assert build_command("JUMP e4", WHITE, board_height=8) == expected
 
 
 def test_build_command_rejects_empty_input():
     with pytest.raises(InputError):
-        build_command("", WHITE)
+        build_command("", WHITE, board_height=8)
 
     with pytest.raises(InputError):
-        build_command("   ", WHITE)
+        build_command("   ", WHITE, board_height=8)
 
 
 def test_build_command_rejects_a_jump_with_no_square():
     with pytest.raises(InputError):
-        build_command("jump", WHITE)
+        build_command("jump", WHITE, board_height=8)
 
     with pytest.raises(InputError):
-        build_command("jump   ", WHITE)
+        build_command("jump   ", WHITE, board_height=8)
 
 
-def test_build_login_wraps_the_username_and_password():
-    assert build_login("alice", "secret123") == "LOGIN alice secret123"
+def test_build_command_rejects_a_malformed_square():
+    with pytest.raises(InputError):
+        build_command("jump 2e", WHITE, board_height=8)
+
+    with pytest.raises(InputError):
+        build_command("2ee4", WHITE, board_height=8)
 
 
-def test_build_play_is_the_bare_keyword():
-    assert build_play() == "PLAY"
-
-
-def test_build_create_room_is_the_bare_keyword():
-    assert build_create_room() == "CREATE_ROOM"
-
-
-def test_build_cancel_room_is_the_bare_keyword():
-    assert build_cancel_room() == "CANCEL_ROOM"
-
-
-def test_build_join_room_wraps_the_room_id():
-    assert build_join_room("ab12cd") == "JOIN_ROOM ab12cd"
-
-
-def test_client_state_starts_with_no_seat_by_default():
+def test_client_state_starts_with_no_seat_or_board_height_by_default():
     state = _ClientState()
 
     assert state.seat is None
+    assert state.board_height is None
 
 
 def test_client_state_learns_its_seat_from_a_seat_message():
@@ -91,3 +83,11 @@ def test_client_state_ignores_unrelated_messages():
     state.observe({"type": "ack", "accepted": True, "reason": "ok"})
 
     assert state.seat == WHITE
+
+
+def test_client_state_learns_board_height_from_a_snapshot_broadcast():
+    state = _ClientState()
+
+    state.observe({"board_width": 8, "board_height": 8, "pieces": [], "selected_cell": None, "game_over": False})
+
+    assert state.board_height == 8

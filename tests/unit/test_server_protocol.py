@@ -1,47 +1,17 @@
-import pytest
-
 from events.observers import MoveLogObserver, ScoreObserver
 from model.game_state import ArrivalEvent, MoveLoggedEvent
 from model.piece import BLACK, KNIGHT, PAWN, Piece, WHITE
 from model.position import Position
+from protocol.game_messages import build_jump, build_move
 from protocol.panel_state import PanelState
 from protocol.snapshot_codec import panel_to_json, snapshot_from_json, snapshot_to_json
-from server.protocol import (
-    JUMP,
-    MOVE,
-    LoginRequest,
-    ProtocolError,
-    is_cancel_room_command,
-    is_create_room_command,
-    is_play_command,
-    parse_command,
-    parse_join_room,
-    parse_login,
-    parse_square,
-)
+from server.protocol import JUMP, MOVE, command_from_message
 
 
-def test_parse_square_matches_standard_chess_e2():
-    # board_height=8, matching a standard 8x8 board - row 0 is rank 8 (see
-    # boardio.algebraic_notation.square_name's own convention), so "e2" is
-    # row 6, the white pawns' starting rank.
-    assert parse_square("e2", board_height=8) == Position(6, 4)
+def test_command_from_message_reads_a_move_messages_color_source_and_destination():
+    message = build_move(WHITE, Position(6, 4), Position(4, 4))
 
-
-def test_parse_square_matches_standard_chess_e4():
-    assert parse_square("e4", board_height=8) == Position(4, 4)
-
-
-def test_parse_square_rejects_malformed_input():
-    with pytest.raises(ProtocolError):
-        parse_square("2e", board_height=8)
-
-    with pytest.raises(ProtocolError):
-        parse_square("e", board_height=8)
-
-
-def test_parse_command_move_reads_color_source_and_destination():
-    command = parse_command("We2e4", board_height=8)
+    command = command_from_message(message)
 
     assert command.color == WHITE
     assert command.kind == MOVE
@@ -49,17 +19,10 @@ def test_parse_command_move_reads_color_source_and_destination():
     assert command.destination == Position(4, 4)
 
 
-def test_parse_command_move_handles_double_digit_ranks_on_a_taller_board():
-    # board_height=10 has ranks up to 10, so the source/destination split
-    # can't just assume a single trailing digit.
-    command = parse_command("Wa10a9", board_height=10)
+def test_command_from_message_jump_has_no_destination():
+    message = build_jump(WHITE, Position(4, 4))
 
-    assert command.source == Position(0, 0)
-    assert command.destination == Position(1, 0)
-
-
-def test_parse_command_jump_has_no_destination():
-    command = parse_command("WJe4", board_height=8)
+    command = command_from_message(message)
 
     assert command.color == WHITE
     assert command.kind == JUMP
@@ -67,104 +30,14 @@ def test_parse_command_jump_has_no_destination():
     assert command.destination is None
 
 
-def test_parse_command_black_color_prefix():
-    command = parse_command("Bg8f6", board_height=8)
+def test_command_from_message_black_color():
+    message = build_move(BLACK, Position(0, 6), Position(2, 5))
+
+    command = command_from_message(message)
 
     assert command.color == BLACK
     assert command.source == Position(0, 6)
     assert command.destination == Position(2, 5)
-
-
-def test_parse_command_rejects_unknown_color_prefix():
-    with pytest.raises(ProtocolError):
-        parse_command("Xe2e4", board_height=8)
-
-
-def test_parse_command_rejects_too_short_input():
-    with pytest.raises(ProtocolError):
-        parse_command("W", board_height=8)
-
-
-def test_parse_login_reads_the_username_and_password():
-    assert parse_login("LOGIN alice secret123") == LoginRequest(username="alice", password="secret123")
-
-
-def test_parse_login_returns_none_for_a_non_login_message():
-    assert parse_login("We2e4") is None
-    assert parse_login("WJe4") is None
-
-
-def test_parse_login_rejects_a_missing_password():
-    with pytest.raises(ProtocolError):
-        parse_login("LOGIN alice")
-
-    with pytest.raises(ProtocolError):
-        parse_login("LOGIN alice   ")
-
-
-def test_parse_login_rejects_an_empty_username():
-    with pytest.raises(ProtocolError):
-        parse_login("LOGIN ")
-
-    with pytest.raises(ProtocolError):
-        parse_login("LOGIN    ")
-
-
-def test_parse_login_keeps_internal_spaces_in_the_password():
-    assert parse_login("LOGIN alice a pass with spaces") == LoginRequest(
-        username="alice", password="a pass with spaces"
-    )
-
-
-def test_is_play_command_recognizes_the_bare_keyword():
-    assert is_play_command("PLAY") is True
-    assert is_play_command("  PLAY  ") is True
-
-
-def test_is_play_command_rejects_anything_else():
-    assert is_play_command("play") is False
-    assert is_play_command("We2e4") is False
-    assert is_play_command("LOGIN alice secret123") is False
-
-
-def test_is_create_room_command_recognizes_the_bare_keyword():
-    assert is_create_room_command("CREATE_ROOM") is True
-    assert is_create_room_command("  CREATE_ROOM  ") is True
-
-
-def test_is_create_room_command_rejects_anything_else():
-    assert is_create_room_command("create_room") is False
-    assert is_create_room_command("PLAY") is False
-
-
-def test_is_cancel_room_command_recognizes_the_bare_keyword():
-    assert is_cancel_room_command("CANCEL_ROOM") is True
-    assert is_cancel_room_command("  CANCEL_ROOM  ") is True
-
-
-def test_is_cancel_room_command_rejects_anything_else():
-    assert is_cancel_room_command("cancel_room") is False
-    assert is_cancel_room_command("PLAY") is False
-
-
-def test_parse_join_room_reads_the_room_id():
-    assert parse_join_room("JOIN_ROOM ab12cd") == "ab12cd"
-
-
-def test_parse_join_room_returns_none_for_a_non_join_room_message():
-    assert parse_join_room("PLAY") is None
-    assert parse_join_room("We2e4") is None
-    # No trailing space at all - not recognized as this message shape,
-    # the same way parse_login treats a bare "LOGIN" with no space.
-    assert parse_join_room("JOIN_ROOM") is None
-
-
-def test_parse_join_room_rejects_a_missing_id():
-    with pytest.raises(ProtocolError):
-        parse_join_room("JOIN_ROOM ")
-
-    with pytest.raises(ProtocolError):
-        parse_join_room("JOIN_ROOM    ")
 
 
 def test_snapshot_to_json_is_plain_json_serializable_data():

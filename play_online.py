@@ -28,9 +28,8 @@ import dataclasses
 import time
 
 import piece_config
-from boardio.algebraic_notation import square_name
 from client.game_view_state import GameViewState
-from client.network_client import NetworkClientError, NetworkGameClient
+from client.network_client import NetworkClientError, NetworkGameClient, SnapshotBroadcast
 from client.network_controller import JumpRequest, MoveRequest, NetworkController
 from client.setup_dialogs import SetupCancelled, run_game_setup, run_login
 from display_config import compute_cell_size, screen_resolution_px, side_panel_width_for
@@ -38,6 +37,7 @@ from events.game_events import GameEndedEvent
 from input.board_mapper import BoardMapper
 from model.piece import BLACK, WHITE
 from protocol.game_messages import build_jump, build_move
+from protocol.registry import encode_json_message
 from protocol.types import HOST, PORT
 from view.canvas.img_canvas import ImgCanvas
 from view.canvas.window import GameWindow
@@ -54,8 +54,8 @@ def _wait_for_first_snapshot(client: NetworkGameClient, timeout: float = 5.0) ->
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for message in client.poll_messages():
-            if "pieces" in message:
-                return message
+            if isinstance(message, SnapshotBroadcast):
+                return message.payload
         time.sleep(0.01)
     raise NetworkClientError("timed out waiting for the first board snapshot")
 
@@ -68,19 +68,19 @@ def main() -> None:  # pragma: no cover
         # login (it loops the GUI form on rejection itself) - see
         # client/setup_dialogs.py.
         login_ack = run_login(client)
-        print(f"Logged in as {login_ack['username']} (rating {login_ack['rating']})")
+        print(f"Logged in as {login_ack.username} (rating {login_ack.rating})")
 
-        if login_ack.get("reconnected"):
-            my_color = login_ack["color"]
+        if login_ack.reconnected:
+            my_color = login_ack.color
             print(f"Reconnected to your game as {my_color}")
-        elif login_ack.get("resuming_room_id"):
+        elif login_ack.resuming_room_id:
             # A room this account was already in survived a server restart
             # (see server/rooms.py's RoomStore) - wait for the other player
             # to reconnect too rather than showing the create/join dialog
             # again (see server/ws_server.py's _handle_login for the
             # server-side half of this).
-            print(f"Resuming room {login_ack['resuming_room_id']} - waiting for the other player...")
-            my_color = client.wait_for_seat(timeout=86_400.0)["color"]
+            print(f"Resuming room {login_ack.resuming_room_id} - waiting for the other player...")
+            my_color = client.wait_for_seat(timeout=86_400.0).color
             print(f"Resumed as {my_color}")
         else:
             my_color = run_game_setup(client)
@@ -141,9 +141,8 @@ def main() -> None:  # pragma: no cover
         cell = board_mapper.pixel_to_cell(x, y)
         request = controller.click(cell, state.snapshot)
         if isinstance(request, MoveRequest):
-            source = square_name(request.source, state.snapshot.board_height)
-            destination = square_name(request.destination, state.snapshot.board_height)
-            client.send_command(build_move(my_color, source, destination))
+            message = build_move(my_color, request.source, request.destination)
+            client.send_command(encode_json_message(message))
 
     def handle_jump(x: int, y: int) -> None:
         if controller is None:
@@ -151,8 +150,8 @@ def main() -> None:  # pragma: no cover
         cell = board_mapper.pixel_to_cell(x, y)
         request = controller.jump(cell)
         if isinstance(request, JumpRequest):
-            square = square_name(request.position, state.snapshot.board_height)
-            client.send_command(build_jump(my_color, square))
+            message = build_jump(my_color, request.position)
+            client.send_command(encode_json_message(message))
 
     window = GameWindow("KFChess (online)")
     window.on_click(handle_click)
