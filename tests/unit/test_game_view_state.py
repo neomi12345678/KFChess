@@ -73,7 +73,7 @@ def test_capture_plays_the_capture_cue():
 
 def test_a_capturing_move_plays_both_cues_in_wire_order():
     # A capturing move arrives as two separate wire messages (see
-    # server/session.py's drain_wire_events) - the same two cues a real
+    # server/publisher.py's NetworkPublisher) - the same two cues a real
     # GameEngine-fed Bus would produce for the same capture (see
     # events/sound.py's SoundCues), not a single mutually-exclusive choice.
     state = make_state()

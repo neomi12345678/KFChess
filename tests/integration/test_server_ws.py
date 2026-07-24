@@ -18,7 +18,9 @@ import pytest
 import websockets
 
 from boardio.board_parser import parse
-from server.accounts import AccountStore
+from server.accounts import UserStore
+from server.accounts_db import open_accounts_database
+from server.rating_store import RatingStore
 from server.rooms import RoomRegistry, RoomStore
 from server.ws_server import GameServer
 
@@ -62,21 +64,20 @@ async def join_room(websocket, room_id: str) -> dict:
 async def running_server(
     tick_interval_s: float = 0.01,
     board_text: str = STARTING_BOARD,
-    account_store=None,
+    accounts_database=None,
     room_store=None,
     matchmaking_timeout_ms: int = 300,
     disconnect_grace_ms: int = 300,
     ping_interval_s: float = 12.0,
     ping_timeout_s: float = 12.0,
 ):
-    # A fresh ":memory:" store per server unless a test supplies its own
-    # (so it can inspect ratings afterward, or - for room_store - reuse the
-    # same store across two servers to simulate a restart) - see
-    # server/accounts.py's and server/rooms.py's own db_path docstrings for
-    # why there's no shared default to fall back on.
-    owns_store = account_store is None
-    if owns_store:
-        account_store = AccountStore(":memory:")
+    # A fresh ":memory:" accounts database per server unless a test supplies
+    # its own (so it can pre-seed logins or inspect ratings afterward - see
+    # server/accounts_db.py's own db_path docstring for why there's no
+    # shared default to fall back on), same reasoning for room_store.
+    owns_database = accounts_database is None
+    if owns_database:
+        accounts_database = open_accounts_database(":memory:")
     owns_room_store = room_store is None
     if owns_room_store:
         room_store = RoomStore(":memory:")
@@ -90,7 +91,8 @@ async def running_server(
     # keepalive timeout on an unrelated, healthy connection.
     server = GameServer(
         lambda: parse(board_text),
-        account_store,
+        UserStore(accounts_database),
+        RatingStore(accounts_database),
         host="localhost",
         port=0,
         tick_interval_s=tick_interval_s,
@@ -108,8 +110,8 @@ async def running_server(
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-        if owns_store:
-            account_store.close()
+        if owns_database:
+            accounts_database.connection.close()
         if owns_room_store:
             room_store.close()
 
@@ -161,14 +163,14 @@ def test_two_compatible_players_get_matched_by_play():
 
 def test_incompatible_ratings_are_not_matched():
     async def scenario():
-        account_store = AccountStore(":memory:")
-        account_store.login("alice", "secret123")
-        account_store.login("bob", "hunter2")
-        account_store.update_rating("bob", 1200 + 101)  # just outside +-100
+        accounts_database = open_accounts_database(":memory:")
+        UserStore(accounts_database).login("alice", "secret123")
+        UserStore(accounts_database).login("bob", "hunter2")
+        RatingStore(accounts_database).update_rating("bob", 1200 + 101)  # just outside +-100
 
         # A huge matchmaking timeout - this test only checks "no match yet",
         # not "eventually times out" (see test_matchmaking_timeout_... below).
-        async with running_server(account_store=account_store, matchmaking_timeout_ms=100_000) as server:
+        async with running_server(accounts_database=accounts_database, matchmaking_timeout_ms=100_000) as server:
             uri = f"ws://localhost:{server.bound_port}"
             async with websockets.connect(uri) as a, websockets.connect(uri) as b:
                 await login(a, "alice", "secret123")
@@ -179,7 +181,7 @@ def test_incompatible_ratings_are_not_matched():
                 with pytest.raises(asyncio.TimeoutError):
                     await asyncio.wait_for(a.recv(), timeout=0.3)
 
-        account_store.close()
+        accounts_database.connection.close()
 
     asyncio.run(scenario())
 
@@ -335,8 +337,8 @@ def test_broadcast_carries_the_moves_log_and_score_panel_data():
 
 
 def test_broadcast_carries_a_move_logged_and_a_capture_wire_event():
-    # A king-capturing move on this board - see server/session.py's
-    # drain_wire_events, which a networked client (see play_online.py) uses
+    # A king-capturing move on this board - see server/publisher.py's
+    # NetworkPublisher, which a networked client (see play_online.py) uses
     # instead of guessing "was that a capture?" from move-log notation text.
     async def scenario():
         async with running_server(board_text=KING_CAPTURE_BOARD) as server:
@@ -384,11 +386,11 @@ def test_wrong_seat_command_is_rejected_before_reaching_the_engine():
 
 def test_game_over_broadcasts_ratings_and_frees_the_slot_for_a_new_match():
     async def scenario():
-        account_store = AccountStore(":memory:")
+        accounts_database = open_accounts_database(":memory:")
 
         # A 1x2 board: white rook right next to black's king - one move
         # captures it and ends the game.
-        async with running_server(board_text=KING_CAPTURE_BOARD, account_store=account_store) as server:
+        async with running_server(board_text=KING_CAPTURE_BOARD, accounts_database=accounts_database) as server:
             uri = f"ws://localhost:{server.bound_port}"
             async with websockets.connect(uri) as a, websockets.connect(uri) as b:
                 await login(a, "alice", "secret123")
@@ -416,7 +418,7 @@ def test_game_over_broadcasts_ratings_and_frees_the_slot_for_a_new_match():
                 assert new_seat_a == {"type": "seat", "color": "white"}
                 assert new_seat_b == {"type": "seat", "color": "black"}
 
-        account_store.close()
+        accounts_database.connection.close()
 
     asyncio.run(scenario())
 
@@ -531,9 +533,10 @@ def test_reconnecting_before_the_stale_socket_closes_does_not_evict_the_new_conn
 
 def test_disconnect_without_reconnecting_in_time_forces_a_resignation():
     async def scenario():
-        account_store = AccountStore(":memory:")
+        accounts_database = open_accounts_database(":memory:")
+        rating_store = RatingStore(accounts_database)
 
-        async with running_server(account_store=account_store, disconnect_grace_ms=200) as server:
+        async with running_server(accounts_database=accounts_database, disconnect_grace_ms=200) as server:
             uri = f"ws://localhost:{server.bound_port}"
             async with websockets.connect(uri) as a:
                 b = await websockets.connect(uri)
@@ -550,10 +553,10 @@ def test_disconnect_without_reconnecting_in_time_forces_a_resignation():
 
                 # bob (black) ran out the grace window - alice (white) wins.
                 assert game_over == {"type": "game_over", "ratings": {"white": 1216, "black": 1184}}
-                assert account_store.rating_for("bob") == 1184
-                assert account_store.rating_for("alice") == 1216
+                assert rating_store.rating_for("bob") == 1184
+                assert rating_store.rating_for("alice") == 1216
 
-        account_store.close()
+        accounts_database.connection.close()
 
     asyncio.run(scenario())
 
@@ -693,9 +696,9 @@ def test_play_and_room_run_as_independent_parallel_tracks():
 
 def test_room_game_over_frees_every_member_for_a_new_room_or_match():
     async def scenario():
-        account_store = AccountStore(":memory:")
+        accounts_database = open_accounts_database(":memory:")
 
-        async with running_server(board_text=KING_CAPTURE_BOARD, account_store=account_store) as server:
+        async with running_server(board_text=KING_CAPTURE_BOARD, accounts_database=accounts_database) as server:
             uri = f"ws://localhost:{server.bound_port}"
             async with websockets.connect(uri) as a, websockets.connect(uri) as b:
                 await login(a, "alice", "secret123")
@@ -716,7 +719,7 @@ def test_room_game_over_frees_every_member_for_a_new_room_or_match():
                 new_room = await create_room(a)
                 assert new_room["accepted"] is True
 
-        account_store.close()
+        accounts_database.connection.close()
 
     asyncio.run(scenario())
 

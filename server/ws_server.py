@@ -6,15 +6,17 @@ concurrently active GameSessions (see server/session.py) - unlike the
 single-game-at-a-time design this replaced, a PLAY match and any number of
 rooms can all be running games at once.
 
-GameServer itself is only the connection lifecycle (accept, login, clean
-disconnect) and the lobby/game command router (PLAY/CREATE_ROOM/JOIN_ROOM/
-CANCEL_ROOM, then in-game move/jump commands once seated) - the "what's
-running and how does time move it forward" logic lives in
-server/game_loop.py's GameLoop, and every websocket write goes through
-server/connections.py's ConnectionRegistry rather than a raw
-websocket.send. Splitting those out of what used to be one class here is
-what keeps this file to "how does a connection's own message get routed",
-not also "how does a game tick" or "who do we still have a socket for".
+GameServer itself is only the connection lifecycle: accept, decode raw
+wire text into the typed values server/protocol.py already parses it into
+(a Command, a LoginRequest, a room id, ...), hand those to
+server/router.py's CommandRouter for the actual routing *decision*, then
+perform whatever async work that decision calls for - sending the reply,
+and/or awaiting GameLoop.start_room_game. CommandRouter itself is never
+async and never touches a websocket, JSON, or a dict - see its own
+docstring for why that split exists. The "what's running and how does time
+move it forward" logic lives in server/game_loop.py's GameLoop, and every
+websocket write goes through server/connections.py's ConnectionRegistry
+rather than a raw websocket.send.
 
 Connection lifecycle:
     connect -> "LOGIN <username> <password>" -> lobby (or straight back
@@ -44,39 +46,30 @@ detected well inside DISCONNECT_GRACE_MS, not after it.
 """
 
 import asyncio
-import logging
 from typing import Callable, Optional
 
 import websockets
 
 from model.board import BoardRepresentation
-from model.piece import BLACK, WHITE
-from protocol.game_messages import AckMessage, ErrorMessage
-from protocol.lobby_messages import (
-    CancelRoomAckMessage,
-    CreateRoomAckMessage,
-    JoinRoomAckMessage,
-    LoginAckMessage,
-    PlayAckMessage,
-)
-from protocol.snapshot_codec import panel_to_json, snapshot_to_json
+from protocol.game_messages import ErrorMessage
+from protocol.lobby_messages import LoginAckMessage
 from protocol.types import HOST as DEFAULT_HOST
 from protocol.types import PORT as DEFAULT_PORT
-from protocol.types import Role
-from server.accounts import AccountStore, InvalidCredentialsError
+from server.accounts import InvalidCredentialsError, UserStore
 from server.connections import ConnectionRegistry
-from server.game_loop import DEFAULT_TICK_INTERVAL_S, GameLoop, names_for
+from server.game_loop import DEFAULT_TICK_INTERVAL_S, GameLoop
+from server.interfaces import RatingRepository
 from server.matchmaking import TIMEOUT_MS as MATCHMAKING_TIMEOUT_MS
 from server.protocol import (
     ProtocolError,
     is_cancel_room_command,
     is_create_room_command,
     is_play_command,
-    parse_command,
     parse_join_room,
     parse_login,
 )
-from server.rooms import RoomError, RoomRegistry, RoomStore
+from server.router import CommandRouter
+from server.rooms import RoomRegistry, RoomStore
 from server.session import DISCONNECT_GRACE_MS
 
 # Tighter than `websockets`' own 20s/20s stock defaults (see this module's
@@ -94,8 +87,6 @@ PING_INTERVAL_S = 10.0
 PING_TIMEOUT_S = 10.0
 CLOSE_TIMEOUT_S = 5.0
 
-_logger = logging.getLogger(__name__)
-
 
 class GameServer:
     """board_factory is called once per started game (a matched PLAY pair,
@@ -111,7 +102,8 @@ class GameServer:
     def __init__(
         self,
         board_factory: Callable[[], BoardRepresentation],
-        account_store: AccountStore,
+        user_store: UserStore,
+        rating_store: RatingRepository,
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         tick_interval_s: float = DEFAULT_TICK_INTERVAL_S,
@@ -122,18 +114,20 @@ class GameServer:
         close_timeout_s: float = CLOSE_TIMEOUT_S,
         room_store: Optional[RoomStore] = None,
     ):
-        self._account_store = account_store
+        self._user_store = user_store
+        self._rating_store = rating_store
         self._rooms = RoomRegistry(store=room_store)
         self._connections = ConnectionRegistry()
         self._loop = GameLoop(
             board_factory,
-            account_store,
+            rating_store,
             self._rooms,
             self._connections,
             matchmaking_timeout_ms=matchmaking_timeout_ms,
             disconnect_grace_ms=disconnect_grace_ms,
             tick_interval_s=tick_interval_s,
         )
+        self._router = CommandRouter(self._rooms, self._loop, rating_store, self._connections)
         self._host = host
         self._port = port
         self._ping_interval_s = ping_interval_s
@@ -220,15 +214,15 @@ class GameServer:
             return username
 
         if is_play_command(message):
-            await self._handle_play(websocket, username)
+            await self._connections.send(websocket, self._router.decide_play(username))
             return username
 
         if is_create_room_command(message):
-            await self._handle_create_room(websocket, username)
+            await self._connections.send(websocket, self._router.decide_create_room(username))
             return username
 
         if is_cancel_room_command(message):
-            await self._handle_cancel_room(websocket, username)
+            await self._connections.send(websocket, self._router.decide_cancel_room(username))
             return username
 
         try:
@@ -240,27 +234,28 @@ class GameServer:
             await self._handle_join_room(websocket, username, room_id)
             return username
 
-        await self._handle_game_command(websocket, username, message)
+        await self._connections.send(websocket, self._router.decide_game_command(username, message))
         return username
 
     async def _handle_login(self, websocket, login_request) -> Optional[str]:
         # Off the event loop entirely, via the default thread-pool executor
-        # - AccountStore.login's PBKDF2 hash is real, non-trivial CPU work
+        # - UserStore.login's PBKDF2 hash is real, non-trivial CPU work
         # (see server/accounts.py), and calling it directly here would
         # freeze every other connection's messages and every in-progress
         # game's tick for that long, not just this login (this is also why
-        # AccountStore itself is safe to call from a different thread - see
-        # its own __init__ docstring).
+        # UserStore itself is safe to call from a different thread - see
+        # server/accounts_db.py's own docstring).
         loop = asyncio.get_event_loop()
         try:
             account = await loop.run_in_executor(
-                None, self._account_store.login, login_request.username, login_request.password
+                None, self._user_store.login, login_request.username, login_request.password
             )
         except InvalidCredentialsError:
             await self._connections.send(websocket, LoginAckMessage(accepted=False, reason="wrong_password"))
             return None
 
         username = account.username
+        rating = self._rating_store.rating_for(username)
 
         # A reconnect (or someone just logging the same username in twice)
         # supersedes whatever connection was previously on file - close it
@@ -270,167 +265,25 @@ class GameServer:
         # path). _handle_connection's own finally block already guards
         # against this closing socket evicting the *new* entry we're about
         # to write below (it only clears the registry if its own websocket
-        # is still the one on file).
+        # is still the one on file). Connection registration is this
+        # class's own job, not server/router.py's CommandRouter - the same
+        # split their own ConnectionLifecycle/ClientMessageRouter draw.
         stale_websocket = self._connections.get(username)
         if stale_websocket is not None and stale_websocket is not websocket:
             asyncio.ensure_future(stale_websocket.close())
 
         self._connections.set(username, websocket)
 
-        # Reconnecting into an already-active game (within its 20s grace
-        # window) takes priority over an ordinary lobby login - the same
-        # username is still mid-game, not starting fresh. Applies the same
-        # way whether that game came from PLAY or a room - GameSession
-        # itself carries no notion of which.
-        game = self._loop.active_game_for(username)
-        seat = game.session.seat_for_username(username) if game is not None else None
-        if seat is not None and game.session.is_disconnected(seat):
-            game.session.mark_reconnected(seat)
-            await self._connections.send(
-                websocket,
-                LoginAckMessage(
-                    accepted=True, username=username, rating=account.rating, reconnected=True, color=seat
-                ),
-            )
-            return username
-
-        # A room whose opponent seat was already filled before a server
-        # restart (see server/rooms.py's RoomStore) has no GameSession to
-        # reconnect into above - board state itself is never persisted (see
-        # this module's own docstring). Instead, once both the creator and
-        # opponent are back online, a fresh game starts for them in the
-        # same room, the same way GameLoop.start_room_game already runs the
-        # instant the opponent seat first fills. Only a real seat (creator/
-        # opponent) triggers this - a spectator's own reconnection is
-        # handled once that fresh game actually starts (see
-        # GameLoop.start_room_game's own spectator reattachment), not here.
-        room = self._rooms.room_for_username(username)
-        if room is not None and self._loop.get(room.room_id) is None and username in (room.creator, room.opponent):
-            other_username = room.opponent if username == room.creator else room.creator
-            seat = WHITE if username == room.creator else BLACK
-            if other_username is not None and self._connections.get(other_username) is not None:
-                # The other seat is already back online and waiting - start
-                # the fresh game now and tell this connection its seat the
-                # same way an ordinary mid-game reconnect already does (see
-                # above), so play_online.py needs no new message type to
-                # understand it.
-                await self._loop.start_room_game(room)
-                await self._connections.send(
-                    websocket,
-                    LoginAckMessage(
-                        accepted=True, username=username, rating=account.rating, reconnected=True, color=seat
-                    ),
-                )
-                return username
-
-            # First one back - nothing to start yet, just tell the client
-            # which room it's waiting to resume (still normally joinable by
-            # a new opponent in the meantime if this room never had one -
-            # see RoomRegistry.join).
-            await self._connections.send(
-                websocket,
-                LoginAckMessage(accepted=True, username=username, rating=account.rating, resuming_room_id=room.room_id),
-            )
-            return username
-
-        await self._connections.send(
-            websocket, LoginAckMessage(accepted=True, username=username, rating=account.rating)
-        )
+        decision = self._router.decide_login(username, rating)
+        await self._connections.send(websocket, decision.ack)
+        if decision.start_room is not None:
+            await self._loop.start_room_game(decision.start_room)
         return username
 
-    async def _handle_play(self, websocket, username: str) -> None:
-        reason = self._busy_reason(username)
-        if reason is not None:
-            await self._connections.send(websocket, PlayAckMessage(accepted=False, reason=reason))
-            return
-
-        rating = self._account_store.rating_for(username)
-        self._loop.matchmaking.enqueue(username, rating)
-        await self._connections.send(websocket, PlayAckMessage(accepted=True, reason="queued"))
-
-    async def _handle_create_room(self, websocket, username: str) -> None:
-        reason = self._busy_reason(username)
-        if reason is not None:
-            await self._connections.send(websocket, CreateRoomAckMessage(accepted=False, reason=reason))
-            return
-
-        room = self._rooms.create(username)
-        _logger.info("'%s' created room %s", username, room.room_id)
-        await self._connections.send(websocket, CreateRoomAckMessage(accepted=True, room_id=room.room_id))
-
     async def _handle_join_room(self, websocket, username: str, room_id: str) -> None:
-        reason = self._busy_reason(username)
-        if reason is not None:
-            await self._connections.send(websocket, JoinRoomAckMessage(accepted=False, reason=reason))
-            return
-
-        try:
-            room = self._rooms.join(room_id, username)
-        except RoomError as error:
-            await self._connections.send(websocket, JoinRoomAckMessage(accepted=False, reason=str(error)))
-            return
-
-        role = Role.OPPONENT if room.opponent == username else Role.SPECTATOR
-        _logger.info("'%s' joined room %s as %s", username, room_id, role)
-        await self._connections.send(
-            websocket, JoinRoomAckMessage(accepted=True, room_id=room_id, role=role)
-        )
-
-        if role == Role.OPPONENT:
-            await self._loop.start_room_game(room)
-            return
-
-        # A spectator joining mid-game gets the board as it stands right
-        # now - otherwise they'd see nothing at all until the next tick's
-        # broadcast happens to land.
-        game = self._loop.get(room_id)
-        if game is not None:
-            game.spectator_usernames.add(username)
-            payload = snapshot_to_json(game.session.snapshot())
-            payload.update(panel_to_json(game.session.move_log, game.session.score, names_for(game.session)))
-            await self._connections.send(websocket, payload)
-
-    async def _handle_cancel_room(self, websocket, username: str) -> None:
-        try:
-            self._rooms.cancel(username)
-        except RoomError as error:
-            await self._connections.send(websocket, CancelRoomAckMessage(accepted=False, reason=str(error)))
-            return
-
-        _logger.info("'%s' cancelled their room", username)
-        await self._connections.send(websocket, CancelRoomAckMessage(accepted=True))
-
-    # Shared by _handle_play/_handle_create_room/_handle_join_room - a
-    # connection may only ever be committed to one thing at a time (queued,
-    # in a room, or seated/spectating an active game), across both the PLAY
-    # and room tracks together, not per-track. None means free to start
-    # something new.
-    def _busy_reason(self, username: str) -> Optional[str]:
-        if self._loop.active_game_for(username) is not None or self._rooms.room_for_username(username) is not None:
-            return "already_in_game"
-        if self._loop.matchmaking.is_waiting(username):
-            return "already_queued"
-        return None
-
-    async def _handle_game_command(self, websocket, username: str, message: str) -> None:
-        game = self._loop.active_game_for(username)
-        seat = game.session.seat_for_username(username) if game is not None else None
-        if seat is None:
-            await self._connections.send(websocket, AckMessage(accepted=False, reason="not_in_game"))
-            return
-
-        try:
-            command = parse_command(message, game.session.board_height)
-        except ProtocolError as error:
-            await self._connections.send(websocket, ErrorMessage(message=str(error)))
-            return
-
-        # A connection may only move the color it was seated as - the
-        # command's own color letter is otherwise just a client-asserted
-        # claim, not something GameEngine checks (see server/session.py).
-        if command.color != seat:
-            await self._connections.send(websocket, AckMessage(accepted=False, reason="wrong_seat"))
-            return
-
-        result = game.session.apply_command(command)
-        await self._connections.send(websocket, AckMessage(accepted=result.is_accepted, reason=result.reason))
+        decision = self._router.decide_join_room(username, room_id)
+        await self._connections.send(websocket, decision.ack)
+        if decision.start_room is not None:
+            await self._loop.start_room_game(decision.start_room)
+        elif decision.spectator_snapshot is not None:
+            await self._connections.send(websocket, decision.spectator_snapshot)

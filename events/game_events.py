@@ -36,7 +36,7 @@ class GameEndedEvent:
 class RemoteCaptureEvent:
     """A capture just happened, reported by client/network_message_adapter.py's
     NetworkMessageAdapter from the server's own "capture" wire message (see
-    server/session.py's drain_wire_events) - unlike a local GameEngine's own
+    server/publisher.py's NetworkPublisher) - unlike a local GameEngine's own
     ArrivalEvent (model/game_state.py), the wire carries no piece identity,
     board position, or the real captured Piece, so there's no ArrivalEvent
     to reconstruct even a placeholder for. Subscribers that only ever check

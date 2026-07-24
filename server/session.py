@@ -13,7 +13,7 @@ front instead of exposing an assign_seat()/login() step of its own.
 """
 
 import math
-from typing import Dict, List, Optional, Union
+from typing import Dict, Optional, Union
 
 from engine.game_builder import build_game
 from events.bus import Bus
@@ -24,7 +24,6 @@ from model.board import BoardRepresentation
 from model.game_state import ArrivalEvent, GameObserver, JumpResult, MoveLoggedEvent, MoveResult
 from model.piece import ActionResultReason, BLACK, KING, WHITE
 from model.position import Position
-from protocol.game_messages import CaptureMessage, MoveLoggedMessage
 from server.interfaces import RatingRepository
 from server.protocol import JUMP, Command
 from server.rating import updated_ratings
@@ -62,77 +61,43 @@ class GameSession:
     def __init__(
         self,
         board: BoardRepresentation,
-        account_store: RatingRepository,
+        rating_store: RatingRepository,
         white_username: str,
         black_username: str,
         disconnect_grace_ms: int = DISCONNECT_GRACE_MS,
     ):
         self._board = board
         self.game_engine = build_game(board)
-        self._account_store = account_store
+        self._rating_store = rating_store
         self._usernames: Dict[str, str] = {WHITE: white_username, BLACK: black_username}
 
         # Same Bus/BusBridge wiring game_builder.py's build_app uses for the
         # local GUI's sound/animation cues - the king-capture watcher, move
         # log, and score are subscribers here too, not GameEngine observers
         # in their own right. GameEngine itself only ever sees BusBridge
-        # (see events/bus_bridge.py); server/ws_server.py has no notion of
-        # this bus itself, only of the move_log/score it accumulates (see
-        # protocol/snapshot_codec.py's panel_to_json) and the wire events it buffers
-        # for a networked client's own sound cues (see drain_wire_events).
-        self._bus = Bus()
+        # (see events/bus_bridge.py). Public (not _bus) - server/publisher.py's
+        # NetworkPublisher subscribes to this same bus from outside to build
+        # the wire events server/game_loop.py broadcasts each tick, so this
+        # class never has to import protocol/game_messages.py itself (see
+        # this module's own docstring on why it claims no notion of
+        # websockets/broadcasting at all).
+        self.bus = Bus()
         self._king_capture_watcher = _KingCaptureWatcher()
-        self._bus.subscribe(ArrivalEvent, self._king_capture_watcher.on_arrival)
+        self.bus.subscribe(ArrivalEvent, self._king_capture_watcher.on_arrival)
         self.move_log = MoveLogObserver(board_height=board.height)
         self.score = ScoreObserver()
-        self._bus.subscribe(MoveLoggedEvent, self.move_log.on_move_logged)
-        self._bus.subscribe(ArrivalEvent, self.move_log.on_arrival)
-        self._bus.subscribe(ArrivalEvent, self.score.on_arrival)
+        self.bus.subscribe(MoveLoggedEvent, self.move_log.on_move_logged)
+        self.bus.subscribe(ArrivalEvent, self.move_log.on_arrival)
+        self.bus.subscribe(ArrivalEvent, self.score.on_arrival)
 
-        # The bare minimum a networked client needs to fire the same
-        # move/jump/capture sound cue a local GameEngine-fed Bus would (see
-        # events/sound.py's SoundCues) - buffered here rather than sent
-        # immediately, since GameSession has no notion of websockets or
-        # broadcasting (see this module's own docstring); server/ws_server.py
-        # drains this once per tick (see drain_wire_events) and broadcasts
-        # each entry as its own message, instead of a networked client
-        # re-guessing "was that a capture?" from the move-log's own notation
-        # text the way it used to.
-        self._pending_wire_events: List[Union[MoveLoggedMessage, CaptureMessage]] = []
-        self._bus.subscribe(MoveLoggedEvent, self._buffer_move_logged)
-        self._bus.subscribe(ArrivalEvent, self._buffer_capture)
-
-        self.game_engine.add_observer(BusBridge(self._bus))
-        self._bus.publish(GameStartedEvent())
+        self.game_engine.add_observer(BusBridge(self.bus))
+        self.bus.publish(GameStartedEvent())
 
         self._ratings_finalized = False
         self._disconnect_grace_ms = disconnect_grace_ms
         # Only present while a seat's connection is currently disconnected -
         # absent means "connected" (see mark_disconnected/mark_reconnected).
         self._disconnected_ms: Dict[str, int] = {}
-
-    def _buffer_move_logged(self, event: MoveLoggedEvent) -> None:
-        self._pending_wire_events.append(MoveLoggedMessage(is_jump=event.is_jump))
-
-    # Fires on every arrival, but only ever buffered for a capture - a
-    # networked client's SoundCues only reacts to ArrivalEvent.captured_piece
-    # being non-None (see events/sound.py's SoundCues._on_arrival), so a
-    # quiet arrival has nothing worth telling it about. Buffered as soon as
-    # this fires, same as a local Bus would - including a mid-flight
-    # interception's capture (has_landed=False), which the old notation-
-    # guessing approach could only ever detect once the mover's own move-log
-    # entry was finally corrected at landing (see events/observers.py's
-    # MoveLogObserver.on_arrival).
-    def _buffer_capture(self, event: ArrivalEvent) -> None:
-        if event.captured_piece is not None:
-            self._pending_wire_events.append(CaptureMessage())
-
-    # Drains every wire event buffered since the last call, in order - see
-    # server/ws_server.py's _advance_game, the only caller, once per tick.
-    def drain_wire_events(self) -> List[Union[MoveLoggedMessage, CaptureMessage]]:
-        events = self._pending_wire_events
-        self._pending_wire_events = []
-        return events
 
     @property
     def board_height(self) -> int:
@@ -208,12 +173,12 @@ class GameSession:
 
         self._ratings_finalized = True
 
-        winner_rating = self._account_store.rating_for(winner_username)
-        loser_rating = self._account_store.rating_for(loser_username)
+        winner_rating = self._rating_store.rating_for(winner_username)
+        loser_rating = self._rating_store.rating_for(loser_username)
         new_winner_rating, new_loser_rating = updated_ratings(winner_rating, loser_rating)
 
-        self._account_store.update_rating(winner_username, new_winner_rating)
-        self._account_store.update_rating(loser_username, new_loser_rating)
+        self._rating_store.update_rating(winner_username, new_winner_rating)
+        self._rating_store.update_rating(loser_username, new_loser_rating)
 
         return {winner_seat: new_winner_rating, loser_seat: new_loser_rating}
 
