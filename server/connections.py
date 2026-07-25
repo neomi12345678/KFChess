@@ -6,20 +6,23 @@ goes through here instead of calling websocket.send directly.
 
 import json
 from dataclasses import is_dataclass
-from typing import Dict, Union
+from typing import TYPE_CHECKING, Dict, Union
 
 import websockets
 
-from protocol.game_messages import ErrorMessage
 from protocol.registry import message_to_dict
 
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+
 # Every outgoing control message is one of protocol.lobby_messages/
-# protocol.game_messages' frozen dataclasses (ErrorMessage stands in for the
-# whole family here just for the type hint) - the per-tick snapshot
-# broadcast is the one exception, still a plain dict from
+# protocol.game_messages' frozen dataclasses (DataclassInstance stands in
+# for the whole family here since every one of them is a plain
+# @dataclass(frozen=True), not because dataclass-ness itself matters) - the
+# per-tick snapshot broadcast is the one exception, still a plain dict from
 # snapshot_to_json/panel_to_json (see protocol/snapshot_codec.py's own
 # docstring on why that one has no dataclass).
-WirePayload = Union[ErrorMessage, dict]
+WirePayload = Union["DataclassInstance", dict]
 
 
 # The plain-dict snapshot/panel broadcast passes through unchanged; every
