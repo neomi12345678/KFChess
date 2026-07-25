@@ -20,13 +20,15 @@ still funnels through there rather than each site calling json.dumps itself.
 
 import json
 from dataclasses import asdict, fields, is_dataclass
-from typing import Dict, Optional, Type
+from typing import Dict, Optional, Type, TypeVar
 
 _MESSAGE_CLASSES: Dict[str, Type] = {}
 
+T = TypeVar("T")
+
 
 def register(type_tag: str):
-    def decorator(cls: Type) -> Type:
+    def decorator(cls: Type[T]) -> Type[T]:
         _MESSAGE_CLASSES[type_tag] = cls
         return cls
 
@@ -43,8 +45,11 @@ def register(type_tag: str):
 # dataclass's own field names first, rather than passing it through as
 # **payload, so an extra key (e.g. a stale "clock_ms" from some other
 # caller) is silently ignored instead of raising a TypeError here.
-def message_from_dict(payload: dict) -> Optional[object]:
-    cls = _MESSAGE_CLASSES.get(payload.get("type"))
+def message_from_dict(payload: Dict[str, object]) -> Optional[object]:
+    type_tag = payload.get("type")
+    if not isinstance(type_tag, str):
+        return None
+    cls = _MESSAGE_CLASSES.get(type_tag)
     if cls is None:
         return None
     field_names = {f.name for f in fields(cls)}

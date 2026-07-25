@@ -9,7 +9,7 @@ traffic.
 """
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, cast
 
 from model.position import Position
 from protocol.registry import register
@@ -50,11 +50,18 @@ class JumpMessage:
 
 
 def build_move(color: str, source: Position, destination: Position) -> MoveMessage:
-    return MoveMessage(color=color, source=position_to_json(source), destination=position_to_json(destination))
+    # position_to_json's Optional return is for snapshot_codec.py's own
+    # nullable selected_cell - source/destination here are always real
+    # Positions, never None.
+    return MoveMessage(
+        color=color,
+        source=cast(dict, position_to_json(source)),
+        destination=cast(dict, position_to_json(destination)),
+    )
 
 
 def build_jump(color: str, source: Position) -> JumpMessage:
-    return JumpMessage(color=color, source=position_to_json(source))
+    return JumpMessage(color=color, source=cast(dict, position_to_json(source)))
 
 
 @register(MessageType.ERROR)

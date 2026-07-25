@@ -223,10 +223,11 @@ class GameLoop:
             return
 
         for seat in (WHITE, BLACK):
-            if session.is_disconnected(seat):
+            seconds_remaining = session.seconds_remaining_for(seat)
+            if seconds_remaining is not None:
                 await self._connections.send_to_username(
                     session.username_for(OTHER_SEAT[seat]),
-                    DisconnectCountdownMessage(seat=seat, seconds_remaining=session.seconds_remaining_for(seat)),
+                    DisconnectCountdownMessage(seat=seat, seconds_remaining=seconds_remaining),
                 )
 
         await self._broadcast_to_game(game, full_broadcast_payload(session))

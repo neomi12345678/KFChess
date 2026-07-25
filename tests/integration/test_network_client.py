@@ -21,6 +21,7 @@ from model.piece import BLACK, WHITE
 from protocol.game_messages import AckMessage, SeatMessage, build_move
 from protocol.lobby_messages import JoinRoomAckMessage, LoginAckMessage, PlayAckMessage
 from protocol.registry import encode_json_message
+from protocol.types import Role
 from server.accounts import UserStore
 from server.accounts_db import open_accounts_database
 from server.rating_store import RatingStore
@@ -201,7 +202,7 @@ def test_create_room_join_room_and_get_seated_over_a_real_connection():
                 room_id = created.room_id
 
                 joined = await _in_thread(client_b.join_room, room_id)
-                assert joined == JoinRoomAckMessage(accepted=True, room_id=room_id, role="opponent")
+                assert joined == JoinRoomAckMessage(accepted=True, room_id=room_id, role=Role.OPPONENT)
 
                 seat_a = await _in_thread(client_a.wait_for_seat)
                 seat_b = await _in_thread(client_b.wait_for_seat)
@@ -231,7 +232,7 @@ def test_joining_a_room_that_already_has_an_opponent_makes_a_spectator():
                 await _in_thread(client_b.wait_for_seat)
 
                 joined = await _in_thread(client_c.join_room, room_id)
-                assert joined == JoinRoomAckMessage(accepted=True, room_id=room_id, role="spectator")
+                assert joined == JoinRoomAckMessage(accepted=True, room_id=room_id, role=Role.SPECTATOR)
 
                 # A spectator gets the board immediately, not just from the
                 # next tick's broadcast - same call play_online.py's own

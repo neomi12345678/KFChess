@@ -30,7 +30,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Type
+from typing import List, Optional, Type, TypeVar
 
 import websockets
 
@@ -48,6 +48,8 @@ from protocol.lobby_messages import (
 )
 from protocol.registry import encode_json_message, message_from_dict
 from protocol.snapshot_codec import is_snapshot_payload
+
+T = TypeVar("T")
 
 
 # The one wire payload with no registered dataclass of its own - see
@@ -215,7 +217,7 @@ class NetworkGameClient:
     # instead of being silently discarded like any other non-matching
     # message - wait_for_seat's own matchmaking_timeout being the only
     # current use (see above).
-    def _wait_for_type(self, message_type: Type, timeout: float, stop_types: Optional[dict] = None) -> object:
+    def _wait_for_type(self, message_type: Type[T], timeout: float, stop_types: Optional[dict] = None) -> T:
         stop_types = stop_types or {}
         deadline = time.monotonic() + timeout
         while True:
