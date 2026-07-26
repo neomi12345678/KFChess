@@ -29,8 +29,9 @@ import dataclasses
 import time
 
 import piece_config
+from client.client_config import INDEFINITE_WAIT_S, RENDER_LOOP_POLL_S
 from client.game_view_state import GameViewState
-from client.network_client import INDEFINITE_WAIT_S, NetworkClientError, NetworkGameClient, SnapshotBroadcast
+from client.network_client import NetworkClientError, NetworkGameClient, SnapshotBroadcast
 from client.network_controller import JumpRequest, MoveRequest, NetworkController
 from client.setup_dialogs import SetupCancelled, run_game_setup, run_login
 from display_config import compute_cell_size, screen_resolution_px, side_panel_width_for
@@ -57,7 +58,7 @@ def _wait_for_first_snapshot(client: NetworkGameClient, timeout: float = 5.0) ->
         for message in client.poll_messages():
             if isinstance(message, SnapshotBroadcast):
                 return message.payload
-        time.sleep(0.01)
+        time.sleep(RENDER_LOOP_POLL_S)
     raise NetworkClientError("timed out waiting for the first board snapshot")
 
 
@@ -188,7 +189,7 @@ def main() -> None:  # pragma: no cover
         canvas.begin_frame()
         renderer.draw(ui_snapshot)
         running = window.show(canvas.frame())
-        time.sleep(0.01)
+        time.sleep(RENDER_LOOP_POLL_S)
 
     window.close()
     client.close()

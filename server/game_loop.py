@@ -27,15 +27,10 @@ from server.interfaces import MessageSender, RatingRepository
 from server.matchmaking import MatchmakingQueue
 from server.publisher import NetworkPublisher
 from server.rooms import Room, RoomRegistry
+from server.server_config import DEFAULT_TICK_INTERVAL_S
 from server.session import OTHER_SEAT, GameSession
 
 _logger = logging.getLogger(__name__)
-
-# Mirrors play.py's frame loop (real elapsed wall-clock time, fractional ms
-# carried into the next tick rather than truncated away) so every networked
-# game's simulated clock keeps the same feel as local play - see run_forever
-# below.
-DEFAULT_TICK_INTERVAL_S = 0.05
 
 
 # {color: username} for panel_to_json's own names argument (see

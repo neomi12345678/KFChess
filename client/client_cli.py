@@ -25,6 +25,7 @@ from typing import Optional, Type, Union
 import websockets
 
 from boardio.algebraic_notation import parse_square
+from client.client_config import CANCEL_ROOM_INPUT, CREATE_ROOM_INPUT, JOIN_ROOM_PREFIX, PLAY_INPUT
 from client.network_client import SnapshotBroadcast, decode_incoming
 from protocol.game_messages import GameOverMessage, JumpMessage, MoveMessage, SeatMessage, build_jump, build_move
 from protocol.lobby_messages import (
@@ -37,11 +38,6 @@ from protocol.lobby_messages import (
 )
 from protocol.registry import encode_json_message
 from protocol.types import HOST, PORT
-
-_PLAY_INPUT = "play"
-_CREATE_ROOM_INPUT = "create room"
-_CANCEL_ROOM_INPUT = "cancel room"
-_JOIN_ROOM_PREFIX = "join room "
 
 
 class InputError(Exception):
@@ -147,20 +143,20 @@ async def _read_commands(websocket, state: _ClientState) -> None:
         text = raw.strip()
         lowered = text.lower()
 
-        if lowered == _PLAY_INPUT:
+        if lowered == PLAY_INPUT:
             await websocket.send(encode_json_message(PlayMessage()))
             continue
 
-        if lowered == _CREATE_ROOM_INPUT:
+        if lowered == CREATE_ROOM_INPUT:
             await websocket.send(encode_json_message(CreateRoomMessage()))
             continue
 
-        if lowered == _CANCEL_ROOM_INPUT:
+        if lowered == CANCEL_ROOM_INPUT:
             await websocket.send(encode_json_message(CancelRoomMessage()))
             continue
 
-        if lowered.startswith(_JOIN_ROOM_PREFIX):
-            room_id = text[len(_JOIN_ROOM_PREFIX):].strip()
+        if lowered.startswith(JOIN_ROOM_PREFIX):
+            room_id = text[len(JOIN_ROOM_PREFIX):].strip()
             if not room_id:
                 print("(usage: 'join room <id>')")
                 continue

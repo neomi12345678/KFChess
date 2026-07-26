@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from client.client_config import ILLEGAL_MOVE_MESSAGE_S
 from client.network_client import SnapshotBroadcast
 from client.network_message_adapter import DisconnectCountdownEvent, MoveRejectedEvent, NetworkMessageAdapter
 from events.bus import Bus
@@ -53,13 +54,6 @@ from protocol.snapshot_codec import snapshot_from_json
 @dataclass(frozen=True)
 class SnapshotAppliedEvent:
     pass
-
-
-# How long a rejected move/jump's message stays on screen - the ack itself
-# (unlike disconnect_countdown) is a one-off reply, not a standing state
-# the server keeps re-broadcasting, so there's no "still true" signal to
-# clear it on; it just times out instead.
-ILLEGAL_MOVE_MESSAGE_S = 2.0
 
 
 # Owns the single status-banner slot play_online.py reads (GameViewState.

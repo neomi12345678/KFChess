@@ -23,8 +23,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
 from protocol.types import Reason
-
-_ID_LENGTH = 6
+from server.server_config import ROOM_ID_LENGTH
 
 
 @dataclass
@@ -227,6 +226,6 @@ class RoomRegistry:
     # keyspace like this one does.
     def _new_id(self) -> str:
         while True:
-            candidate = uuid.uuid4().hex[:_ID_LENGTH]
+            candidate = uuid.uuid4().hex[:ROOM_ID_LENGTH]
             if candidate not in self._rooms:
                 return candidate

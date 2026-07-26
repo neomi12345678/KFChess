@@ -29,7 +29,8 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, List, Optional
 
-from client.network_client import INDEFINITE_WAIT_S, MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
+from client.client_config import INDEFINITE_WAIT_S
+from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient
 from protocol.lobby_messages import LoginAckMessage
 from protocol.types import Role
 

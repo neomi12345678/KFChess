@@ -9,7 +9,8 @@ from server.accounts import UserStore
 from server.accounts_db import open_accounts_database
 from server.command_translation import JUMP, MOVE, Command
 from server.rating_store import RatingStore
-from server.session import DISCONNECT_GRACE_MS, GameSession
+from server.server_config import DISCONNECT_GRACE_MS
+from server.session import GameSession
 
 
 @pytest.fixture
