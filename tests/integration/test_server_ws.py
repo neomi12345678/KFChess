@@ -4,10 +4,10 @@ pick a free port so this never collides with a real server already running
 on the well-known port (see server/main.py).
 
 matchmaking_timeout_ms/disconnect_grace_ms default here to a few hundred ms,
-not the real 60s/20s production defaults (see server/matchmaking.py's
-TIMEOUT_MS and server/session.py's DISCONNECT_GRACE_MS) - these tests
-exercise the exact same code paths without actually waiting a minute or 20
-seconds of wall-clock time per test.
+not the real 60s/20s production defaults (see server/server_config.py's
+MATCHMAKING_TIMEOUT_MS and DISCONNECT_GRACE_MS) - these tests exercise the
+exact same code paths without actually waiting a minute or 20 seconds of
+wall-clock time per test.
 """
 
 import asyncio

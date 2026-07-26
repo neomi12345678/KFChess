@@ -34,6 +34,7 @@ from typing import List, Optional, Type, TypeVar
 
 import websockets
 
+from client.client_config import CONNECT_TIMEOUT_S, INDEFINITE_WAIT_S
 from protocol.game_messages import SeatMessage
 from protocol.lobby_messages import (
     CreateRoomAckMessage,
@@ -76,13 +77,6 @@ class MatchmakingTimeoutError(NetworkClientError):
     simply having stopped listening too soon."""
 
 
-# A day-long stand-in for "wait indefinitely", passed as wait_for_seat's own
-# timeout by both callers that wait on the room flow (play_online.py,
-# client/setup_dialogs.py) - unlike PLAY's own matchmaking, a room has no
-# server-side timeout of its own (see server/rooms.py), so there's nothing
-# for a shorter default to defend against here the way wait_for_seat's own
-# 65s default defends against PLAY's matchmaking_timeout never arriving.
-INDEFINITE_WAIT_S = 86_400.0
 
 
 # json.loads(raw) always succeeds for anything the server actually sends,
@@ -106,7 +100,7 @@ def decode_incoming(raw_text: str) -> object:
 
 
 class NetworkGameClient:
-    def __init__(self, host: str, port: int, connect_timeout: float = 5.0):
+    def __init__(self, host: str, port: int, connect_timeout: float = CONNECT_TIMEOUT_S):
         self._incoming: "queue.Queue[object]" = queue.Queue()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._websocket = None

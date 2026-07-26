@@ -16,14 +16,7 @@ import os
 from dataclasses import dataclass
 
 from server.accounts_db import AccountsDatabase
-
-STARTING_RATING = 1200
-
-# PBKDF2-SHA256 with a random per-account salt - no extra dependency
-# (bcrypt/passlib), but still never stores a password in plain text or
-# lets two equal passwords hash identically.
-_HASH_NAME = "sha256"
-_ITERATIONS = 200_000
+from server.server_config import PASSWORD_HASH_ITERATIONS, PASSWORD_HASH_NAME, STARTING_RATING
 
 
 class InvalidCredentialsError(Exception):
@@ -80,4 +73,4 @@ class UserStore:
 
 
 def _hash_password(password: str, salt: bytes) -> bytes:
-    return hashlib.pbkdf2_hmac(_HASH_NAME, password.encode("utf-8"), salt, _ITERATIONS)
+    return hashlib.pbkdf2_hmac(PASSWORD_HASH_NAME, password.encode("utf-8"), salt, PASSWORD_HASH_ITERATIONS)

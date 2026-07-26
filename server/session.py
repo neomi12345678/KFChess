@@ -25,16 +25,13 @@ from model.position import Position
 from server.interfaces import RatingRepository
 from server.command_translation import JUMP, Command
 from server.rating import updated_ratings
+from server.server_config import DISCONNECT_GRACE_MS
 
 # Shared with server/ws_server.py (see its own import of this constant) -
 # "the other seat" is the same lookup whether it's this module deciding a
 # resignation's winner or ws_server.py addressing the disconnect-countdown
 # broadcast at the opponent.
 OTHER_SEAT = {WHITE: BLACK, BLACK: WHITE}
-
-# How long a disconnected seat gets before it's ruled a resignation (see
-# resign()) - the Home-screen slide's own "auto-resign after 20 sec".
-DISCONNECT_GRACE_MS = 20_000
 
 
 # Subscribes to the bus's ArrivalEvent stream (see GameSession.__init__ and

@@ -16,6 +16,18 @@ _TEXT_FONT = cv2.FONT_HERSHEY_SIMPLEX
 _COOLDOWN_BAR_LENGTH_FRAC = 0.5
 _COOLDOWN_BAR_HEIGHT_FRAC = 0.1
 
+# BGR (cv2's own convention). Every color/alpha default below is a genuine
+# fallback, not dead code - view/renderer.py's _draw_selection/
+# _draw_cooldown_bars/draw() (the "Game Over"/status-message overlay) all
+# call highlight_cell/draw_cooldown_bar/draw_text without a color of their
+# own, relying on exactly these.
+_PANEL_FILL_COLOR = (20, 20, 20)
+_HIGHLIGHT_COLOR = (0, 255, 255)  # gold - matches view/renderer.py's own _GOLD
+_HIGHLIGHT_ALPHA = 0.35
+_COOLDOWN_BAR_COLOR = (0, 0, 255)  # red
+_TEXT_COLOR = (255, 255, 255, 255)
+_DEFAULT_FONT_SIZE = 1.0
+
 
 class ImgCanvas:
     """Implements the draw_rect/draw_image/highlight_cell/draw_cooldown_bar/
@@ -157,7 +169,7 @@ class ImgCanvas:
     # draw_text. Clamped to the frame's own bounds rather than trusting
     # numpy's slice clipping, since a negative x/y would otherwise wrap
     # around to the wrong edge instead of just being cropped.
-    def fill_rect(self, x: int, y: int, width: int, height: int, color=(20, 20, 20)) -> None:
+    def fill_rect(self, x: int, y: int, width: int, height: int, color=_PANEL_FILL_COLOR) -> None:
         frame = self._frame.img
         frame_h, frame_w = frame.shape[:2]
         x0, y0 = max(0, x), max(0, y)
@@ -166,7 +178,7 @@ class ImgCanvas:
             return
         frame[y0:y1, x0:x1, :3] = color
 
-    def highlight_cell(self, row: int, col: int, color=(0, 255, 255), alpha: float = 0.35) -> None:
+    def highlight_cell(self, row: int, col: int, color=_HIGHLIGHT_COLOR, alpha: float = _HIGHLIGHT_ALPHA) -> None:
         x, y = self._board_offset_x + col * self._cell_size, row * self._cell_size
         region = self._frame.img[y:y + self._cell_size, x:x + self._cell_size]
         overlay = region.copy()
@@ -180,7 +192,7 @@ class ImgCanvas:
     # underneath it. color is BGR, like every other color this class takes
     # (cv2's own convention, see debug_mouse.py's HOVER_COLOR/CLICK_COLOR
     # for the same (B, G, R) ordering) - defaults to red.
-    def draw_cooldown_bar(self, row: int, col: int, fraction: float, color=(0, 0, 255)) -> None:
+    def draw_cooldown_bar(self, row: int, col: int, fraction: float, color=_COOLDOWN_BAR_COLOR) -> None:
         fraction = max(0.0, min(1.0, fraction))
         if fraction <= 0.0:
             return
@@ -196,6 +208,6 @@ class ImgCanvas:
     # uses) would draw almost entirely above row 0 and be clipped off the
     # frame. Shifting down by the glyph height makes y behave like every
     # other draw_* call's top-left-origin convention.
-    def draw_text(self, text: str, x: int, y: int, font_size: float = 1.0, color=(255, 255, 255, 255)) -> None:
+    def draw_text(self, text: str, x: int, y: int, font_size: float = _DEFAULT_FONT_SIZE, color=_TEXT_COLOR) -> None:
         (_, text_height), _ = cv2.getTextSize(text, _TEXT_FONT, font_size, 1)
         self._frame.put_text(text, x, y + text_height, font_size, color=color)

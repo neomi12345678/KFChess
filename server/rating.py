@@ -7,9 +7,7 @@ GameEngine never needs to know it exists.
 
 from typing import Tuple
 
-# Standard chess ELO's own conventional step size - how much of the gap
-# between expected and actual outcome one game moves a rating.
-K_FACTOR = 32
+from server.server_config import RATING_K_FACTOR
 
 
 def expected_score(rating: int, opponent_rating: int) -> float:
@@ -23,7 +21,7 @@ def updated_ratings(winner_rating: int, loser_rating: int) -> Tuple[int, int]:
     winner_expected = expected_score(winner_rating, loser_rating)
     loser_expected = expected_score(loser_rating, winner_rating)
 
-    new_winner_rating = round(winner_rating + K_FACTOR * (1 - winner_expected))
-    new_loser_rating = round(loser_rating + K_FACTOR * (0 - loser_expected))
+    new_winner_rating = round(winner_rating + RATING_K_FACTOR * (1 - winner_expected))
+    new_loser_rating = round(loser_rating + RATING_K_FACTOR * (0 - loser_expected))
 
     return new_winner_rating, new_loser_rating

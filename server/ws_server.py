@@ -42,8 +42,8 @@ down network) the `websockets` library's own keepalive ping is what
 eventually notices, and its stock defaults (ping_interval=20s,
 ping_timeout=20s) can take up to ~40s to do so - twice the grace window
 this class promises to only start counting once. PING_INTERVAL_S/
-PING_TIMEOUT_S below tighten that, so a truly dead connection is always
-detected well inside DISCONNECT_GRACE_MS, not after it.
+PING_TIMEOUT_S (server/server_config.py) tighten that, so a truly dead
+connection is always detected well inside DISCONNECT_GRACE_MS, not after it.
 """
 
 import asyncio
@@ -69,29 +69,20 @@ from protocol.types import PORT as DEFAULT_PORT
 from protocol.types import Reason
 from server.accounts import InvalidCredentialsError, UserStore
 from server.connections import ConnectionRegistry
-from server.game_loop import DEFAULT_TICK_INTERVAL_S, GameLoop
+from server.game_loop import GameLoop
 from server.interfaces import RatingRepository
-from server.matchmaking import TIMEOUT_MS as MATCHMAKING_TIMEOUT_MS
 from server.router import CommandRouter
 from server.rooms import RoomRegistry, RoomStore
-from server.session import DISCONNECT_GRACE_MS
+from server.server_config import (
+    CLOSE_TIMEOUT_S,
+    DEFAULT_TICK_INTERVAL_S,
+    DISCONNECT_GRACE_MS,
+    MATCHMAKING_TIMEOUT_MS,
+    PING_INTERVAL_S,
+    PING_TIMEOUT_S,
+)
 
 _logger = logging.getLogger(__name__)
-
-# Tighter than `websockets`' own 20s/20s stock defaults (see this module's
-# own docstring for why a dead connection must be caught faster than
-# those), but deliberately not razor-thin: one connection's own abrupt
-# close can briefly stall the event loop's ping bookkeeping for every
-# *other* connection too (observed up to ~10s on this project's own dev
-# setup, cause not fully isolated - a Windows/`websockets` interaction, not
-# anything this project's own code controls). Too tight a PING_TIMEOUT_S
-# turns that stall into a false-positive keepalive timeout - a cascading
-# disconnect for players who were never actually gone - so this stays
-# comfortably above it rather than chasing the tightest number that merely
-# happens to survive today's specific observation.
-PING_INTERVAL_S = 10.0
-PING_TIMEOUT_S = 10.0
-CLOSE_TIMEOUT_S = 5.0
 
 
 class GameServer:

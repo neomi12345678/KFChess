@@ -6,8 +6,7 @@ this only ever tracks who's currently waiting and decides who to pair up.
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-RATING_RANGE = 100
-TIMEOUT_MS = 60_000
+from server.server_config import MATCHMAKING_TIMEOUT_MS, RATING_RANGE
 
 
 @dataclass
@@ -21,7 +20,7 @@ class MatchmakingQueue:
     # timeout_ms is injectable so tests can use a timeout measured in
     # milliseconds instead of actually waiting out the real 60-second
     # default (see server/ws_server.py's own matchmaking_timeout_ms).
-    def __init__(self, timeout_ms: int = TIMEOUT_MS):
+    def __init__(self, timeout_ms: int = MATCHMAKING_TIMEOUT_MS):
         # A plain dict, not a separate ordered list - insertion order is
         # preserved (Python 3.7+) and is exactly the "queued earlier" order
         # find_match needs, without tracking it twice.

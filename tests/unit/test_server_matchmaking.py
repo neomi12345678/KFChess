@@ -1,4 +1,5 @@
-from server.matchmaking import RATING_RANGE, TIMEOUT_MS, MatchmakingQueue
+from server.matchmaking import MatchmakingQueue
+from server.server_config import MATCHMAKING_TIMEOUT_MS, RATING_RANGE
 
 
 def test_find_match_is_none_when_fewer_than_two_are_waiting():
@@ -66,7 +67,7 @@ def test_advance_time_returns_nothing_before_the_timeout():
     queue = MatchmakingQueue()
     queue.enqueue("alice", 1200)
 
-    expired = queue.advance_time(TIMEOUT_MS - 1)
+    expired = queue.advance_time(MATCHMAKING_TIMEOUT_MS - 1)
 
     assert expired == []
     assert queue.is_waiting("alice") is True
@@ -76,7 +77,7 @@ def test_advance_time_expires_and_removes_once_the_timeout_is_reached():
     queue = MatchmakingQueue()
     queue.enqueue("alice", 1200)
 
-    expired = queue.advance_time(TIMEOUT_MS)
+    expired = queue.advance_time(MATCHMAKING_TIMEOUT_MS)
 
     assert expired == ["alice"]
     assert queue.is_waiting("alice") is False
@@ -86,7 +87,7 @@ def test_advance_time_accumulates_across_multiple_calls():
     queue = MatchmakingQueue()
     queue.enqueue("alice", 1200)
 
-    queue.advance_time(TIMEOUT_MS - 100)
+    queue.advance_time(MATCHMAKING_TIMEOUT_MS - 100)
     expired = queue.advance_time(100)
 
     assert expired == ["alice"]
@@ -103,7 +104,7 @@ def test_advance_time_honors_a_custom_timeout_ms():
 def test_advance_time_only_expires_whoever_actually_crossed_the_timeout():
     queue = MatchmakingQueue()
     queue.enqueue("alice", 1200)
-    queue.advance_time(TIMEOUT_MS - 100)  # alice is nearly expired
+    queue.advance_time(MATCHMAKING_TIMEOUT_MS - 100)  # alice is nearly expired
     queue.enqueue("bob", 1200)  # bob just joined, far from expiring
 
     expired = queue.advance_time(100)
