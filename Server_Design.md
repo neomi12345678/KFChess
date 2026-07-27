@@ -72,42 +72,84 @@ edge/dev-scale clusters; production at this size needs full Kubernetes with
 an HA control plane (multi-master etcd), so the orchestrator itself isn't a
 single point of failure.
 
-**The practical split**: stateless roles (Gateway, Auth, Matchmaking,
-Persistence-writer) are a plain `Deployment` + `HorizontalPodAutoscaler`.
-The role holding live simulation state in memory (Game-Authority) is
-stateful and needs an explicit **ownership** mechanism — see §4.
+**Docker Compose** answers a smaller, different question than either of
+the above — not "can this run 10,000 replicas" but "can this run at all,
+on one machine, for local development and demos": a single
+`docker-compose.yml` bringing up one instance of every role (API Gateway,
+WS Gateway, Matchmaker, Game Allocator, one Game Server Shard, Postgres,
+Redis, NATS) from the same images the K8s/K3s manifests deploy, with none
+of the HPA/multi-node machinery.
+
+**The practical split**: stateless roles (Gateways, Auth Service, Rooms
+API, Matchmaker, Persistence-writer) are a plain `Deployment` +
+`HorizontalPodAutoscaler`. The role holding live simulation state in
+memory (Game-Authority / Game Server Shard) is stateful and needs an
+explicit **ownership** mechanism — see §4, where it's a Redis lease
+managed by Game Allocator. **Agones** is worth naming as the drop-in
+alternative for a from-scratch build: its `Fleet`/`GameServerSet`/
+`GameServerAllocation` CRDs give exactly this stateful-fleet-with-a-ready-
+buffer semantics natively on Kubernetes, instead of hand-rolling it in
+Redis.
 
 ## 3. Architecture overview
 
+One invariant holds across every version of this diagram, past and
+present, and is worth stating explicitly since it was a specific review
+point: **neither the client nor any Gateway ever decides game rules.**
+The `GameEngine` inside whichever shard owns a room is the single source
+of truth for every state transition; Gateways only relay bytes, and the
+client only renders and interpolates what the shard has already decided.
+
+The diagram below adopts the component names and shape from the
+course-review diagram directly — **API Gateway** / **WS Gateway** /
+**Matchmaker** / **Game Allocator** / **Game Server Shards** /
+**Observability**, **NATS** as the internal event bus, **Agones** as an
+optional fleet manager — mapped 1:1 onto the roles this document already
+argued for. (Earlier sections still say **Game-Authority**; it's the same
+stateful role the diagram below calls a **Game Server Shard**, backed by
+the same `GameLoop` code discussed in §1.) Two refinements from the
+original draft survive the alignment, each kept for an arithmetic reason
+stated elsewhere in this document rather than dropped just to match the
+sketch exactly — both are called out where they appear below.
+
 ```
                               Clients
-                                 │
-                          Global Load Balancer / GeoDNS
-                                 │
-              ┌──────────────────┴──────────────────┐
-              ▼                                      ▼
-        Gateway Pods                           Gateway Pods
-   (WS termination, stateless,                 (other region)
-    no game logic — publish/
-    subscribe bridge only)
-              │
-   ┌──────────┼──────────────────────┬───────────────────┐
-   ▼          ▼                      ▼                    ▼
-Auth/API   Matchmaking          Coordination /       Control-plane
-(stateless)(shared ELO queue,   Room-Ownership        broker
-            Redis sorted set)   Registry (Redis        (NATS/Kafka —
-                                 lease + TTL)            low-volume events:
-                                                          game-created,
-                                                          game-finished,
-                                                          presence)
+                    REST/HTTP    │    WebSocket
+                        │        │        │
+             ┌──────────┘        │        └──────────┐
+             ▼                                        ▼
+       API Gateway                                WS Gateway
+  (stateless — login,                         (stateless — socket
+   rooms, history,                              termination, no game
+   matchmaking requests)                        logic, publish/
+             │                                   subscribe bridge only)
+   ┌─────────┴─────────┐                                │
+   ▼                   ▼                                │
+Auth Service        Rooms API                            │
+(stateless)         (stateless)                          │
+   └─────────┬─────────┘                                 │
+             ▼                                           │
+      NATS Event Bus  ◄─────────────────────────────────┘
+   (control plane only — low-volume events: matchmaking
+    requests, game-created, game-finished, presence)
+             │
+   ┌─────────┼──────────────────────┐
+   ▼                                ▼
+Matchmaker                    Game Allocator ◄──── Agones (optional
+(shared ELO queue,        (holds the Room                fleet manager:
+ Redis sorted set)         Registry lease — §4 —          allocates/health-
+             │              picks a Game Server            checks the shard
+             └─────────────►Shard for each new room)       fleet)
                                      │
                     ┌────────────────┼────────────────┐
                     ▼                ▼                ▼
-             Game-Authority    Game-Authority    Game-Authority
-             Pod (stateful,    Pod               Pod
+             Game Server       Game Server       Game Server
+             Shard (stateful,  Shard             Shard
              owns N rooms,
+             authoritative
+             GameEngine,
              direct data-plane
-             stream to Gateway)
+             stream to WS Gateway — bypasses NATS, see below)
                     │
                     ▼
              Persistence Workers (stateless consumers of
@@ -118,31 +160,46 @@ Auth/API   Matchmaking          Coordination /       Control-plane
    PostgreSQL     Redis            Cassandra/ScyllaDB
  (accounts, ELO) (presence,       (move history,
                   matchmaking,     telemetry,
-                  leaderboard)     anti-cheat logs)
+                  leaderboard)     anti-cheat logs — see
+                                    the note under §5's
+                                    table for why this
+                                    isn't PostgreSQL too)
 ```
 
-**Two different transports, deliberately**:
+*(Every role above also exports to Observability — logs, metrics, health
+checks — omitted from the boxes for readability; see the Observability
+subsection under §9.)*
 
-- **Control plane** (low volume: matchmaking, room creation, game-finished,
-  presence changes) — a real message broker (NATS/Kafka), matching the
-  pub/sub model in §0. Low enough volume that broker overhead is a
-  non-issue, and the decoupling is valuable (a gateway publishing
-  "game-created" doesn't need to know which worker will end up owning it).
+**Two different transports, deliberately** — the first place this design
+refines the course sketch:
+
+- **Control plane** (low volume: matchmaking requests, room creation,
+  game-finished, presence changes) — **NATS** (or Redis Pub/Sub, the
+  course brief's other named option), matching the pub/sub model in §0.
+  Low enough volume that broker overhead is a non-issue, and the
+  decoupling is valuable (an API Gateway publishing a matchmaking request
+  doesn't need to know which shard will end up hosting it).
 - **Data plane** (high volume: the live gameplay stream, up to 20Hz per
-  active room) — a **direct** stream from Gateway to the specific
-  Game-Authority pod that owns the room, resolved once via the Room
-  Registry, not routed through the shared broker on every tick. Pushing
-  tens of Gbps of per-tick gameplay traffic through a general-purpose
-  pub/sub broker would make the broker itself the bottleneck; a registry
-  *lookup* is cheap, a broker *relay* of the full data volume is not.
+  active room) — a **direct** stream from WS Gateway to the specific Game
+  Server Shard that owns the room, resolved once via Game
+  Allocator/the Room Registry, **not** routed through NATS on every tick.
+  The course-proposed diagram draws Game Server Shards publishing onto
+  the shared event bus; this document keeps that path for the low-volume
+  control events above but deliberately routes gameplay ticks around it,
+  because §7 shows *why* the naive version (a full-state broadcast
+  through a shared hop) reaches ~9.6–19 Tbps — pushing that through a
+  general-purpose broker would make the broker itself the bottleneck the
+  whole design exists to avoid. A registry *lookup* is cheap; a broker
+  *relay* of the full data volume is not.
 
 This also gives the **DDoS-insulation** property worth keeping from one of
-the earlier proposals: Game-Authority pods carry no public IP at all —
-every external packet terminates at the Gateway tier first.
+the earlier proposals: Game Server Shards carry no public IP at all —
+every external packet terminates at a Gateway (API or WS) first.
 
 ## 4. Room ownership: the gap every registry-only design has
 
-A `room_id → worker` mapping (Redis) is necessary but **not sufficient**.
+A `room_id → worker` mapping (Redis) — maintained by the **Game
+Allocator** introduced in §3 — is necessary but **not sufficient**.
 Pub/Sub guarantees fan-out (one publish reaches every subscriber); it does
 not by itself guarantee that only *one* worker ever believes it owns a given
 room's write authority. Without an explicit ownership mechanism, a
@@ -185,6 +242,18 @@ absorbed by a normal RDBMS). The real reasons:
 | Game/move history, telemetry, anti-cheat logs | Cassandra/ScyllaDB/DynamoDB | Append-only, extremely high sustained write volume (§8) — a relational engine isn't built for this write shape. |
 | Leaderboard | Redis Sorted Set | Not a live `ORDER BY` over 100M rows — incremental updates instead. |
 
+**One place this differs from the course-proposed diagram** — the second
+deliberate refinement flagged in §3: the lecture's sketch puts move
+history in the same PostgreSQL box as accounts and results. This document
+keeps move/telemetry history in Cassandra/ScyllaDB instead, specifically
+because of §8's arithmetic: ~83,000 games finishing per second implies a
+comparable rate of move-log append volume, an extremely high-write-rate,
+append-only shape that a relational engine sized for ACID account updates
+isn't built to absorb at the same time. Accounts, ELO, and the
+finished-game *result* row stay in PostgreSQL exactly as drawn; only the
+much higher-volume move-by-move log moves to a store built for that write
+pattern.
+
 *(A nice aside: K3s itself defaults to SQLite for its own cluster
 datastore, and needs etcd/Postgres only once multi-node HA is required —
 the exact same lesson, one layer down.)*
@@ -200,23 +269,28 @@ distribution.
 because no client ever needs to know *which* physical machine anything
 lives on:
 
-1. A player connects to whichever Gateway is geographically nearest
-   (GeoDNS/global LB). Gateway does nothing but hold the socket and bridge
-   publish/subscribe traffic — it computes no game logic.
-2. `PLAY` → Gateway forwards to Matchmaking, which sees **every** waiting
-   player globally (shared Redis-backed queue), not just players on this
-   one Gateway. A player on a US gateway and one on a Tokyo gateway are
-   both visible to the same queue and can be matched.
-3. Once matched, Matchmaking acquires a room-ownership lease (§4) on an
-   available Game-Authority worker, and publishes a low-volume
-   `game-created` control-plane event carrying `{room_id, worker_address}`
-   back to both players' Gateways.
-4. Each Gateway opens the direct, high-frequency data-plane stream to that
-   specific worker. `JOIN_ROOM` for an arbitrary `room_id` works
-   identically: any Gateway looks up the current owner in the Room
-   Registry and opens the same kind of stream. Spectators do the same,
-   just without ever being granted write authority — a pure Pub/Sub
-   subscriber, no lease needed.
+1. A player connects to whichever WS Gateway is geographically nearest
+   (GeoDNS/global LB) for the live session, and to the nearest API
+   Gateway for everything else. Neither computes any game logic — WS
+   Gateway only holds the socket and bridges publish/subscribe traffic;
+   API Gateway only handles login, rooms, history, and matchmaking
+   requests (per §3).
+2. `PLAY` → API Gateway publishes a matchmaking request onto the NATS
+   control plane. Matchmaker sees **every** waiting player globally
+   (shared Redis-backed queue), not just players who hit this one API
+   Gateway instance. A player matched via a US API Gateway and one
+   matched via a Tokyo API Gateway are both visible to the same queue.
+3. Once matched, Matchmaker hands the pair to **Game Allocator**, which
+   acquires a room-ownership lease (§4) on an available Game Server Shard
+   and publishes a low-volume `game-created` control-plane event carrying
+   `{room_id, shard_address}` back over NATS to both players' WS
+   Gateways.
+4. Each WS Gateway opens the direct, high-frequency data-plane stream to
+   that specific shard — bypassing NATS, per §3. `JOIN_ROOM` for an
+   arbitrary `room_id` works identically: any WS Gateway asks Game
+   Allocator for the current owner and opens the same kind of stream.
+   Spectators do the same, just without ever being granted write
+   authority — a pure Pub/Sub subscriber, no lease needed.
 
 ## 7. Question 3 — network traffic: what "a move every 2 seconds" actually costs
 
@@ -329,6 +403,34 @@ correctness benefit that's marginal given games are short. Instead:
 - Affected clients get an error and return to matchmaking — bounded,
   known-in-advance cost, acceptable specifically *because* games are short.
 
+### Observability: turning planning numbers into measurements
+
+Every role above — both Gateway tiers, Matchmaker, Game Allocator, Game
+Server Shards, Persistence Workers — exports the same three things to a
+central place, rather than leaving them as tribal knowledge on one
+machine:
+
+- **Metrics**: connection count and request rate per Gateway pod, queue
+  depth per Matchmaker replica, active-room count and tick latency per
+  Game Server Shard, consumer lag per Persistence Worker. These are
+  exactly the signals the HPA rules in §2 and the capacity math in §10
+  depend on — without them, "~500 rooms/pod" and "~20,000
+  connections/Gateway" stay guesses forever.
+- **Structured logs**, correlated by `room_id`/`user_id`, so a support or
+  anti-cheat investigation can follow one game across API Gateway →
+  Matchmaker → Game Allocator → Game Server Shard → Persistence Worker
+  without grepping five machines by hand.
+- **Health/readiness probes** — the same Kubernetes liveness checks
+  already relied on just above to detect a crashed Game Server Shard
+  quickly enough for its lease to expire and a replacement to take over.
+
+**Load testing** is what turns the planning numbers flagged throughout
+this document (§10's ~500 rooms/pod and ~20,000 connections/Gateway;
+§12's broker sizing) from assumptions into measurements: synthetic
+clients driving real ticks through a real Game Server Shard, watched
+through the same metrics pipeline, before either number is trusted in an
+actual capacity plan.
+
 ## 10. Does the capacity actually add up?
 
 Using the target design's payload size (~150–250B) and accounting for
@@ -354,15 +456,19 @@ it needs to be replicated a lot.
 
 | Role | State | Talks to broker/registry | Scales on |
 |---|---|---|---|
-| Gateway | Stateless | Pub/Sub bridge (control-plane) + direct stream (data-plane) | Open connections |
-| Auth/API | Stateless | Reads/writes Auth DB | Request rate |
-| Matchmaking | Shared state in Redis | Publishes `game-created` | Queue depth |
-| Room-ownership registry | Redis (leases, TTL) | — | Lookup/lease rate |
-| Game-Authority | **Stateful** (in-memory simulation) | Publisher on its rooms' data-plane streams; publishes `game-finished` | Active-room count / CPU |
-| Control-plane broker | Managed cluster | — | Event rate (low volume) |
+| API Gateway | Stateless | Publishes matchmaking requests onto NATS; reads/writes Auth Service, Rooms API | Request rate |
+| WS Gateway | Stateless | Pub/Sub bridge (control-plane, over NATS) + direct stream (data-plane, bypasses NATS) | Open connections |
+| Auth Service | Stateless | Reads/writes Auth/ELO DB | Request rate |
+| Rooms API | Stateless | Reads/writes room history | Request rate |
+| Matchmaker | Shared state in Redis | Consumes matchmaking requests off NATS; hands matched pairs to Game Allocator | Queue depth |
+| Game Allocator | Stateless (registry-backed) | Holds Room Registry leases (§4, Redis); publishes `game-created` onto NATS | Allocation rate |
+| Agones (optional) | Fleet manager | Allocates/health-checks the Game Server Shard fleet in place of hand-rolled leasing | N/A — infra for the shard fleet |
+| Game Server Shard (formerly "Game-Authority" — §3) | **Stateful** (in-memory GameEngine) | Direct data-plane stream to WS Gateway; publishes `game-finished` onto NATS | Active-room count / CPU |
+| NATS Event Bus | Managed cluster | Control-plane transport only — never gameplay ticks (§3) | Event rate (low volume) |
 | Persistence workers | Stateless consumer | Subscribes to `game-finished` | Queue lag |
-| Auth/ELO DB | Stateful cluster | — | Users / write throughput |
-| Game-history DB | Stateful cluster | — | Write volume |
+| Auth/ELO DB (PostgreSQL) | Stateful cluster | — | Users / write throughput |
+| Game-history DB (Cassandra/ScyllaDB) | Stateful cluster | — | Write volume (§5, §8) |
+| Observability | Collectors (stateless) + TSDB/log store (stateful) | Scrapes/receives from every role above | Metric/log volume |
 
 ## 12. Open questions
 
