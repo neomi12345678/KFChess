@@ -43,6 +43,7 @@ class MessageType(str, Enum):
     GAME_OVER = "game_over"
     DISCONNECT_COUNTDOWN = "disconnect_countdown"
     MATCHMAKING_TIMEOUT = "matchmaking_timeout"
+    MATCHMAKING_STATUS = "matchmaking_status"
     MOVE_LOGGED = "move_logged"
     CAPTURE = "capture"
 

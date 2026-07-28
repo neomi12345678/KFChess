@@ -1,26 +1,18 @@
 """Room registry for the Home screen's "Room" flow (create an id, join it,
 cancel it) - the section-6 counterpart to server/matchmaking.py's
-ELO-proximity PLAY queue: pure bookkeeping, no I/O beyond the SQLite
-write-through below. server/ws_server.py owns the actual connections and
-starts a GameSession once a room's second seat fills; this only ever tracks
-which rooms exist, who's in them, and decides whether a joiner becomes the
-opponent or a spectator.
-
-RoomStore persists that same bookkeeping - who created a room, its
-opponent, its spectators - so a room survives a server crash or restart
-(unlike the GameSession itself, which is never persisted; see
-server/ws_server.py's own docstring on how a room whose game was already
-running resumes as a *fresh* game once both players reconnect, not a replay
-of the board as it stood). Bundled into this module rather than a separate
-file - unlike server/accounts.py's UserStore/server/rating_store.py's
-RatingStore, room membership and room persistence are one and the same
-concern here, not two genuinely distinct ones sharing a table.
+ELO-proximity PLAY queue: pure bookkeeping, decoupled from whichever store
+actually persists it (server/sqlite/rooms.py's RoomStore by default, or
+server/postgres/rooms.py's PostgresRoomStore - see RoomStoreProtocol
+below and server/main.py's _build_stores, gated behind DATABASE_URL).
+server/ws_server.py owns the actual connections and starts a GameSession
+once a room's second seat fills; this only ever tracks which rooms exist,
+who's in them, and decides whether a joiner becomes the opponent or a
+spectator.
 """
 
-import sqlite3
 import uuid
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Protocol, Set
 
 from protocol.types import Reason
 from server.server_config import ROOM_ID_LENGTH
@@ -50,89 +42,38 @@ class RoomError(Exception):
     server/accounts.py's InvalidCredentialsError plays for login."""
 
 
-class RoomStore:
-    """db_path has no default on purpose - same reasoning as
-    server/accounts_db.py's open_accounts_database: every call site must
-    say explicitly whether it means a real, persistent file
-    (server/main.py) or an isolated ":memory:" database (RoomRegistry's
-    own default below, and tests). Unlike the accounts database, nothing
-    here ever runs off the asyncio event-loop thread (RoomRegistry's
-    mutations are all synchronous calls from message handlers, never
-    offloaded to an executor), so there's no need for
-    check_same_thread=False or a lock.
-    """
+# What RoomRegistry actually calls on the store it's given - satisfied by
+# server/sqlite/rooms.py's RoomStore (RoomRegistry's own default, below),
+# and by server/postgres/rooms.py's PostgresRoomStore (see
+# docker-compose.yml). Named here, next to RoomRegistry's own dependency on
+# it, rather than in server/interfaces.py - that module's own docstring
+# scopes itself to GameSession/GameLoop/GameServer dependencies, and this
+# Protocol's own save() signature needing Room would make importing it
+# from there a circular import anyway.
+class RoomStoreProtocol(Protocol):
+    def save(self, room: "Room") -> None: ...
 
-    def __init__(self, db_path: str):
-        self._connection = sqlite3.connect(db_path)
-        self._connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS rooms (
-                room_id TEXT PRIMARY KEY,
-                creator TEXT NOT NULL,
-                opponent TEXT
-            )
-            """
-        )
-        self._connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS room_spectators (
-                room_id TEXT NOT NULL REFERENCES rooms(room_id),
-                username TEXT NOT NULL,
-                PRIMARY KEY (room_id, username)
-            )
-            """
-        )
-        self._connection.commit()
+    def delete(self, room_id: str) -> None: ...
 
-    def close(self) -> None:
-        self._connection.close()
+    def load_all(self) -> List[dict]: ...
 
-    # Upsert, called after every RoomRegistry mutation that leaves the room
-    # in existence (create, join) - replaces the spectator rows wholesale
-    # rather than diffing them, since a room's own spectator set is always
-    # small and this only ever runs once per network message, not per tick.
-    def save(self, room: Room) -> None:
-        self._connection.execute(
-            "INSERT INTO rooms (room_id, creator, opponent) VALUES (?, ?, ?) "
-            "ON CONFLICT(room_id) DO UPDATE SET opponent = excluded.opponent",
-            (room.room_id, room.creator, room.opponent),
-        )
-        self._connection.execute("DELETE FROM room_spectators WHERE room_id = ?", (room.room_id,))
-        self._connection.executemany(
-            "INSERT INTO room_spectators (room_id, username) VALUES (?, ?)",
-            [(room.room_id, spectator) for spectator in room.spectators],
-        )
-        self._connection.commit()
-
-    # Called once a room is gone for good - cancelled, or its game ended
-    # (see RoomRegistry._forget, the single place both paths funnel
-    # through) - so a finished room never lingers as stale data.
-    def delete(self, room_id: str) -> None:
-        self._connection.execute("DELETE FROM room_spectators WHERE room_id = ?", (room_id,))
-        self._connection.execute("DELETE FROM rooms WHERE room_id = ?", (room_id,))
-        self._connection.commit()
-
-    # Plain dicts, not Room instances - this class has no need to depend on
-    # Room's own constructor shape, only RoomRegistry.__init__ (the sole
-    # caller) does. {"room_id", "creator", "opponent", "spectators"} per
-    # room, spectators as a set.
-    def load_all(self) -> List[dict]:
-        rooms: Dict[str, dict] = {
-            row[0]: {"room_id": row[0], "creator": row[1], "opponent": row[2], "spectators": set()}
-            for row in self._connection.execute("SELECT room_id, creator, opponent FROM rooms")
-        }
-        for room_id, username in self._connection.execute("SELECT room_id, username FROM room_spectators"):
-            rooms[room_id]["spectators"].add(username)
-        return list(rooms.values())
+    def close(self) -> None: ...
 
 
 class RoomRegistry:
     # store defaults to an isolated, disposable ":memory:" RoomStore -
     # every existing pure-in-memory call site (RoomRegistry()) keeps
     # working unchanged; only server/main.py passes a real, persistent
-    # store.
-    def __init__(self, store: Optional[RoomStore] = None):
-        self._store = store if store is not None else RoomStore(":memory:")
+    # store. Imported lazily, right here rather than at module load time:
+    # server/sqlite/rooms.py's RoomStore itself needs to import Room from
+    # this module, so importing it back at the top of this file would be
+    # circular.
+    def __init__(self, store: Optional[RoomStoreProtocol] = None):
+        if store is None:
+            from server.sqlite.rooms import RoomStore
+
+            store = RoomStore(":memory:")
+        self._store = store
         self._rooms: Dict[str, Room] = {}
         # A username is creator/opponent/spectator of at most one room at a
         # time - mirrors server/matchmaking.py's own "already queued" rule,

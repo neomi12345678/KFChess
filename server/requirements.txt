@@ -1,0 +1,4 @@
+websockets
+psycopg[binary]
+redis
+nats-py

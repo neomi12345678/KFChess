@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: kfchess
+      POSTGRES_USER: kfchess
+      POSTGRES_PASSWORD: kfchess
+    ports:
+      # Host-side 55432, not 5432 - this machine already has a standalone
+      # Postgres bound to the real 5432 (unrelated to this project); the
+      # game-server container still talks to this one at the normal 5432
+      # over the internal docker-compose network (see DATABASE_URL below).
+      - "55432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kfchess -d kfchess"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  nats:
+    image: nats:2-alpine
+    # -m 8222 turns on the HTTP monitoring endpoint the healthcheck below
+    # polls - core NATS pub/sub only (no -js/JetStream): the two lifecycle
+    # events this project publishes are fire-and-forget, nothing needs a
+    # durable/replayable subscription.
+    command: ["-m", "8222"]
+    ports:
+      - "4222:4222"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  game-server:
+    build: .
+    ports:
+      - "8765:8765"
+    environment:
+      KFCHESS_HOST: "0.0.0.0"
+      KFCHESS_PORT: "8765"
+      DATABASE_URL: "postgresql://kfchess:kfchess@postgres:5432/kfchess"
+      REDIS_URL: "redis://redis:6379/0"
+      NATS_URL: "nats://nats:4222"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

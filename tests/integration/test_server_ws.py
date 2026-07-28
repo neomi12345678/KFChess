@@ -23,10 +23,11 @@ from model.piece import BLACK, WHITE
 from protocol.game_messages import build_jump, build_move
 from protocol.lobby_messages import CancelRoomMessage, CreateRoomMessage, JoinRoomMessage, LoginMessage, PlayMessage
 from protocol.registry import encode_json_message
-from server.accounts import UserStore
-from server.accounts_db import open_accounts_database
-from server.rating_store import RatingStore
-from server.rooms import RoomRegistry, RoomStore
+from server.rooms import RoomRegistry
+from server.sqlite.accounts import UserStore
+from server.sqlite.accounts_db import open_accounts_database
+from server.sqlite.rating_store import RatingStore
+from server.sqlite.rooms import RoomStore
 from server.ws_server import GameServer
 
 STARTING_BOARD = "wR . .\n. . .\n. . ."
@@ -90,13 +91,14 @@ async def running_server(
     accounts_database=None,
     room_store=None,
     matchmaking_timeout_ms: int = 300,
+    matchmaking_status_interval_ms: int = 100,
     disconnect_grace_ms: int = 300,
     ping_interval_s: float = 12.0,
     ping_timeout_s: float = 12.0,
 ):
     # A fresh ":memory:" accounts database per server unless a test supplies
     # its own (so it can pre-seed logins or inspect ratings afterward - see
-    # server/accounts_db.py's own db_path docstring for why there's no
+    # server/sqlite/accounts_db.py's own db_path docstring for why there's no
     # shared default to fall back on), same reasoning for room_store.
     owns_database = accounts_database is None
     if owns_database:
@@ -120,6 +122,7 @@ async def running_server(
         port=0,
         tick_interval_s=tick_interval_s,
         matchmaking_timeout_ms=matchmaking_timeout_ms,
+        matchmaking_status_interval_ms=matchmaking_status_interval_ms,
         disconnect_grace_ms=disconnect_grace_ms,
         ping_interval_s=ping_interval_s,
         ping_timeout_s=ping_timeout_s,
@@ -193,7 +196,12 @@ def test_incompatible_ratings_are_not_matched():
 
         # A huge matchmaking timeout - this test only checks "no match yet",
         # not "eventually times out" (see test_matchmaking_timeout_... below).
-        async with running_server(accounts_database=accounts_database, matchmaking_timeout_ms=100_000) as server:
+        # The status interval is huge too - otherwise the periodic "still
+        # searching" heartbeat (see test_matchmaking_status_... below) would
+        # itself break this test's own "nothing arrives" assumption.
+        async with running_server(
+            accounts_database=accounts_database, matchmaking_timeout_ms=100_000, matchmaking_status_interval_ms=100_000
+        ) as server:
             uri = f"ws://localhost:{server.bound_port}"
             async with websockets.connect(uri) as a, websockets.connect(uri) as b:
                 await login(a, "alice", "secret123")
@@ -224,6 +232,57 @@ def test_matchmaking_timeout_reports_cant_find_and_allows_replay():
                 # not be rejected as "already_queued".
                 retry_ack = await play(ws)
                 assert retry_ack == {"type": "play_ack", "accepted": True, "reason": "queued"}
+
+    asyncio.run(scenario())
+
+
+def test_matchmaking_status_heartbeats_count_down_before_a_match_or_timeout():
+    async def scenario():
+        # timeout is far larger than the interval - this test only checks
+        # the periodic heartbeat itself, not its interaction with a timeout
+        # (see test_matchmaking_timeout_reports_cant_find_and_allows_replay
+        # above for that, and the "coincide" case covered at the
+        # MatchmakingQueue unit level in tests/unit/test_matchmaking_queue.py).
+        async with running_server(matchmaking_timeout_ms=3000, matchmaking_status_interval_ms=700) as server:
+            uri = f"ws://localhost:{server.bound_port}"
+            async with websockets.connect(uri) as ws:
+                await login(ws, "alice")
+                await play(ws)
+
+                first = await recv_of_type(ws, "matchmaking_status", timeout=3.0)
+                second = await recv_of_type(ws, "matchmaking_status", timeout=3.0)
+                third = await recv_of_type(ws, "matchmaking_status", timeout=3.0)
+
+                assert first == {"type": "matchmaking_status", "seconds_remaining": 3}
+                assert second == {"type": "matchmaking_status", "seconds_remaining": 2}
+                assert third == {"type": "matchmaking_status", "seconds_remaining": 1}
+
+    asyncio.run(scenario())
+
+
+def test_matchmaking_status_stops_once_a_match_is_found():
+    async def scenario():
+        # A huge timeout and a tight status interval - if the heartbeat kept
+        # firing after the match started, several would arrive well within
+        # the short window below.
+        async with running_server(matchmaking_timeout_ms=100_000, matchmaking_status_interval_ms=50) as server:
+            uri = f"ws://localhost:{server.bound_port}"
+            async with websockets.connect(uri) as a, websockets.connect(uri) as b:
+                await login(a, "alice")
+                await login(b, "bob")
+                await play(a)
+                await play(b)
+                await recv_of_type(a, "seat")
+                await recv_of_type(b, "seat")
+
+                # The game's own per-tick board+panel broadcasts have no
+                # "type" key at all (see protocol/snapshot_codec.py) - only
+                # check messages that are actually one of the registered
+                # wire types.
+                deadline = asyncio.get_event_loop().time() + 0.3
+                while asyncio.get_event_loop().time() < deadline:
+                    message = json.loads(await asyncio.wait_for(a.recv(), timeout=0.5))
+                    assert message.get("type") != "matchmaking_status"
 
     asyncio.run(scenario())
 

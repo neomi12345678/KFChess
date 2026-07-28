@@ -5,12 +5,12 @@ from logic_config import MOVE_CELL_DURATION_MS
 from model.piece import WHITE
 from model.position import Position
 from protocol.game_messages import CaptureMessage, MoveLoggedMessage
-from server.accounts import UserStore
-from server.accounts_db import open_accounts_database
 from server.command_translation import JUMP, MOVE, Command
 from server.publisher import NetworkPublisher
-from server.rating_store import RatingStore
 from server.session import GameSession
+from server.sqlite.accounts import UserStore
+from server.sqlite.accounts_db import open_accounts_database
+from server.sqlite.rating_store import RatingStore
 
 
 @pytest.fixture

@@ -19,12 +19,12 @@ from boardio.board_parser import parse
 from client.network_client import MatchmakingTimeoutError, NetworkClientError, NetworkGameClient, SnapshotBroadcast
 from model.piece import BLACK, WHITE
 from protocol.game_messages import AckMessage, SeatMessage, build_move
-from protocol.lobby_messages import JoinRoomAckMessage, LoginAckMessage, PlayAckMessage
+from protocol.lobby_messages import JoinRoomAckMessage, LoginAckMessage, MatchmakingStatusMessage, PlayAckMessage
 from protocol.registry import encode_json_message
 from protocol.types import Role
-from server.accounts import UserStore
-from server.accounts_db import open_accounts_database
-from server.rating_store import RatingStore
+from server.sqlite.accounts import UserStore
+from server.sqlite.accounts_db import open_accounts_database
+from server.sqlite.rating_store import RatingStore
 from server.ws_server import GameServer
 
 STARTING_BOARD = "wR . .\n. . .\n. . ."
@@ -182,6 +182,53 @@ def test_wait_for_seat_reacts_immediately_to_a_server_side_matchmaking_timeout()
                     await _in_thread(client.wait_for_seat)
                 elapsed = asyncio.get_event_loop().time() - start
                 assert elapsed < 5.0
+            finally:
+                client.close()
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_seat_on_status_receives_periodic_status_updates_while_queued():
+    async def scenario():
+        # A huge server-side timeout (never fires) paired with a tight
+        # status interval, and a short *local* wait_for_seat timeout below -
+        # this only checks that on_status gets called for whichever
+        # heartbeats arrive before that local deadline, not the eventual
+        # matchmaking_timeout path (see
+        # test_wait_for_seat_reacts_immediately_to_a_server_side_matchmaking_timeout
+        # above for that).
+        async with running_server(matchmaking_timeout_ms=100_000, matchmaking_status_interval_ms=50) as server:
+            client = await _in_thread(NetworkGameClient, "localhost", server.bound_port)
+            try:
+                await _in_thread(client.login, "alice", "secret123")
+                await _in_thread(client.play)
+
+                statuses = []
+                with pytest.raises(NetworkClientError):
+                    await _in_thread(client.wait_for_seat, 0.3, statuses.append)
+
+                assert len(statuses) >= 1
+                assert all(isinstance(status, MatchmakingStatusMessage) for status in statuses)
+                assert all(status.seconds_remaining >= 0 for status in statuses)
+            finally:
+                client.close()
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_seat_omitting_on_status_still_times_out_normally():
+    async def scenario():
+        # Confirms on_status's default (None) leaves wait_for_seat's
+        # existing no-callback behavior byte-for-byte unchanged, even with
+        # status heartbeats actually arriving on the wire in the meantime.
+        async with running_server(matchmaking_timeout_ms=100_000, matchmaking_status_interval_ms=50) as server:
+            client = await _in_thread(NetworkGameClient, "localhost", server.bound_port)
+            try:
+                await _in_thread(client.login, "alice", "secret123")
+                await _in_thread(client.play)
+
+                with pytest.raises(NetworkClientError):
+                    await _in_thread(client.wait_for_seat, 0.3)
             finally:
                 client.close()
 

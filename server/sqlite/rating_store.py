@@ -1,10 +1,11 @@
 """ELO rating persistence, read/written against the same shared accounts
-table server/accounts.py's UserStore authenticates against (see
-server/accounts_db.py's own docstring on why they share one connection).
-The rating *math* itself lives separately, in server/rating.py's
-updated_ratings - this class only ever gets/sets the number a username
-currently has, never computes a new one; server/session.py's
-finalize_ratings_if_game_over is what combines the two.
+table server/sqlite/accounts.py's UserStore authenticates against (see
+server/sqlite/accounts_db.py's own docstring on why they share one
+connection). The rating *math* itself lives separately, in
+server/rating.py's updated_ratings - this class only ever gets/sets the
+number a username currently has, never computes a new one;
+server/session.py's finalize_ratings_if_game_over is what combines the
+two.
 
 Every row this ever reads/writes was already created by UserStore.login's
 own INSERT (at STARTING_RATING) - rating_for/update_rating both assume the
@@ -14,7 +15,7 @@ for two usernames matchmaking or a room already paired, both already
 logged in).
 """
 
-from server.accounts_db import AccountsDatabase
+from server.sqlite.accounts_db import AccountsDatabase
 
 
 class RatingStore:

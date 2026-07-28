@@ -1,5 +1,5 @@
-"""The one SQLite connection (+ lock) shared by server/accounts.py's
-UserStore and server/rating_store.py's RatingStore - two distinct-
+"""The one SQLite connection (+ lock) shared by server/sqlite/accounts.py's
+UserStore and server/sqlite/rating_store.py's RatingStore - two distinct-
 responsibility classes (verifying who you are vs. how good you are) that
 happen to read and write the same `accounts` table, the same way the
 single AccountStore they replaced did.

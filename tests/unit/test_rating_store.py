@@ -1,9 +1,9 @@
 import pytest
 
-from server.accounts import UserStore
-from server.accounts_db import open_accounts_database
-from server.rating_store import RatingStore
 from server.server_config import STARTING_RATING
+from server.sqlite.accounts import UserStore
+from server.sqlite.accounts_db import open_accounts_database
+from server.sqlite.rating_store import RatingStore
 
 
 @pytest.fixture

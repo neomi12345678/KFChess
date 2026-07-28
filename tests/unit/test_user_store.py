@@ -1,13 +1,14 @@
 import pytest
 
-from server.accounts import InvalidCredentialsError, UserStore
-from server.accounts_db import open_accounts_database
+from server.accounts import InvalidCredentialsError
+from server.sqlite.accounts import UserStore
+from server.sqlite.accounts_db import open_accounts_database
 
 
 @pytest.fixture
 def store():
     # ":memory:" - a real SQLite database, just an isolated, disposable one
-    # per test (see server/accounts_db.py's own db_path docstring for why
+    # per test (see server/sqlite/accounts_db.py's own db_path docstring for why
     # there's no default to fall back on instead).
     return UserStore(open_accounts_database(":memory:"))
 
