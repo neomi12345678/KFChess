@@ -1,5 +1,30 @@
 # Server Design — Scaling KFChess for Real-Time Play at Global Scale
 
+**In short**: `server/main.py` on one process works for hundreds of users,
+not 100M registered accounts or 10M concurrent players (§1). This document
+adopts the course-proposed architecture — API Gateway/WS Gateway,
+Matchmaker, Game Allocator, Game Server Shards, NATS, PostgreSQL, Redis,
+Docker/Kubernetes, Observability (§2–§4) — then uses it to answer the
+assignment's four scaling questions with numbers grounded in this codebase
+(§5–§8), plus failure recovery, observability, and capacity sanity-checks
+(§9–§12).
+
+**Contents**
+
+- §0 The model the current server already follows
+- §1 Why one process is not enough
+- §2 Docker / Kubernetes / K3s — the scaling substrate
+- §3 Architecture overview
+- §4 Room ownership: the gap every registry-only design has
+- §5 Question 1 — a database for 100 million registered users
+- §6 Question 2 — 10 million concurrent players: distribution and routing
+- §7 Question 3 — network traffic: what "a move every 2 seconds" costs
+- §8 Question 4 — 30–90 second games: what that means for container roles
+- §9 What happens when a server falls, and Observability
+- §10 Does the capacity actually add up?
+- §11 Role summary
+- §12 Open questions
+
 ## 0. The model the current server already follows
 
 Before designing for scale, it's worth naming the pattern the existing code
