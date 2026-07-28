@@ -107,10 +107,10 @@ course-review diagram directly — **API Gateway** / **WS Gateway** /
 optional fleet manager — mapped 1:1 onto the roles this document already
 argued for. (Earlier sections still say **Game-Authority**; it's the same
 stateful role the diagram below calls a **Game Server Shard**, backed by
-the same `GameLoop` code discussed in §1.) Two refinements from the
-original draft survive the alignment, each kept for an arithmetic reason
-stated elsewhere in this document rather than dropped just to match the
-sketch exactly — both are called out where they appear below.
+the same `GameLoop` code discussed in §1.) One refinement from the
+original draft survives the alignment, kept for an arithmetic reason
+stated in §7 rather than dropped just to match the sketch exactly —
+called out where it appears below.
 
 ```
                               Clients
@@ -155,22 +155,19 @@ Matchmaker                    Game Allocator ◄──── Agones (optional
              Persistence Workers (stateless consumers of
              "game-finished" events)
                     │
-        ┌───────────┼───────────────────┐
-        ▼           ▼                   ▼
-   PostgreSQL     Redis            Cassandra/ScyllaDB
- (accounts, ELO) (presence,       (move history,
-                  matchmaking,     telemetry,
-                  leaderboard)     anti-cheat logs — see
-                                    the note under §5's
-                                    table for why this
-                                    isn't PostgreSQL too)
+        ┌───────────┴───────────┐
+        ▼                       ▼
+   PostgreSQL               Redis
+ (users, games,          (presence,
+  results, move           matchmaking,
+  history)                 leaderboard)
 ```
 
 *(Every role above also exports to Observability — logs, metrics, health
 checks — omitted from the boxes for readability; see the Observability
 subsection under §9.)*
 
-**Two different transports, deliberately** — the first place this design
+**Two different transports, deliberately** — the one place this design
 refines the course sketch:
 
 - **Control plane** (low volume: matchmaking requests, room creation,
@@ -183,14 +180,10 @@ refines the course sketch:
   active room) — a **direct** stream from WS Gateway to the specific Game
   Server Shard that owns the room, resolved once via Game
   Allocator/the Room Registry, **not** routed through NATS on every tick.
-  The course-proposed diagram draws Game Server Shards publishing onto
-  the shared event bus; this document keeps that path for the low-volume
-  control events above but deliberately routes gameplay ticks around it,
-  because §7 shows *why* the naive version (a full-state broadcast
-  through a shared hop) reaches ~9.6–19 Tbps — pushing that through a
-  general-purpose broker would make the broker itself the bottleneck the
-  whole design exists to avoid. A registry *lookup* is cheap; a broker
-  *relay* of the full data volume is not.
+  §7 shows why: at this scale, a full-state broadcast through a shared
+  hop reaches Tbps-range traffic, which would make the broker itself the
+  bottleneck. A registry *lookup* is cheap; a broker *relay* of the full
+  data volume is not.
 
 This also gives the **DDoS-insulation** property worth keeping from one of
 the earlier proposals: Game Server Shards carry no public IP at all —
@@ -236,23 +229,10 @@ absorbed by a normal RDBMS). The real reasons:
 
 | Data | Store | Why |
 |---|---|---|
-| Accounts / auth / ELO | PostgreSQL/MySQL, primary + read replicas | Needs real ACID (unique username, atomic rating update). 100M rows fits one cluster; shard by `user_id` (Citus/Vitess, or CockroachDB/YugabyteDB) once write throughput — not storage — becomes the limit. |
+| Accounts / auth / ELO / games / results / move history | PostgreSQL/MySQL, primary + read replicas | Needs real ACID (unique username, atomic rating update). 100M rows fits one cluster; shard by `user_id` (Citus/Vitess, or CockroachDB/YugabyteDB) once write throughput — not storage — becomes the limit. Matches the course-proposed diagram directly — one relational store for all durable game/user data. |
 | Presence / session directory | Redis | Low latency, doesn't need durability beyond a TTL; naturally lives alongside the room-ownership registry (§4). |
 | Matchmaking queue | Redis Sorted Set (`ZADD` by rating) | O(log n) proximity lookup, globally shared so players on any gateway can be matched. |
-| Game/move history, telemetry, anti-cheat logs | Cassandra/ScyllaDB/DynamoDB | Append-only, extremely high sustained write volume (§8) — a relational engine isn't built for this write shape. |
 | Leaderboard | Redis Sorted Set | Not a live `ORDER BY` over 100M rows — incremental updates instead. |
-
-**One place this differs from the course-proposed diagram** — the second
-deliberate refinement flagged in §3: the lecture's sketch puts move
-history in the same PostgreSQL box as accounts and results. This document
-keeps move/telemetry history in Cassandra/ScyllaDB instead, specifically
-because of §8's arithmetic: ~83,000 games finishing per second implies a
-comparable rate of move-log append volume, an extremely high-write-rate,
-append-only shape that a relational engine sized for ACID account updates
-isn't built to absorb at the same time. Accounts, ELO, and the
-finished-game *result* row stay in PostgreSQL exactly as drawn; only the
-much higher-volume move-by-move log moves to a store built for that write
-pattern.
 
 *(A nice aside: K3s itself defaults to SQLite for its own cluster
 datastore, and needs etcd/Postgres only once multi-node HA is required —
@@ -294,13 +274,10 @@ lives on:
 
 ## 7. Question 3 — network traffic: what "a move every 2 seconds" actually costs
 
-This is where reading the running code, not just the assignment's premise,
-changes the answer.
-
-**As `server/game_loop.py` runs today**: `_advance_game` broadcasts a full
-JSON snapshot (`full_broadcast_payload` — all ~32 pieces, move log, score)
-on **every tick, 20Hz, whether or not anything moved.** That is not "a move
-every 2 seconds" — it's 40× more frequent than that.
+`server/game_loop.py`'s `_advance_game` broadcasts a full JSON snapshot
+(`full_broadcast_payload` — all ~32 pieces, move log, score) on **every
+tick, 20Hz, whether or not anything moved** — 40× more often than "a move
+every 2 seconds" implies.
 
 | Scenario | Basis | Aggregate bandwidth |
 |---|---|---|
@@ -309,26 +286,15 @@ every 2 seconds" — it's 40× more frequent than that.
 | Current code + a Gateway-relay topology (double hop) | above × 2 | **~19 Tbps** |
 | **Target design**: sparse event only at move-start (piece, from, to, duration), client-side interpolation for smooth motion — no periodic re-send | ~5M events/s × ~150–250B, fan-out ×2–3 for opponent+spectators, double hop | **~20–45 Gbps** |
 
-Pieces in KFChess move continuously (mid-flight interceptions, races
-between pieces — see the project's own README), so a full-state stream at
-render-frame rate looks necessary at first glance — but it isn't: the
-server only needs to publish **the start of a motion** (piece id, source,
-destination, start time, duration, matching the `motion_phase`/cooldown
-fields the model already tracks), and the client tweens the animation
-locally between that event and the next one (`arrived`, `captured`). This
-is standard real-time-game netcode (client-side interpolation from sparse
-authoritative events), and it is the difference between the ~9.6–19 Tbps
-row above and the ~20–45 Gbps row.
-
-**Is that a lot or a little?** At the *unmodified* current design, it's
-not viable at all — no realistic infrastructure absorbs terabits from a
-single logical service. At the *target* design (~20–45 Gbps aggregate,
-globally), it's large but entirely ordinary at hyperscale, and — critically
-— every room is an independent channel, so it shards naturally: a single
-Gateway pod holding ~20,000 connections carries only ~1–2 MB/s, trivial for
-one machine. **The fix here is a protocol change, not just more servers** —
-more Dockers alone would only spread 19 Tbps across more machines, not
-make the total number sane.
+The fix is a protocol change, not just more servers: the server only
+needs to publish **the start of a motion** (piece id, source, destination,
+start time, duration — the `motion_phase`/cooldown fields the model
+already tracks), and the client tweens the animation locally until the
+next event (`arrived`, `captured`). That's standard client-side
+interpolation from sparse authoritative events, and it's the difference
+between the ~9.6–19 Tbps rows and the ~20–45 Gbps target — the latter is
+large but ordinary at hyperscale, and shards naturally per room (a single
+Gateway pod at ~20,000 connections carries only ~1–2 MB/s).
 
 ## 8. Question 4 — 30–90 second games: what that means for container roles
 
@@ -433,24 +399,21 @@ actual capacity plan.
 
 ## 10. Does the capacity actually add up?
 
-Using the target design's payload size (~150–250B) and accounting for
-Python's GIL-bound, sequential tick loop (one process ≈ one core's worth of
-tick computation — a planning assumption pending real benchmarking):
+Assuming a conservative **~500 concurrent rooms per Game Server Shard**
+(target payload ~150–250B, one Python process ≈ one core's worth of tick
+computation — a planning assumption pending real benchmarking):
 
-- Assume a conservative **~500 concurrent rooms per Game-Authority pod**.
-- Bandwidth per pod: 500 rooms × 20Hz × ~200B × 2 seats ≈ **~8MB/s (~64Mbps)**
+- Bandwidth per shard: 500 × 20Hz × ~200B × 2 seats ≈ **~8MB/s (~64Mbps)**
   — trivial against a typical node's 1–10Gbps allocation.
-- **Pods needed at peak**: 5,000,000 ÷ 500 = **~10,000 Game-Authority pods**.
-- New-room rate per pod: 83,000 ÷ 10,000 ≈ **~8.3 rooms/sec/pod** — cheap,
-  since starting a room is just an in-memory allocation (`_start_game`
-  today has no I/O in its hot path).
+- **Shards needed at peak**: 5,000,000 ÷ 500 = **~10,000**, each taking
+  new rooms at only ~8.3/sec (83,000 ÷ 10,000) — cheap, since starting a
+  room is an in-memory allocation with no I/O in the hot path.
 - Gateway tier, independently: 10M connections ÷ ~20,000/pod ≈ **~500
   Gateway pods**.
 
-Ten thousand pods sounds large in isolation, but it's the direct, expected
-consequence of the scale being asked for (10M concurrent users) — the
-point of this design is exactly that no single component needs to be huge;
-it needs to be replicated a lot.
+Ten thousand shards sounds large in isolation, but it's the direct,
+expected consequence of the scale being asked for — no single component
+needs to be huge, it needs to be replicated a lot.
 
 ## 11. Role summary
 
@@ -466,8 +429,7 @@ it needs to be replicated a lot.
 | Game Server Shard (formerly "Game-Authority" — §3) | **Stateful** (in-memory GameEngine) | Direct data-plane stream to WS Gateway; publishes `game-finished` onto NATS | Active-room count / CPU |
 | NATS Event Bus | Managed cluster | Control-plane transport only — never gameplay ticks (§3) | Event rate (low volume) |
 | Persistence workers | Stateless consumer | Subscribes to `game-finished` | Queue lag |
-| Auth/ELO DB (PostgreSQL) | Stateful cluster | — | Users / write throughput |
-| Game-history DB (Cassandra/ScyllaDB) | Stateful cluster | — | Write volume (§5, §8) |
+| Auth/Game DB (PostgreSQL — accounts, ELO, games, move history) | Stateful cluster | — | Users / write throughput |
 | Observability | Collectors (stateless) + TSDB/log store (stateful) | Scrapes/receives from every role above | Metric/log volume |
 
 ## 12. Open questions
