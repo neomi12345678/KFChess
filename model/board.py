@@ -16,13 +16,15 @@ class DuplicatePieceIdError(Exception):
         self.piece_id = piece_id
 
 
-class BoardRepresentation(Protocol):
-    """The storage contract every board implementation must satisfy.
+class BoardQuery(Protocol):
+    """The read-only contract: bounds + lookup.
 
-    Rules, the engine, and the arbiter depend only on this interface, never
-    on a concrete storage format - so a future binary/bitboard
-    representation can be dropped in, implementing just these members,
-    without touching a single line of game logic.
+    Every consumer that only ever reads the board - rules/board_rules.py,
+    rules/piece_rules.py, rules/rule_engine.py, realtime/route_planner.py,
+    boardio/board_printer.py, engine/game_engine.py - depends on just this,
+    never on BoardMutator/BoardStore below, so a future binary/bitboard
+    representation only has to implement these four members to work
+    everywhere game logic reads a board.
     """
 
     width: int
@@ -32,15 +34,36 @@ class BoardRepresentation(Protocol):
 
     def get_piece(self, position: Position) -> Optional[PieceRepresentation]: ...
 
+
+class BoardMutator(Protocol):
+    """The write contract: exactly what realtime/real_time_arbiter.py's
+    RealTimeArbiter calls when a motion resolves - always add_piece/
+    remove_piece as a pair (see _resolve_arrival), never a relocate-in-place
+    call, so that's all this asks for.
+    """
+
     def add_piece(self, position: Position, piece: PieceRepresentation) -> None: ...
 
     def remove_piece(self, position: Position) -> None: ...
 
-    def move_piece(self, src: Position, dst: Position) -> None: ...
+
+class BoardStore(BoardQuery, BoardMutator, Protocol):
+    """The full board contract - only for whoever owns/constructs the one
+    shared board instance and hands it to both a read-only consumer and
+    RealTimeArbiter's mutator: engine/game_builder.py's build_game,
+    server/session.py's GameSession, server/game_loop.py and
+    server/ws_server.py's board_factory.
+    """
 
 
 class Board:
-    """The standard in-memory BoardRepresentation: cells kept in a dict."""
+    """The standard in-memory BoardStore: cells kept in a dict.
+
+    move_piece is an extra convenience beyond BoardStore's own contract -
+    no production consumer needs it (RealTimeArbiter always does
+    remove_piece+add_piece as a pair instead, see _resolve_arrival), only
+    tests exercise it directly against this concrete class.
+    """
 
     def __init__(self, width: int, height: int):
         self.width = width

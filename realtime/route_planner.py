@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from logic_config import MOVE_CELL_DURATION_MS
-from model.board import BoardRepresentation
+from model.board import BoardQuery
 from model.piece import PieceRepresentation
 from model.position import Position
 from physics.motion import Motion, Trajectory, collision_time_ms, is_straight_line, motion_duration_ms
@@ -43,7 +43,7 @@ class RoutePlan:
 # add_piece below from raising OccupiedCellError in that case. source
 # itself is always the final fallback - it's the cell this piece is
 # vacating, guaranteed empty once it does.
-def retreat_cell(board: BoardRepresentation, source: Position, destination: Position) -> Position:
+def retreat_cell(board: BoardQuery, source: Position, destination: Position) -> Position:
     if not is_straight_line(source, destination):
         return source
     row_step = _sign(destination.row - source.row)

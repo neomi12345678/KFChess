@@ -1,14 +1,14 @@
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from model.board import BoardRepresentation
+from model.board import BoardStore
 from model.piece import ActionResultReason, PieceRepresentation
 from model.position import Position
 
 
 @dataclass
 class GameState:
-    board: BoardRepresentation
+    board: BoardStore
 
 
 # Shared event/snapshot vocabulary: the engine, the real-time arbiter, and

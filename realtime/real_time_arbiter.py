@@ -9,7 +9,7 @@ from logic_config import (
     REST_DURATION_MULTIPLIER,
     SHORT_REST_BASE_DURATION_MS,
 )
-from model.board import BoardRepresentation
+from model.board import BoardStore
 from model.game_state import ArrivalEvent
 from model.piece import (
     CAPTURED,
@@ -47,7 +47,7 @@ class _PendingInterception:
 
 
 class RealTimeArbiter:
-    def __init__(self, board: BoardRepresentation, promotion_rule: Optional[PromotionRule] = None):
+    def __init__(self, board: BoardStore, promotion_rule: Optional[PromotionRule] = None):
         self._board = board
         self._promotion_rule = promotion_rule if promotion_rule is not None else LastRankPromotion()
         self._active_motions: List[Motion] = []
