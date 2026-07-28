@@ -1,6 +1,7 @@
 import pytest
 
-from server.rooms import RoomError, RoomRegistry, RoomStore
+from server.rooms import RoomError, RoomRegistry
+from server.sqlite.rooms import RoomStore
 
 
 def test_create_returns_a_pending_room_with_no_opponent_yet():

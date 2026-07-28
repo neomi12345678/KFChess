@@ -20,14 +20,14 @@ from frame_clock import FrameClock
 from model.board import BoardStore
 from model.piece import BLACK, WHITE
 from protocol.game_messages import DisconnectCountdownMessage, ErrorMessage, GameOverMessage, SeatMessage
-from protocol.lobby_messages import MatchmakingTimeoutMessage
+from protocol.lobby_messages import MatchmakingStatusMessage, MatchmakingTimeoutMessage
 from protocol.snapshot_codec import panel_to_json, snapshot_to_json
 from server.connections import WirePayload
 from server.interfaces import LifecyclePublisher, MatchmakingQueueProtocol, MessageSender, RatingRepository
 from server.matchmaking import MatchmakingQueue
 from server.publisher import NetworkPublisher
 from server.rooms import Room, RoomRegistry
-from server.server_config import DEFAULT_TICK_INTERVAL_S
+from server.server_config import DEFAULT_TICK_INTERVAL_S, MATCHMAKING_STATUS_INTERVAL_MS
 from server.session import OTHER_SEAT, GameSession
 
 _logger = logging.getLogger(__name__)
@@ -81,6 +81,7 @@ class GameLoop:
         connections: MessageSender,
         matchmaking_timeout_ms: int,
         disconnect_grace_ms: int,
+        matchmaking_status_interval_ms: int = MATCHMAKING_STATUS_INTERVAL_MS,
         tick_interval_s: float = DEFAULT_TICK_INTERVAL_S,
         # Overridable so server/main.py can hand in a Redis-backed queue
         # (see server/redis/matchmaking.py, gated behind REDIS_URL) instead
@@ -98,7 +99,9 @@ class GameLoop:
         self._rating_store = rating_store
         self._rooms = rooms
         self._connections = connections
-        self.matchmaking = matchmaking if matchmaking is not None else MatchmakingQueue(timeout_ms=matchmaking_timeout_ms)
+        self.matchmaking = matchmaking if matchmaking is not None else MatchmakingQueue(
+            timeout_ms=matchmaking_timeout_ms, status_interval_ms=matchmaking_status_interval_ms
+        )
         self._disconnect_grace_ms = disconnect_grace_ms
         self._tick_interval_s = tick_interval_s
         self._lifecycle_publisher = lifecycle_publisher
@@ -164,8 +167,13 @@ class GameLoop:
                     await self._fail_game(game_id, game, error)
 
     async def _advance_matchmaking(self, whole_ms: int) -> None:
-        for username in self.matchmaking.advance_time(whole_ms):
+        tick = self.matchmaking.advance_time(whole_ms)
+        for username in tick.timed_out:
             await self._connections.send_to_username(username, MatchmakingTimeoutMessage())
+        for username, seconds_remaining in tick.due_for_status:
+            await self._connections.send_to_username(
+                username, MatchmakingStatusMessage(seconds_remaining=seconds_remaining)
+            )
 
     async def _try_start_a_match(self) -> None:
         match = self.matchmaking.find_match()

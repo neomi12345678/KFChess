@@ -273,7 +273,11 @@ def run_game_setup(client: NetworkGameClient) -> Optional[str]:
                 result_queue.put(("retry", f"Could not queue: {play_ack.reason}"))
                 return
             try:
-                seat_message = client.wait_for_seat()
+                seat_message = client.wait_for_seat(
+                    on_status=lambda status: result_queue.put(
+                        ("info", f"Searching for an opponent... ({status.seconds_remaining}s left)")
+                    )
+                )
             except MatchmakingTimeoutError:
                 result_queue.put(("retry", "No opponent found in time - try again."))
                 return

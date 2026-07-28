@@ -103,7 +103,7 @@ class CommandRouter:
             )
 
         # A room whose opponent seat was already filled before a server
-        # restart (see server/rooms.py's RoomStore) has no GameSession to
+        # restart (see server/sqlite/rooms.py's RoomStore) has no GameSession to
         # reconnect into above - board state itself is never persisted.
         # Instead, once both the creator and opponent are back online, a
         # fresh game starts for them in the same room, the same way a

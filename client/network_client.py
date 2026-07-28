@@ -30,7 +30,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Type, TypeVar
+from typing import Callable, List, Optional, Type, TypeVar
 
 import websockets
 
@@ -43,6 +43,7 @@ from protocol.lobby_messages import (
     JoinRoomMessage,
     LoginAckMessage,
     LoginMessage,
+    MatchmakingStatusMessage,
     MatchmakingTimeoutMessage,
     PlayAckMessage,
     PlayMessage,
@@ -186,8 +187,21 @@ class NetworkGameClient:
     # server/matchmaking.py's TIMEOUT_MS (60s by default), which
     # _wait_for_type's stop_types below reacts to immediately rather than
     # this call silently discarding it and waiting out its own timeout too.
-    def wait_for_seat(self, timeout: float = 65.0) -> SeatMessage:
-        return self._wait_for_type(SeatMessage, timeout, stop_types={MatchmakingTimeoutMessage: MatchmakingTimeoutError})
+    # on_status, if given, is called for each periodic MatchmakingStatusMessage
+    # seen while waiting (see server/matchmaking.py's own
+    # MATCHMAKING_STATUS_INTERVAL_MS) instead of silently discarding it like
+    # any other non-matching message - callers not currently queued for a PLAY
+    # match (create_room/join_room's own wait_for_seat calls, waiting on a room
+    # opponent instead) simply never see one regardless, so they can omit it.
+    def wait_for_seat(
+        self, timeout: float = 65.0, on_status: Optional[Callable[[MatchmakingStatusMessage], None]] = None
+    ) -> SeatMessage:
+        return self._wait_for_type(
+            SeatMessage,
+            timeout,
+            stop_types={MatchmakingTimeoutMessage: MatchmakingTimeoutError},
+            on_status=on_status,
+        )
 
     # The section-6 room flow (see server/rooms.py) - create_room's own
     # reply carries the room id (nothing to wait_for_seat for yet, since a
@@ -210,8 +224,17 @@ class NetworkGameClient:
     # types that should abort the wait immediately with a specific error
     # instead of being silently discarded like any other non-matching
     # message - wait_for_seat's own matchmaking_timeout being the only
-    # current use (see above).
-    def _wait_for_type(self, message_type: Type[T], timeout: float, stop_types: Optional[dict] = None) -> T:
+    # current use (see above). on_status is a narrower hook for a message
+    # that should neither end the wait nor raise - just be observed (see
+    # wait_for_seat's own MatchmakingStatusMessage use) - and is checked
+    # before stop_types so a status message is never mistaken for one.
+    def _wait_for_type(
+        self,
+        message_type: Type[T],
+        timeout: float,
+        stop_types: Optional[dict] = None,
+        on_status: Optional[Callable[[MatchmakingStatusMessage], None]] = None,
+    ) -> T:
         stop_types = stop_types or {}
         deadline = time.monotonic() + timeout
         while True:
@@ -224,6 +247,9 @@ class NetworkGameClient:
                 raise NetworkClientError(f"timed out waiting for a '{message_type.__name__}' message")
             if isinstance(message, message_type):
                 return message
+            if on_status is not None and isinstance(message, MatchmakingStatusMessage):
+                on_status(message)
+                continue
             stop_error = stop_types.get(type(message))
             if stop_error is not None:
                 raise stop_error(

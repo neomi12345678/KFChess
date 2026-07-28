@@ -1,22 +1,19 @@
-"""Login persistence for the Home-screen login: username + password,
-verified against the shared accounts table (see server/accounts_db.py) -
-the authentication half of what used to be one AccountStore doing both
-this and ELO bookkeeping. server/rating_store.py's RatingStore is the
-sibling half, for the rating number alone - genuinely separate concerns
-(who you are vs. how good you are) that only happen to share one table.
-"Just for presentation" scope, same as the plain-username login it
-replaces - a first LOGIN for a never-seen username registers it on the
-spot with whatever password came with it, at STARTING_RATING (read back
-only through RatingStore, never returned from here); there's no separate
-registration step.
+"""Shared login domain types - the parts of "who's logging in" that don't
+depend on which backing store actually persists an account: the two
+things any UserStore implementation returns/raises (Account,
+InvalidCredentialsError - see server/sqlite/accounts.py's UserStore and
+server/postgres/accounts.py's PostgresUserStore, chosen between by
+server/main.py's _build_stores, gated behind DATABASE_URL), and the
+password hashing scheme itself (_hash_password). Kept here rather than
+duplicated per backend, since hashing is the one part of this that's
+actually security-sensitive - both UserStore implementations import it
+from this single source.
 """
 
 import hashlib
-import os
 from dataclasses import dataclass
 
-from server.accounts_db import AccountsDatabase
-from server.server_config import PASSWORD_HASH_ITERATIONS, PASSWORD_HASH_NAME, STARTING_RATING
+from server.server_config import PASSWORD_HASH_ITERATIONS, PASSWORD_HASH_NAME
 
 
 class InvalidCredentialsError(Exception):
@@ -27,49 +24,6 @@ class InvalidCredentialsError(Exception):
 @dataclass(frozen=True)
 class Account:
     username: str
-
-
-class UserStore:
-    def __init__(self, database: AccountsDatabase):
-        self._database = database
-
-    # Registers the username with this password and the starting rating
-    # the first time it's ever seen; any later call re-checks the password
-    # against what was stored then. Runs off the asyncio event loop
-    # entirely, via the default thread-pool executor (see
-    # server/ws_server.py's own _handle_login) - the PBKDF2 hash below is
-    # deliberately slow, and running it directly on the event loop would
-    # freeze every other connection's messages and every in-progress
-    # game's tick for that long, not just this one login. The shared
-    # AccountsDatabase's lock (not check_same_thread=False alone) is what
-    # makes that safe alongside RatingStore's own calls on the event-loop
-    # thread.
-    def login(self, username: str, password: str) -> Account:
-        with self._database.lock:
-            row = self._database.connection.execute(
-                "SELECT password_hash, password_salt FROM accounts WHERE username = ?",
-                (username,),
-            ).fetchone()
-
-            if row is None:
-                return self._register(username, password)
-
-            stored_hash, salt = row
-            if _hash_password(password, salt) != stored_hash:
-                raise InvalidCredentialsError(f"wrong password for '{username}'")
-
-            return Account(username=username)
-
-    def _register(self, username: str, password: str) -> Account:
-        with self._database.lock:
-            salt = os.urandom(16)
-            password_hash = _hash_password(password, salt)
-            self._database.connection.execute(
-                "INSERT INTO accounts (username, password_hash, password_salt, rating) VALUES (?, ?, ?, ?)",
-                (username, password_hash, salt, STARTING_RATING),
-            )
-            self._database.connection.commit()
-            return Account(username=username)
 
 
 def _hash_password(password: str, salt: bytes) -> bytes:

@@ -85,7 +85,7 @@ def main() -> None:  # pragma: no cover
             print(f"Reconnected to your game as {my_color}")
         elif login_ack.resuming_room_id:
             # A room this account was already in survived a server restart
-            # (see server/rooms.py's RoomStore) - wait for the other player
+            # (see server/sqlite/rooms.py's RoomStore) - wait for the other player
             # to reconnect too rather than showing the create/join dialog
             # again (see server/ws_server.py's _handle_login for the
             # server-side half of this).

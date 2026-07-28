@@ -12,14 +12,14 @@ import asyncio
 import contextlib
 
 from boardio.board_parser import parse
-from server.accounts import UserStore
-from server.accounts_db import open_accounts_database
 from server.connections import ConnectionRegistry
 from server.game_loop import ActiveGame, GameLoop
 from server.publisher import NetworkPublisher
-from server.rating_store import RatingStore
 from server.rooms import RoomRegistry
 from server.session import GameSession
+from server.sqlite.accounts import UserStore
+from server.sqlite.accounts_db import open_accounts_database
+from server.sqlite.rating_store import RatingStore
 
 STARTING_BOARD = "wR . .\n. . .\n. . ."
 

@@ -77,6 +77,7 @@ from server.server_config import (
     CLOSE_TIMEOUT_S,
     DEFAULT_TICK_INTERVAL_S,
     DISCONNECT_GRACE_MS,
+    MATCHMAKING_STATUS_INTERVAL_MS,
     MATCHMAKING_TIMEOUT_MS,
     PING_INTERVAL_S,
     PING_TIMEOUT_S,
@@ -105,6 +106,7 @@ class GameServer:
         port: int = DEFAULT_PORT,
         tick_interval_s: float = DEFAULT_TICK_INTERVAL_S,
         matchmaking_timeout_ms: int = MATCHMAKING_TIMEOUT_MS,
+        matchmaking_status_interval_ms: int = MATCHMAKING_STATUS_INTERVAL_MS,
         disconnect_grace_ms: int = DISCONNECT_GRACE_MS,
         ping_interval_s: float = PING_INTERVAL_S,
         ping_timeout_s: float = PING_TIMEOUT_S,
@@ -130,6 +132,7 @@ class GameServer:
             self._connections,
             matchmaking_timeout_ms=matchmaking_timeout_ms,
             disconnect_grace_ms=disconnect_grace_ms,
+            matchmaking_status_interval_ms=matchmaking_status_interval_ms,
             tick_interval_s=tick_interval_s,
             matchmaking=matchmaking,
             lifecycle_publisher=lifecycle_publisher,
@@ -247,7 +250,7 @@ class GameServer:
         # freeze every other connection's messages and every in-progress
         # game's tick for that long, not just this login (this is also why
         # UserStore itself is safe to call from a different thread - see
-        # server/accounts_db.py's own docstring).
+        # server/sqlite/accounts_db.py's own docstring).
         loop = asyncio.get_event_loop()
         try:
             account = await loop.run_in_executor(

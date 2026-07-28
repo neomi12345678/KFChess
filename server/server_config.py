@@ -18,6 +18,11 @@ DEFAULT_TICK_INTERVAL_S = 0.05
 RATING_RANGE = 100
 MATCHMAKING_TIMEOUT_MS = 60_000
 
+# server/matchmaking.py - how often a still-waiting PLAY queue entry gets a
+# reassuring "still searching" push (MatchmakingStatusMessage) between
+# enqueue and either a match or MATCHMAKING_TIMEOUT_MS above.
+MATCHMAKING_STATUS_INTERVAL_MS = 5_000
+
 # server/rooms.py - length of a freshly generated room id (RoomRegistry._new_id).
 ROOM_ID_LENGTH = 6
 

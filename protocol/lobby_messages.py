@@ -112,3 +112,14 @@ class CancelRoomAckMessage:
 @dataclass(frozen=True)
 class MatchmakingTimeoutMessage:
     type: str = MessageType.MATCHMAKING_TIMEOUT
+
+
+# Periodic "still searching" heartbeat sent while a PLAY match is queued -
+# see server/matchmaking.py's own MATCHMAKING_STATUS_INTERVAL_MS - not sent
+# every tick, and never sent once MatchmakingTimeoutMessage/SeatMessage ends
+# the wait.
+@register(MessageType.MATCHMAKING_STATUS)
+@dataclass(frozen=True)
+class MatchmakingStatusMessage:
+    seconds_remaining: int
+    type: str = MessageType.MATCHMAKING_STATUS
