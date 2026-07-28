@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from model.board import BoardRepresentation
+from model.board import BoardQuery
 from model.game_state import ArrivalEvent, GameObserver, GameSnapshot, JumpResult, MoveLoggedEvent, MoveResult, PieceSnapshot
 from model.piece import (
     ActionResultReason,
@@ -22,7 +22,7 @@ from rules.rule_engine import KingCaptureWinCondition, RuleEngine, WinCondition
 class GameEngine:
     def __init__(
         self,
-        board: BoardRepresentation,
+        board: BoardQuery,
         rule_engine: RuleEngine,
         real_time_arbiter: RealTimeArbiter,
         win_condition: Optional[WinCondition] = None,

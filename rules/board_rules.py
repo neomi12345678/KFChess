@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from model.board import BoardRepresentation
+from model.board import BoardQuery
 from model.piece import ActionResultReason
 from model.position import Position
 
@@ -18,7 +18,7 @@ class BoardRules:
     and swapped independently.
     """
 
-    def check(self, board: BoardRepresentation, source: Position, destination: Position) -> BoardCheck:
+    def check(self, board: BoardQuery, source: Position, destination: Position) -> BoardCheck:
         if not board.is_in_bounds(source) or not board.is_in_bounds(destination):
             return BoardCheck(is_valid=False, reason=ActionResultReason.OUTSIDE_BOARD)
 

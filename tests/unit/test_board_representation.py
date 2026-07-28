@@ -6,10 +6,10 @@ from rules.rule_engine import RuleEngine
 
 
 class FlatListBoard:
-    """A second BoardRepresentation with a completely different storage
-    layout (a flat list instead of a dict keyed by Position), to prove
-    that game logic really does depend on the interface and not on
-    Board's specific internals."""
+    """A second BoardStore with a completely different storage layout (a
+    flat list instead of a dict keyed by Position), to prove that game
+    logic really does depend on the interface and not on Board's specific
+    internals."""
 
     def __init__(self, width: int, height: int):
         self.width = width

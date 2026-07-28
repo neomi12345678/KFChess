@@ -11,11 +11,11 @@ never even imports display_config's pixel constants by way of this module.
 """
 
 from engine.game_engine import GameEngine
-from model.board import BoardRepresentation
+from model.board import BoardStore
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import RuleEngine
 
 
-def build_game(board: BoardRepresentation) -> GameEngine:
+def build_game(board: BoardStore) -> GameEngine:
     real_time_arbiter = RealTimeArbiter(board)
     return GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=real_time_arbiter)

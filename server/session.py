@@ -18,7 +18,7 @@ from typing import Dict, Optional, Union
 from engine.game_builder import build_game
 from events.game_events import GameStartedEvent
 from events.game_wiring import wire_game_events
-from model.board import BoardRepresentation
+from model.board import BoardStore
 from model.game_state import ArrivalEvent, GameObserver, JumpResult, MoveResult
 from model.piece import ActionResultReason, BLACK, KING, WHITE
 from model.position import Position
@@ -55,7 +55,7 @@ class GameSession:
     # 20-second default (see server/ws_server.py's own disconnect_grace_ms).
     def __init__(
         self,
-        board: BoardRepresentation,
+        board: BoardStore,
         rating_store: RatingRepository,
         white_username: str,
         black_username: str,

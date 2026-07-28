@@ -53,7 +53,7 @@ from typing import Callable, Optional
 
 import websockets
 
-from model.board import BoardRepresentation
+from model.board import BoardStore
 from protocol.game_messages import ErrorMessage, JumpMessage, MoveMessage
 from protocol.lobby_messages import (
     CancelRoomMessage,
@@ -67,12 +67,12 @@ from protocol.registry import decode_json_message
 from protocol.types import HOST as DEFAULT_HOST
 from protocol.types import PORT as DEFAULT_PORT
 from protocol.types import Reason
-from server.accounts import InvalidCredentialsError, UserStore
+from server.accounts import InvalidCredentialsError
 from server.connections import ConnectionRegistry
 from server.game_loop import GameLoop
-from server.interfaces import RatingRepository
+from server.interfaces import LifecyclePublisher, MatchmakingQueueProtocol, RatingRepository, UserRepository
 from server.router import CommandRouter
-from server.rooms import RoomRegistry, RoomStore
+from server.rooms import RoomRegistry, RoomStoreProtocol
 from server.server_config import (
     CLOSE_TIMEOUT_S,
     DEFAULT_TICK_INTERVAL_S,
@@ -98,8 +98,8 @@ class GameServer:
 
     def __init__(
         self,
-        board_factory: Callable[[], BoardRepresentation],
-        user_store: UserStore,
+        board_factory: Callable[[], BoardStore],
+        user_store: UserRepository,
         rating_store: RatingRepository,
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
@@ -109,7 +109,15 @@ class GameServer:
         ping_interval_s: float = PING_INTERVAL_S,
         ping_timeout_s: float = PING_TIMEOUT_S,
         close_timeout_s: float = CLOSE_TIMEOUT_S,
-        room_store: Optional[RoomStore] = None,
+        room_store: Optional[RoomStoreProtocol] = None,
+        # Overridable so server/main.py can hand in a Redis-backed queue
+        # (see server/redis/matchmaking.py) - passed straight through to
+        # GameLoop, see its own docstring on this same param.
+        matchmaking: Optional[MatchmakingQueueProtocol] = None,
+        # Overridable so server/main.py can hand in a NATS-backed publisher
+        # (see server/nats/lifecycle.py) - passed straight through to
+        # GameLoop, see its own docstring on this same param.
+        lifecycle_publisher: Optional[LifecyclePublisher] = None,
     ):
         self._user_store = user_store
         self._rating_store = rating_store
@@ -123,6 +131,8 @@ class GameServer:
             matchmaking_timeout_ms=matchmaking_timeout_ms,
             disconnect_grace_ms=disconnect_grace_ms,
             tick_interval_s=tick_interval_s,
+            matchmaking=matchmaking,
+            lifecycle_publisher=lifecycle_publisher,
         )
         self._router = CommandRouter(self._rooms, self._loop, rating_store, self._connections)
         self._host = host

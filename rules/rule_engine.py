@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Protocol
 
-from model.board import BoardRepresentation
+from model.board import BoardQuery
 from model.piece import (
     ActionResultReason,
     BISHOP,
@@ -67,7 +67,7 @@ class RuleEngine:
         self._piece_rules = piece_rules if piece_rules is not None else STANDARD_PIECE_RULES
         self._board_rules = board_rules if board_rules is not None else BoardRules()
 
-    def validate_move(self, board: BoardRepresentation, source: Position, destination: Position) -> MoveValidation:
+    def validate_move(self, board: BoardQuery, source: Position, destination: Position) -> MoveValidation:
         # Board-level legality (bounds, occupancy) first, then the piece's
         # own movement shape - two independent concerns, checked in order.
         board_check = self._board_rules.check(board, source, destination)

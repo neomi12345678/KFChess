@@ -17,13 +17,13 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional, Set
 
 from frame_clock import FrameClock
-from model.board import BoardRepresentation
+from model.board import BoardStore
 from model.piece import BLACK, WHITE
 from protocol.game_messages import DisconnectCountdownMessage, ErrorMessage, GameOverMessage, SeatMessage
 from protocol.lobby_messages import MatchmakingTimeoutMessage
 from protocol.snapshot_codec import panel_to_json, snapshot_to_json
 from server.connections import WirePayload
-from server.interfaces import MessageSender, RatingRepository
+from server.interfaces import LifecyclePublisher, MatchmakingQueueProtocol, MessageSender, RatingRepository
 from server.matchmaking import MatchmakingQueue
 from server.publisher import NetworkPublisher
 from server.rooms import Room, RoomRegistry
@@ -75,21 +75,33 @@ class ActiveGame:
 class GameLoop:
     def __init__(
         self,
-        board_factory: Callable[[], BoardRepresentation],
+        board_factory: Callable[[], BoardStore],
         rating_store: RatingRepository,
         rooms: RoomRegistry,
         connections: MessageSender,
         matchmaking_timeout_ms: int,
         disconnect_grace_ms: int,
         tick_interval_s: float = DEFAULT_TICK_INTERVAL_S,
+        # Overridable so server/main.py can hand in a Redis-backed queue
+        # (see server/redis/matchmaking.py, gated behind REDIS_URL) instead
+        # of this one-process-only default - every existing caller/test
+        # omits this and gets today's behavior unchanged.
+        matchmaking: Optional[MatchmakingQueueProtocol] = None,
+        # Overridable so server/main.py can hand in a NATS-backed publisher
+        # (see server/nats/lifecycle.py, gated behind NATS_URL) for the two
+        # coarse game-created/game-finished events below - every existing
+        # caller/test omits this and gets today's behavior unchanged (no
+        # publish calls at all).
+        lifecycle_publisher: Optional[LifecyclePublisher] = None,
     ):
         self._board_factory = board_factory
         self._rating_store = rating_store
         self._rooms = rooms
         self._connections = connections
-        self.matchmaking = MatchmakingQueue(timeout_ms=matchmaking_timeout_ms)
+        self.matchmaking = matchmaking if matchmaking is not None else MatchmakingQueue(timeout_ms=matchmaking_timeout_ms)
         self._disconnect_grace_ms = disconnect_grace_ms
         self._tick_interval_s = tick_interval_s
+        self._lifecycle_publisher = lifecycle_publisher
         self._games: Dict[str, ActiveGame] = {}
         self._next_play_game_id = 0
 
@@ -187,6 +199,9 @@ class GameLoop:
         game = ActiveGame(session=session, publisher=NetworkPublisher(session.bus), room_id=room_id)
         self._games[game_id] = game
 
+        if self._lifecycle_publisher is not None:
+            await self._lifecycle_publisher.game_created(game_id, room_id, white_username, black_username)
+
         for seat, username in ((WHITE, white_username), (BLACK, black_username)):
             await self._connections.send_to_username(username, SeatMessage(color=seat))
 
@@ -212,6 +227,8 @@ class GameLoop:
         rating_update = session.finalize_ratings_if_game_over()
         if rating_update is not None:
             await self._broadcast_to_game(game, GameOverMessage(ratings=rating_update))
+            if self._lifecycle_publisher is not None:
+                await self._lifecycle_publisher.game_finished(game_id, game.room_id, rating_update)
             del self._games[game_id]
             if game.room_id is not None:
                 self._rooms.close(game.room_id)

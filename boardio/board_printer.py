@@ -1,13 +1,13 @@
 from boardio.board_parser import piece_to_token
 from logic_config import EMPTY_TOKEN
-from model.board import BoardRepresentation
+from model.board import BoardQuery
 from model.position import Position
 
 
 # Pure formatting: returns text instead of printing it, so callers decide
 # whether to display it, assert on it, or write it to a stream.
 #
-# Deliberately reads BoardRepresentation's resting grid, not
+# Deliberately reads BoardQuery's resting grid, not
 # engine.game_engine.GameEngine.snapshot() the way view/renderer.py does -
 # GameSnapshot.pieces reports each piece's *interpolated* float row/col
 # mid-motion (see GameEngine.snapshot's docstring), which has no honest
@@ -18,7 +18,7 @@ from model.position import Position
 # Board instance GameEngine itself holds (see texttests/script_runner.py),
 # just read directly instead of through GameEngine's own query surface,
 # because GameEngine exposes no board-shaped accessor to route through.
-def print_board(board: BoardRepresentation) -> str:
+def print_board(board: BoardQuery) -> str:
     lines = []
     for r in range(board.height):
         cells = []
