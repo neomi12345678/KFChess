@@ -66,6 +66,15 @@ class PostgresUserStore:
                 "SELECT password_hash, password_salt FROM accounts WHERE username = %s",
                 (username,),
             ).fetchone()
+            # autocommit=False (see open_postgres_accounts_database) means
+            # this SELECT alone opened a transaction that would otherwise
+            # stay open - "idle in transaction" server-side - for as long as
+            # this connection lives, since a returning user's successful
+            # login never reaches _register's own commit(). Left open, it
+            # holds a lock that can block an unrelated exclusive operation
+            # (e.g. TRUNCATE accounts in a test fixture) indefinitely.
+            # row is already a plain fetched tuple, unaffected by this.
+            self._database.connection.rollback()
 
             if row is None:
                 return self._register(username, password)
@@ -102,6 +111,12 @@ class PostgresRatingStore:
             row = self._database.connection.execute(
                 "SELECT rating FROM accounts WHERE username = %s", (username,)
             ).fetchone()
+            # Same reasoning as PostgresUserStore.login's own rollback()
+            # above - a read-only SELECT under autocommit=False would
+            # otherwise leave this connection idle in an open transaction
+            # indefinitely (rating_for is called far more often than any
+            # write path here, so this is the more consequential of the two).
+            self._database.connection.rollback()
             return row[0]
 
     def update_rating(self, username: str, rating: int) -> None:

@@ -25,6 +25,8 @@ from protocol.lobby_messages import MatchmakingStatusMessage, MatchmakingTimeout
 from protocol.snapshot_codec import panel_to_json, snapshot_to_json
 from server.connections import WirePayload
 from server.interfaces import (
+    ActiveGameIndexProtocol,
+    ActiveGameLocation,
     BusySetProtocol,
     LifecyclePublisher,
     MatchmakingQueueProtocol,
@@ -107,6 +109,13 @@ class GameLoop:
         # this class's own in-memory self._games. None (the default) is a
         # no-op - every existing caller/test is unaffected.
         busy_set: Optional[BusySetProtocol] = None,
+        # Overridable so server/main.py can hand in a Redis-backed index
+        # (see server/redis/active_game_index.py, gated behind REDIS_URL) -
+        # a standalone api-gateway's POST /login reads this to answer "is
+        # this a reconnect, and to which color" without reaching into this
+        # class's own in-memory self._games. None (the default) is a no-op
+        # - every existing caller/test is unaffected.
+        active_game_index: Optional[ActiveGameIndexProtocol] = None,
     ):
         self._board_factory = board_factory
         self._rating_store = rating_store
@@ -119,6 +128,7 @@ class GameLoop:
         self._tick_interval_s = tick_interval_s
         self._lifecycle_publisher = lifecycle_publisher
         self._busy_set = busy_set
+        self._active_game_index = active_game_index
         self._games: Dict[str, ActiveGame] = {}
         self._next_play_game_id = 0
         # Flipped by start_matchmaking_relay - see its own docstring for why
@@ -284,6 +294,10 @@ class GameLoop:
             self._busy_set.add(white_username)
             self._busy_set.add(black_username)
 
+        if self._active_game_index is not None:
+            self._active_game_index.set(white_username, ActiveGameLocation(game_id, room_id, WHITE))
+            self._active_game_index.set(black_username, ActiveGameLocation(game_id, room_id, BLACK))
+
         if self._lifecycle_publisher is not None:
             await self._lifecycle_publisher.game_created(game_id, room_id, white_username, black_username)
 
@@ -319,6 +333,9 @@ class GameLoop:
             if self._busy_set is not None:
                 self._busy_set.remove(session.username_for(WHITE))
                 self._busy_set.remove(session.username_for(BLACK))
+            if self._active_game_index is not None:
+                self._active_game_index.remove(session.username_for(WHITE))
+                self._active_game_index.remove(session.username_for(BLACK))
             del self._games[game_id]
             if game.room_id is not None:
                 self._rooms.close(game.room_id)
@@ -350,6 +367,9 @@ class GameLoop:
         if self._busy_set is not None:
             self._busy_set.remove(game.session.username_for(WHITE))
             self._busy_set.remove(game.session.username_for(BLACK))
+        if self._active_game_index is not None:
+            self._active_game_index.remove(game.session.username_for(WHITE))
+            self._active_game_index.remove(game.session.username_for(BLACK))
         if game.room_id is not None:
             self._rooms.close(game.room_id)
 

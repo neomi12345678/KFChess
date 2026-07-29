@@ -33,6 +33,7 @@ API_GATEWAY_PORT = 8080
 # still compares/serializes identically either way.
 class MessageType(str, Enum):
     LOGIN = "login"
+    IDENTIFY = "identify"
     PLAY = "play"
     CREATE_ROOM = "create_room"
     CANCEL_ROOM = "cancel_room"
@@ -41,6 +42,7 @@ class MessageType(str, Enum):
     JUMP = "jump"
 
     LOGIN_ACK = "login_ack"
+    IDENTIFY_ACK = "identify_ack"
     PLAY_ACK = "play_ack"
     CREATE_ROOM_ACK = "create_room_ack"
     JOIN_ROOM_ACK = "join_room_ack"

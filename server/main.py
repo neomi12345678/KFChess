@@ -89,6 +89,22 @@ def _build_busy_set():
     return BusySet(redis_url)
 
 
+# REDIS_URL unset (the default) keeps reconnect-detection purely in-process
+# (GameLoop's own default of no active-game index at all) - fine for a
+# single process, since decide_login already answers this in-process there.
+# Set, this becomes the cross-process source of truth a standalone
+# api-gateway's POST /login reads to answer "is this a reconnect, and to
+# which color" (see server/redis/active_game_index.py).
+def _build_active_game_index():
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url is None:
+        return None
+
+    from server.redis.active_game_index import ActiveGameIndex
+
+    return ActiveGameIndex(redis_url)
+
+
 # NATS_URL unset (the default) keeps today's behavior exactly as before -
 # GameLoop treats no lifecycle_publisher as a pure no-op (see its own
 # docstring). Set (see docker-compose.yml) switches to
@@ -173,6 +189,7 @@ async def _main() -> None:
     matchmaking = _build_matchmaking()
     lifecycle_publisher = await _build_lifecycle_publisher()
     busy_set = _build_busy_set()
+    active_game_index = _build_active_game_index()
     server = GameServer(
         _new_board,
         user_store,
@@ -183,6 +200,7 @@ async def _main() -> None:
         matchmaking=matchmaking,
         lifecycle_publisher=lifecycle_publisher,
         busy_set=busy_set,
+        active_game_index=active_game_index,
     )
     await _build_matchmaking_relay(server)
     _maybe_start_shard_heartbeat()

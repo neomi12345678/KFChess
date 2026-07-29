@@ -30,6 +30,7 @@ from protocol.game_messages import AckMessage, JumpMessage, MoveMessage
 from protocol.lobby_messages import (
     CancelRoomAckMessage,
     CreateRoomAckMessage,
+    IdentifyAckMessage,
     JoinRoomAckMessage,
     LoginAckMessage,
     PlayAckMessage,
@@ -124,6 +125,26 @@ class CommandRouter:
             )
 
         return LoginDecision(ack=LoginAckMessage(accepted=True, username=username, rating=rating))
+
+    # Called once server/ws_server.py's _handle_identify has already
+    # registered the websocket under this username - the IDENTIFY
+    # counterpart to decide_login, reached when a client authenticated over
+    # REST instead (see services/api_gateway/main.py's POST /login). Only
+    # replicates decide_login's first branch (reconnect into an
+    # already-live GameSession) - never its second (a room surviving a
+    # server restart, which needs "is the other participant currently
+    # connected," a notion that doesn't survive login moving off the
+    # persistent websocket - see this project's own design notes on why
+    # that branch is staying on LoginMessage for now) or its third (an
+    # ordinary fresh login has nothing left to do here; REST already
+    # returned rating/reconnected state). Always accepted - this is
+    # registration, not a decision that can be rejected.
+    def decide_identify(self, username: str) -> IdentifyAckMessage:
+        game = self._loop.active_game_for(username)
+        seat = game.session.seat_for_username(username) if game is not None else None
+        if seat is not None and game.session.is_disconnected(seat):
+            game.session.mark_reconnected(seat)
+        return IdentifyAckMessage(accepted=True)
 
     def decide_play(self, username: str) -> PlayAckMessage:
         reason = self._busy_reason(username)

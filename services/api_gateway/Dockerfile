@@ -1,9 +1,10 @@
 # API-Gateway-only image: this service only ever imports
 # server/postgres/accounts.py (+ its own server/accounts.py dependency for
-# the shared Account/_hash_password), server/redis/matchmaking.py, and
-# server/redis/busy_set.py - none of the game engine (model/, rules/,
-# physics/, realtime/, engine/, boardio/, events/, protocol/'s message
-# classes aside) or SQLite stores, so none of that is copied here.
+# the shared Account/InvalidCredentialsError/_hash_password),
+# server/redis/matchmaking.py, server/redis/busy_set.py, and
+# server/redis/active_game_index.py - none of the game engine (model/,
+# rules/, physics/, realtime/, engine/, boardio/, events/, protocol/'s
+# message classes aside) or SQLite stores, so none of that is copied here.
 FROM python:3.11-slim
 
 WORKDIR /app

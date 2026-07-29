@@ -21,7 +21,14 @@ from boardio.algebraic_notation import parse_square
 from boardio.board_parser import parse
 from model.piece import BLACK, WHITE
 from protocol.game_messages import build_jump, build_move
-from protocol.lobby_messages import CancelRoomMessage, CreateRoomMessage, JoinRoomMessage, LoginMessage, PlayMessage
+from protocol.lobby_messages import (
+    CancelRoomMessage,
+    CreateRoomMessage,
+    IdentifyMessage,
+    JoinRoomMessage,
+    LoginMessage,
+    PlayMessage,
+)
 from protocol.registry import encode_json_message
 from server.rooms import RoomRegistry
 from server.sqlite.accounts import UserStore
@@ -49,6 +56,11 @@ async def recv_of_type(websocket, message_type: str, timeout: float = 2.0) -> di
 async def login(websocket, username: str, password: str = "secret123") -> dict:
     await websocket.send(encode_json_message(LoginMessage(username=username, password=password)))
     return await recv_of_type(websocket, "login_ack")
+
+
+async def identify(websocket, username: str) -> dict:
+    await websocket.send(encode_json_message(IdentifyMessage(username=username)))
+    return await recv_of_type(websocket, "identify_ack")
 
 
 async def play(websocket) -> dict:
@@ -567,6 +579,71 @@ def test_disconnected_player_can_reconnect_within_the_grace_window_and_resume():
                     await send_move(b2, BLACK, "a1", "a2", board_height=3)
                     ack = await recv_of_type(b2, "ack")
                     assert ack["reason"] != "not_in_game"
+
+    asyncio.run(scenario())
+
+
+def test_identify_reconnects_a_disconnected_seat_within_the_grace_window():
+    async def scenario():
+        # Same scenario as test_disconnected_player_can_reconnect_within_the_
+        # grace_window_and_resume above, but the reconnecting side sends
+        # IDENTIFY instead of LOGIN - the REST-authenticated path (see
+        # server/ws_server.py's _handle_identify), reachable once a client
+        # already authenticated over services/api_gateway/main.py's own
+        # POST /login and only needs to attach this websocket.
+        async with running_server(disconnect_grace_ms=10_000) as server:
+            uri = f"ws://localhost:{server.bound_port}"
+            async with websockets.connect(uri) as a:
+                b = await websockets.connect(uri)
+                await login(a, "alice")
+                await login(b, "bob")
+                await play(a)
+                await play(b)
+                await recv_of_type(a, "seat")  # alice = white
+                await recv_of_type(b, "seat")  # bob = black
+
+                await b.close()  # bob disconnects
+                await asyncio.sleep(0.1)  # well within the 10s grace window
+
+                async with websockets.connect(uri) as b2:
+                    identify_ack = await identify(b2, "bob")
+                    assert identify_ack == {"type": "identify_ack", "accepted": True}
+
+                    # The game actually continues - bob's connection is
+                    # still recognized as part of it, the same proof
+                    # test_disconnected_player_can_reconnect_within_the_
+                    # grace_window_and_resume uses for LOGIN's own
+                    # reconnect branch.
+                    await send_move(b2, BLACK, "a1", "a2", board_height=3)
+                    ack = await recv_of_type(b2, "ack")
+                    assert ack["reason"] != "not_in_game"
+
+    asyncio.run(scenario())
+
+
+def test_identify_for_a_username_with_no_active_game_just_registers_the_connection():
+    async def scenario():
+        async with running_server() as server:
+            uri = f"ws://localhost:{server.bound_port}"
+
+            # Simulates services/api_gateway/main.py's own POST /login
+            # having already run (it's what actually registers the account
+            # on first use, via the same UserStore.login - see
+            # server/postgres/accounts.py's PostgresUserStore, mirrored
+            # here by the SQLite one this test server already uses) -
+            # this connection is discarded without ever sending LOGIN on
+            # it, so the IDENTIFY-only connection below is the *only* one
+            # this username's socket has ever used.
+            async with websockets.connect(uri) as bootstrap:
+                await login(bootstrap, "carol")
+
+            async with websockets.connect(uri) as ws:
+                identify_ack = await identify(ws, "carol")
+                assert identify_ack == {"type": "identify_ack", "accepted": True}
+
+                # Registered like any other connection - PLAY now works.
+                play_ack = await play(ws)
+                assert play_ack["accepted"] is True
 
     asyncio.run(scenario())
 
