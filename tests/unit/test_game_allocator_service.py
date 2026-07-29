@@ -114,3 +114,80 @@ def test_a_game_id_whose_lease_is_already_held_is_not_reallocated():
     assert _acquire_lease(redis_client, "already-held", "shard-a") is True
     assert _acquire_lease(redis_client, "already-held", "shard-b") is False
     assert redis_client.get("kfchess:game:already-held:owner") == "shard-a"
+
+
+# Mirrors test_match_found_is_allocated_with_a_real_lease above, for the
+# room-flow's own equivalent event (services/api_gateway/main.py's
+# handle_join_room) - the one difference under test: game_id *is* the
+# room_id, not a freshly minted "play-<hex>" id.
+def test_room_opponent_joined_is_allocated_with_the_room_id_as_its_own_lease_key():
+    import nats
+    import redis as redis_lib
+
+    from services.game_allocator.main import _handle_room_opponent_joined
+
+    async def scenario():
+        redis_client = redis_lib.Redis.from_url(REDIS_URL, decode_responses=True)
+        redis_client.delete("kfchess:game:room-under-test:owner")
+        nats_connection = await nats.connect(NATS_URL)
+
+        received = []
+
+        async def handler(msg):
+            received.append(json.loads(msg.data))
+
+        sub = await nats_connection.subscribe("game.allocated", cb=handler)
+        await asyncio.sleep(0.2)
+
+        payload = {"room_id": "room-under-test", "creator": "alice", "opponent": "bob"}
+        fake_msg = _FakeMsg(json.dumps(payload).encode("utf-8"))
+        await _handle_room_opponent_joined(redis_client, nats_connection, "shard-under-test", fake_msg)
+        await asyncio.sleep(0.3)
+
+        await sub.unsubscribe()
+        await nats_connection.close()
+        return received, redis_client
+
+    received, redis_client = asyncio.run(scenario())
+
+    assert len(received) == 1
+    event = received[0]
+    assert event["game_id"] == "room-under-test"
+    assert event["room_id"] == "room-under-test"
+    assert event["white_username"] == "alice"
+    assert event["black_username"] == "bob"
+    assert event["shard_address"] == "shard-under-test"
+
+    assert redis_client.get("kfchess:game:room-under-test:owner") == "shard-under-test"
+
+
+def test_room_opponent_joined_with_no_live_shard_is_logged_and_not_allocated():
+    import nats
+    import redis as redis_lib
+
+    from services.game_allocator.main import _handle_room_opponent_joined
+
+    async def scenario():
+        redis_client = redis_lib.Redis.from_url(REDIS_URL, decode_responses=True)
+        nats_connection = await nats.connect(NATS_URL)
+
+        received = []
+
+        async def handler(msg):
+            received.append(json.loads(msg.data))
+
+        sub = await nats_connection.subscribe("game.allocated", cb=handler)
+        await asyncio.sleep(0.2)
+
+        payload = {"room_id": "room-no-shard", "creator": "alice", "opponent": "bob"}
+        fake_msg = _FakeMsg(json.dumps(payload).encode("utf-8"))
+        await _handle_room_opponent_joined(redis_client, nats_connection, None, fake_msg)
+        await asyncio.sleep(0.3)
+
+        await sub.unsubscribe()
+        await nats_connection.close()
+        return received
+
+    received = asyncio.run(scenario())
+
+    assert received == []

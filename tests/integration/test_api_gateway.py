@@ -60,6 +60,13 @@ def running_app(monkeypatch):
     redis_client = redis_lib.Redis.from_url(REDIS_URL, decode_responses=True)
     redis_client.delete("kfchess:busy_usernames")
     redis_client.delete("kfchess:matchmaking:order", "kfchess:matchmaking:waiting")
+    # Room keys are dynamic (kfchess:room:{room_id}) - wiped by prefix scan
+    # rather than by name, same approach test_redis_room_registry.py's own
+    # fixture uses, so a rerun never trips "already_in_a_room" on a room
+    # left over from a previous run.
+    for prefix in ("kfchess:room:", "kfchess:room_owner:"):
+        for key in redis_client.scan_iter(match=f"{prefix}*"):
+            redis_client.delete(key)
 
     from server.postgres.accounts import PostgresUserStore, open_postgres_accounts_database
 
@@ -125,18 +132,22 @@ def running_app(monkeypatch):
     loop.close()
 
 
-def _post_play(port: int, username: str) -> dict:
+def _post_json(port: int, path: str, body: dict) -> dict:
     import json
     import urllib.request
 
     request = urllib.request.Request(
-        f"http://localhost:{port}/play",
-        data=json.dumps({"username": username}).encode("utf-8"),
+        f"http://localhost:{port}{path}",
+        data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=5.0) as response:
         return json.loads(response.read())
+
+
+def _post_play(port: int, username: str) -> dict:
+    return _post_json(port, "/play", {"username": username})
 
 
 def test_a_registered_user_gets_enqueued_into_the_real_shared_queue(running_app):
@@ -169,3 +180,124 @@ def test_a_busy_user_is_rejected_without_touching_the_queue(running_app):
 
     assert body == {"accepted": False, "reason": "already_in_game"}
     assert not redis_client.hexists("kfchess:matchmaking:waiting", "gw_test_busy")
+
+
+def test_creating_a_room_returns_a_room_id(running_app):
+    port, redis_client = running_app
+
+    body = _post_json(port, "/rooms", {"username": "gw_test_room_creator"})
+
+    assert body["accepted"] is True
+    assert body["room_id"]
+    assert redis_client.get("kfchess:room_owner:gw_test_room_creator") == body["room_id"]
+
+
+def test_joining_a_room_seats_the_opponent_and_publishes_room_opponent_joined(running_app):
+    import nats
+
+    port, _redis_client = running_app
+
+    created = _post_json(port, "/rooms", {"username": "gw_test_room_alice"})
+    room_id = created["room_id"]
+
+    async def scenario():
+        nats_connection = await nats.connect(NATS_URL)
+        received = []
+
+        async def handler(msg):
+            import json
+
+            received.append(json.loads(msg.data))
+
+        sub = await nats_connection.subscribe("room.opponent_joined", cb=handler)
+        await asyncio.sleep(0.2)
+
+        loop = asyncio.get_event_loop()
+        join_body = await loop.run_in_executor(
+            None, _post_json, port, f"/rooms/{room_id}/join", {"username": "gw_test_room_bob"}
+        )
+        await asyncio.sleep(0.3)
+
+        await sub.unsubscribe()
+        await nats_connection.close()
+        return join_body, received
+
+    join_body, received = asyncio.run(scenario())
+
+    assert join_body == {"accepted": True, "room_id": room_id, "role": "opponent"}
+    assert len(received) == 1
+    assert received[0] == {"room_id": room_id, "creator": "gw_test_room_alice", "opponent": "gw_test_room_bob"}
+
+
+def test_joining_a_room_that_already_has_an_opponent_makes_a_spectator(running_app):
+    port, _redis_client = running_app
+
+    created = _post_json(port, "/rooms", {"username": "gw_test_room_spec_creator"})
+    room_id = created["room_id"]
+    _post_json(port, f"/rooms/{room_id}/join", {"username": "gw_test_room_spec_opponent"})
+
+    body = _post_json(port, f"/rooms/{room_id}/join", {"username": "gw_test_room_spec_watcher"})
+
+    assert body == {"accepted": True, "room_id": room_id, "role": "spectator"}
+
+
+def test_cancelling_a_pending_room(running_app):
+    port, redis_client = running_app
+
+    created = _post_json(port, "/rooms", {"username": "gw_test_room_to_cancel"})
+
+    body = _post_json(port, "/rooms/cancel", {"username": "gw_test_room_to_cancel"})
+
+    assert body == {"accepted": True}
+    assert redis_client.get("kfchess:room_owner:gw_test_room_to_cancel") is None
+    assert not redis_client.exists(f"kfchess:room:{created['room_id']}")
+
+
+# Proves the busy_set integration server/redis/rooms.py's own docstring
+# calls out as required, not optional - without RedisRoomRegistry.create
+# adding to busy_set, this same username could also queue for PLAY.
+def test_a_user_who_created_a_room_cannot_also_play(running_app):
+    port, _redis_client = running_app
+
+    _post_json(port, "/rooms", {"username": "gw_test_room_then_play"})
+
+    body = _post_play(port, "gw_test_room_then_play")
+
+    assert body == {"accepted": False, "reason": "already_in_game"}
+
+
+# Proves the other half of server/redis/rooms.py's own docstring: a
+# game.finished event (the same one services/persistence_worker/main.py
+# consumes) must clean up this service's own Redis room state, since
+# GameLoop itself only ever closes its own separate, in-process
+# RoomRegistry - never this one.
+def test_publishing_game_finished_cleans_up_the_rooms_redis_state(running_app):
+    import json
+
+    import nats
+
+    port, redis_client = running_app
+
+    created = _post_json(port, "/rooms", {"username": "gw_test_room_finish_creator"})
+    room_id = created["room_id"]
+    _post_json(port, f"/rooms/{room_id}/join", {"username": "gw_test_room_finish_opponent"})
+
+    async def publish_game_finished():
+        nats_connection = await nats.connect(NATS_URL)
+        payload = {
+            "game_id": room_id,
+            "room_id": room_id,
+            "white_username": "gw_test_room_finish_creator",
+            "black_username": "gw_test_room_finish_opponent",
+            "ratings": {"white": 1200, "black": 1200},
+        }
+        await nats_connection.publish("game.finished", json.dumps(payload).encode("utf-8"))
+        await nats_connection.flush()
+        await nats_connection.close()
+
+    asyncio.run(publish_game_finished())
+
+    assert _wait_until(lambda: not redis_client.exists(f"kfchess:room:{room_id}"))
+    assert _wait_until(lambda: redis_client.get("kfchess:room_owner:gw_test_room_finish_creator") is None)
+    assert not redis_client.sismember("kfchess:busy_usernames", "gw_test_room_finish_creator")
+    assert not redis_client.sismember("kfchess:busy_usernames", "gw_test_room_finish_opponent")
