@@ -54,7 +54,7 @@ from typing import Callable, Optional
 import websockets
 
 from model.board import BoardStore
-from protocol.game_messages import ErrorMessage, JumpMessage, MoveMessage
+from protocol.game_messages import ErrorMessage, JumpMessage, MoveMessage, SeatMessage
 from protocol.lobby_messages import (
     CancelRoomMessage,
     CreateRoomMessage,
@@ -352,7 +352,12 @@ class GameServer:
 
         self._connections.set(username, websocket)
 
-        await self._connections.send(websocket, self._router.decide_identify(username))
+        decision = self._router.decide_identify(username)
+        await self._connections.send(websocket, decision.ack)
+        if decision.seat is not None:
+            await self._connections.send(websocket, SeatMessage(color=decision.seat))
+        if decision.snapshot is not None:
+            await self._connections.send(websocket, decision.snapshot)
         return username
 
     async def _handle_join_room(self, websocket, username: str, room_id: str) -> None:

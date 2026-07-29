@@ -121,6 +121,16 @@ def test_identify_for_an_already_allocated_username_relays_moves(clean_active_ga
             # tests/unit/test_server_game_loop.py reaches into GameLoop
             # rather than going through matchmaking/rooms - this test is
             # about the relay, not about how a game gets started.
+            #
+            # Deliberately *before* the client ever connects/identifies -
+            # _start_game's own one-shot SeatMessage broadcast has nobody
+            # registered to reach yet and is silently lost (this is exactly
+            # the real race a live docker-compose run surfaced: WS Gateway's
+            # own internal IDENTIFY handshake can lag behind the shard
+            # already having started the game via the same game.allocated
+            # event). decide_identify's own re-send (see server/router.py)
+            # is what's actually being proven below - not just that a later
+            # MOVE happens to work.
             await server._loop._start_game("play-test", "gw_alice", "gw_bob")
 
             ActiveGameIndex(REDIS_URL).set(
@@ -131,6 +141,11 @@ def test_identify_for_an_already_allocated_username_relays_moves(clean_active_ga
             async with running_ws_gateway(shard_port=server.bound_port) as gw_port:
                 async with websockets.connect(f"ws://localhost:{gw_port}") as client:
                     await client.send(encode_json_message(IdentifyMessage(username="gw_alice")))
+
+                    # Proves decide_identify's own resend, not the original
+                    # (already-missed) broadcast from _start_game above.
+                    seat = await recv_of_type(client, "seat")
+                    assert seat == {"type": "seat", "color": "white"}
 
                     await send_move(client, WHITE, "a1", "a2", board_height=3)
                     ack = await recv_of_type(client, "ack")
