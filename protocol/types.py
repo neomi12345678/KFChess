@@ -12,6 +12,14 @@ from enum import Enum
 HOST = "localhost"
 PORT = 8765
 
+# The standalone API Gateway's REST port (see services/api_gateway/main.py,
+# docker-compose.yml) - the one wire-message exception, PLAY, now goes
+# here as an HTTP POST instead of over the websocket (see
+# client/network_client.py's/client/client_cli.py's own PLAY handling);
+# every other message (login, rooms, moves, matchmaking-status/seat
+# notifications) stays on the websocket at HOST/PORT above, unchanged.
+API_GATEWAY_PORT = 8080
+
 # Wire message "type" values - the vocabulary every message in either
 # direction carries (see protocol/registry.py's register()/message_to_dict):
 # client->server (LOGIN/PLAY/.../MOVE/JUMP, see lobby_messages.py/

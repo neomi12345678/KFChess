@@ -20,6 +20,9 @@ Run: python -m client.client_cli [--host HOST] [--port PORT]
 import argparse
 import asyncio
 import getpass
+import json
+import urllib.error
+import urllib.request
 from typing import Optional, Type, Union
 
 import websockets
@@ -37,7 +40,7 @@ from protocol.lobby_messages import (
     PlayMessage,
 )
 from protocol.registry import encode_json_message
-from protocol.types import HOST, PORT
+from protocol.types import API_GATEWAY_PORT, HOST, PORT
 
 
 class InputError(Exception):
@@ -136,7 +139,30 @@ async def _print_incoming(websocket, state: _ClientState) -> None:
             print(decoded)
 
 
-async def _read_commands(websocket, state: _ClientState) -> None:
+# api_gateway_port unset (the default - see _parse_args's own --api-gateway-port
+# help text): a plain websocket PlayMessage send, exactly as before -
+# server/router.py's CommandRouter still has this PLAY branch (see
+# server/ws_server.py), kept specifically so this default path (and every
+# test building a plain GameServer with no API Gateway) keeps working
+# unchanged. Set: an HTTP POST to the standalone API Gateway instead (see
+# services/api_gateway/main.py) - a plain blocking call, same as this module's own
+# build_command/input() calls, run via run_in_executor so it doesn't block
+# this coroutine's event loop.
+def _post_play(username: str, api_gateway_host: str, api_gateway_port: int) -> dict:
+    url = f"http://{api_gateway_host}:{api_gateway_port}/play"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"username": username}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10.0) as response:
+        return json.loads(response.read())
+
+
+async def _read_commands(
+    websocket, state: _ClientState, username: str, api_gateway_host: str, api_gateway_port: Optional[int]
+) -> None:
     loop = asyncio.get_event_loop()
     while True:
         raw = await loop.run_in_executor(None, input, "> ")
@@ -144,7 +170,15 @@ async def _read_commands(websocket, state: _ClientState) -> None:
         lowered = text.lower()
 
         if lowered == PLAY_INPUT:
-            await websocket.send(encode_json_message(PlayMessage()))
+            if api_gateway_port is None:
+                await websocket.send(encode_json_message(PlayMessage()))
+                continue
+            try:
+                body = await loop.run_in_executor(None, _post_play, username, api_gateway_host, api_gateway_port)
+            except urllib.error.URLError as error:
+                print(f"(could not reach the API Gateway: {error})")
+                continue
+            print(f"play_ack: {body}")
             continue
 
         if lowered == CREATE_ROOM_INPUT:
@@ -179,10 +213,23 @@ def _parse_args() -> argparse.Namespace:  # pragma: no cover
     parser = argparse.ArgumentParser(description="KFChess terminal client")
     parser.add_argument("--host", default=HOST, help=f"server host (default: {HOST})")
     parser.add_argument("--port", type=int, default=PORT, help=f"server port (default: {PORT})")
+    # Both unset by default: PLAY over the websocket, same as always (see
+    # _read_commands's own handling) - a bare-metal `python -m server.main`
+    # has no API Gateway anywhere to answer. Pass --api-gateway-port only
+    # when actually running the full split-service docker-compose.yml
+    # stack; --api-gateway-host then defaults to --host (both services
+    # published on the same machine/DNS name, just different ports).
+    parser.add_argument("--api-gateway-host", default=None, help="API Gateway host (default: same as --host)")
+    parser.add_argument(
+        "--api-gateway-port",
+        type=int,
+        default=None,
+        help=f"API Gateway port (unset: PLAY over the websocket; typically {API_GATEWAY_PORT})",
+    )
     return parser.parse_args()
 
 
-async def _main(host: str, port: int) -> None:  # pragma: no cover
+async def _main(host: str, port: int, api_gateway_host: str, api_gateway_port: Optional[int]) -> None:  # pragma: no cover
     username = input("Username: ").strip()
     password = getpass.getpass("Password: ")
 
@@ -202,12 +249,16 @@ async def _main(host: str, port: int) -> None:  # pragma: no cover
             state = _ClientState()
             print("Type 'play' to find a match.")
 
-        await asyncio.gather(_print_incoming(websocket, state), _read_commands(websocket, state))
+        await asyncio.gather(
+            _print_incoming(websocket, state),
+            _read_commands(websocket, state, username, api_gateway_host, api_gateway_port),
+        )
 
 
 def main() -> None:  # pragma: no cover
     args = _parse_args()
-    asyncio.run(_main(args.host, args.port))
+    api_gateway_host = args.api_gateway_host if args.api_gateway_host is not None else args.host
+    asyncio.run(_main(args.host, args.port, api_gateway_host, args.api_gateway_port))
 
 
 if __name__ == "__main__":  # pragma: no cover
