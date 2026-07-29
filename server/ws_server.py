@@ -70,7 +70,13 @@ from protocol.types import Reason
 from server.accounts import InvalidCredentialsError
 from server.connections import ConnectionRegistry
 from server.game_loop import GameLoop
-from server.interfaces import LifecyclePublisher, MatchmakingQueueProtocol, RatingRepository, UserRepository
+from server.interfaces import (
+    BusySetProtocol,
+    LifecyclePublisher,
+    MatchmakingQueueProtocol,
+    RatingRepository,
+    UserRepository,
+)
 from server.router import CommandRouter
 from server.rooms import RoomRegistry, RoomStoreProtocol
 from server.server_config import (
@@ -120,10 +126,14 @@ class GameServer:
         # (see server/nats/lifecycle.py) - passed straight through to
         # GameLoop, see its own docstring on this same param.
         lifecycle_publisher: Optional[LifecyclePublisher] = None,
+        # Overridable so server/main.py can hand in a Redis-backed busy set
+        # (see server/redis/busy_set.py) - passed to both RoomRegistry and
+        # GameLoop, see their own docstrings on this same param.
+        busy_set: Optional[BusySetProtocol] = None,
     ):
         self._user_store = user_store
         self._rating_store = rating_store
-        self._rooms = RoomRegistry(store=room_store)
+        self._rooms = RoomRegistry(store=room_store, busy_set=busy_set)
         self._connections = ConnectionRegistry()
         self._loop = GameLoop(
             board_factory,
@@ -136,6 +146,7 @@ class GameServer:
             tick_interval_s=tick_interval_s,
             matchmaking=matchmaking,
             lifecycle_publisher=lifecycle_publisher,
+            busy_set=busy_set,
         )
         self._router = CommandRouter(self._rooms, self._loop, rating_store, self._connections)
         self._host = host
@@ -149,6 +160,16 @@ class GameServer:
     @property
     def bound_port(self) -> int:
         return self._ws_server.sockets[0].getsockname()[1]
+
+    # Passthrough to GameLoop's own method - see its docstring. Called once
+    # at startup, before run_forever, from server/main.py.
+    async def start_matchmaking_relay(self, nats_connection, external: bool) -> None:
+        await self._loop.start_matchmaking_relay(nats_connection, external)
+
+    # Passthrough to GameLoop's own method - see its docstring. Called once
+    # at startup, before run_forever, from server/main.py.
+    async def start_game_allocation_relay(self, nats_connection) -> None:
+        await self._loop.start_game_allocation_relay(nats_connection)
 
     async def wait_started(self) -> None:
         await self._started.wait()
