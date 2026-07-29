@@ -136,6 +136,10 @@ class GameServer:
         # (see server/redis/active_game_index.py) - passed straight through
         # to GameLoop, see its own docstring on this same param.
         active_game_index: Optional[ActiveGameIndexProtocol] = None,
+        # This shard's own address (see server/main.py's SHARD_ADDRESS env
+        # var) - passed straight through to GameLoop, see its own docstring
+        # on this same param.
+        shard_address: Optional[str] = None,
     ):
         self._user_store = user_store
         self._rating_store = rating_store
@@ -154,6 +158,7 @@ class GameServer:
             lifecycle_publisher=lifecycle_publisher,
             busy_set=busy_set,
             active_game_index=active_game_index,
+            shard_address=shard_address,
         )
         self._router = CommandRouter(self._rooms, self._loop, rating_store, self._connections)
         self._host = host

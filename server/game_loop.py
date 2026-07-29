@@ -116,6 +116,15 @@ class GameLoop:
         # class's own in-memory self._games. None (the default) is a no-op
         # - every existing caller/test is unaffected.
         active_game_index: Optional[ActiveGameIndexProtocol] = None,
+        # This shard's own address (see server/main.py's SHARD_ADDRESS env
+        # var, already used for server/redis/shard_registry.py's own
+        # heartbeat) - written into every ActiveGameLocation this class
+        # creates, so a standalone WS Gateway (services/ws_gateway/main.py)
+        # knows which shard to open its own internal relay connection to.
+        # Only meaningful together with active_game_index above (see
+        # _start_game's own guard) - every existing caller/test omits both
+        # and is unaffected.
+        shard_address: Optional[str] = None,
     ):
         self._board_factory = board_factory
         self._rating_store = rating_store
@@ -129,6 +138,7 @@ class GameLoop:
         self._lifecycle_publisher = lifecycle_publisher
         self._busy_set = busy_set
         self._active_game_index = active_game_index
+        self._shard_address = shard_address
         self._games: Dict[str, ActiveGame] = {}
         self._next_play_game_id = 0
         # Flipped by start_matchmaking_relay - see its own docstring for why
@@ -310,9 +320,9 @@ class GameLoop:
             self._busy_set.add(white_username)
             self._busy_set.add(black_username)
 
-        if self._active_game_index is not None:
-            self._active_game_index.set(white_username, ActiveGameLocation(game_id, room_id, WHITE))
-            self._active_game_index.set(black_username, ActiveGameLocation(game_id, room_id, BLACK))
+        if self._active_game_index is not None and self._shard_address is not None:
+            self._active_game_index.set(white_username, ActiveGameLocation(game_id, room_id, WHITE, self._shard_address))
+            self._active_game_index.set(black_username, ActiveGameLocation(game_id, room_id, BLACK, self._shard_address))
 
         if self._lifecycle_publisher is not None:
             await self._lifecycle_publisher.game_created(game_id, room_id, white_username, black_username)

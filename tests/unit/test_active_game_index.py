@@ -39,7 +39,7 @@ def test_get_returns_none_for_a_username_with_no_active_game(index):
 
 
 def test_set_then_get_returns_the_same_location(index):
-    location = ActiveGameLocation(game_id="play-1", room_id=None, seat="white")
+    location = ActiveGameLocation(game_id="play-1", room_id=None, seat="white", shard_address="game-server")
 
     index.set("alice", location)
 
@@ -47,7 +47,7 @@ def test_set_then_get_returns_the_same_location(index):
 
 
 def test_set_for_a_room_game_carries_its_room_id(index):
-    location = ActiveGameLocation(game_id="room-abc123", room_id="abc123", seat="black")
+    location = ActiveGameLocation(game_id="room-abc123", room_id="abc123", seat="black", shard_address="game-server-2")
 
     index.set("bob", location)
 
@@ -55,7 +55,7 @@ def test_set_for_a_room_game_carries_its_room_id(index):
 
 
 def test_remove_clears_the_entry(index):
-    index.set("alice", ActiveGameLocation(game_id="play-1", room_id=None, seat="white"))
+    index.set("alice", ActiveGameLocation(game_id="play-1", room_id=None, seat="white", shard_address="game-server"))
 
     index.remove("alice")
 

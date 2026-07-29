@@ -218,7 +218,7 @@ def test_a_username_with_an_active_game_is_reported_as_reconnected(running_app):
     port, _redis_client = running_app
 
     ActiveGameIndex(REDIS_URL).set(
-        "gw_test_alice", ActiveGameLocation(game_id="play-1", room_id=None, seat="white")
+        "gw_test_alice", ActiveGameLocation(game_id="play-1", room_id=None, seat="white", shard_address="shard-a")
     )
     # Not assumed to be 1200 - gw_test_alice's account persists in this
     # real (non-:memory:) Postgres database across test runs, so her

@@ -129,19 +129,22 @@ class BusySetProtocol(Protocol):
 
 # Where a username's live game currently sits, for a standalone API
 # Gateway's own POST /login to answer "is this a reconnect, and to which
-# color" without reaching into any GameLoop's in-memory self._games -
-# satisfied by server/redis/active_game_index.py's ActiveGameIndex.
-# Deliberately doesn't track disconnected/reconnected state (that stays
-# entirely in-process - see server/session.py's GameSession.mark_reconnected,
-# still only ever called from the same process that holds the live
-# GameSession, via server/router.py's CommandRouter.decide_identify): this
-# only answers "does username have a live game right now, and as which
-# seat," the one fact a cross-process REST caller can't otherwise see.
+# color" without reaching into any GameLoop's in-memory self._games, and
+# for a standalone WS Gateway (services/ws_gateway/main.py) to know which
+# shard to open its own internal relay connection to - satisfied by
+# server/redis/active_game_index.py's ActiveGameIndex. Deliberately doesn't
+# track disconnected/reconnected state (that stays entirely in-process -
+# see server/session.py's GameSession.mark_reconnected, still only ever
+# called from the same process that holds the live GameSession, via
+# server/router.py's CommandRouter.decide_identify): this only answers
+# "does username have a live game right now, as which seat, on which
+# shard" - the facts a cross-process caller can't otherwise see.
 @dataclass(frozen=True)
 class ActiveGameLocation:
     game_id: str
     room_id: Optional[str]
     seat: str
+    shard_address: str
 
 
 # What server/game_loop.py's GameLoop actually calls on the active-game

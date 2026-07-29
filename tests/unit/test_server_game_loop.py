@@ -60,7 +60,7 @@ def _rating_store():
     return RatingStore(database)
 
 
-def _make_loop(rating_store, rooms=None, active_game_index=None):
+def _make_loop(rating_store, rooms=None, active_game_index=None, shard_address=None):
     return GameLoop(
         lambda: parse(STARTING_BOARD),
         rating_store,
@@ -70,6 +70,7 @@ def _make_loop(rating_store, rooms=None, active_game_index=None):
         disconnect_grace_ms=20_000,
         tick_interval_s=0.01,
         active_game_index=active_game_index,
+        shard_address=shard_address,
     )
 
 
@@ -128,12 +129,32 @@ def test_starting_a_game_records_both_seats_in_the_active_game_index():
     async def scenario():
         rating_store = _rating_store()
         active_game_index = _FakeActiveGameIndex()
+        loop = _make_loop(rating_store, active_game_index=active_game_index, shard_address="test-shard")
+
+        await loop._start_game("play-1", "alice", "bob")
+
+        assert active_game_index.get("alice") == ActiveGameLocation(
+            game_id="play-1", room_id=None, seat=WHITE, shard_address="test-shard"
+        )
+        assert active_game_index.get("bob") == ActiveGameLocation(
+            game_id="play-1", room_id=None, seat=BLACK, shard_address="test-shard"
+        )
+
+    asyncio.run(scenario())
+
+
+def test_starting_a_game_without_a_shard_address_does_not_write_the_active_game_index():
+    async def scenario():
+        rating_store = _rating_store()
+        active_game_index = _FakeActiveGameIndex()
+        # shard_address omitted - a misconfiguration (active_game_index set,
+        # SHARD_ADDRESS not - see server/game_loop.py's own _start_game
+        # guard) shouldn't write a location with no real shard to route to.
         loop = _make_loop(rating_store, active_game_index=active_game_index)
 
         await loop._start_game("play-1", "alice", "bob")
 
-        assert active_game_index.get("alice") == ActiveGameLocation(game_id="play-1", room_id=None, seat=WHITE)
-        assert active_game_index.get("bob") == ActiveGameLocation(game_id="play-1", room_id=None, seat=BLACK)
+        assert active_game_index.get("alice") is None
 
     asyncio.run(scenario())
 
@@ -142,11 +163,13 @@ def test_starting_a_room_game_records_the_room_id_in_the_active_game_index():
     async def scenario():
         rating_store = _rating_store()
         active_game_index = _FakeActiveGameIndex()
-        loop = _make_loop(rating_store, active_game_index=active_game_index)
+        loop = _make_loop(rating_store, active_game_index=active_game_index, shard_address="test-shard")
 
         await loop._start_game("room-1", "alice", "bob", room_id="room-1")
 
-        assert active_game_index.get("alice") == ActiveGameLocation(game_id="room-1", room_id="room-1", seat=WHITE)
+        assert active_game_index.get("alice") == ActiveGameLocation(
+            game_id="room-1", room_id="room-1", seat=WHITE, shard_address="test-shard"
+        )
 
     asyncio.run(scenario())
 
@@ -165,8 +188,12 @@ def test_a_crashing_games_active_game_index_entries_are_removed():
             session=crashing_session, publisher=NetworkPublisher(crashing_session.bus), room_id=room.room_id
         )
         loop._games[room.room_id] = game
-        active_game_index.set("carol", ActiveGameLocation(game_id=room.room_id, room_id=room.room_id, seat=WHITE))
-        active_game_index.set("dave", ActiveGameLocation(game_id=room.room_id, room_id=room.room_id, seat=BLACK))
+        active_game_index.set(
+            "carol", ActiveGameLocation(game_id=room.room_id, room_id=room.room_id, seat=WHITE, shard_address="test-shard")
+        )
+        active_game_index.set(
+            "dave", ActiveGameLocation(game_id=room.room_id, room_id=room.room_id, seat=BLACK, shard_address="test-shard")
+        )
 
         await loop._fail_game(room.room_id, game, RuntimeError("boom"))
 

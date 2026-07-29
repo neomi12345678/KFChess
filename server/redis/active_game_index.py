@@ -7,14 +7,20 @@ REST process can't call active_game_for(username) directly the way
 server/router.py's CommandRouter does in-process.
 
 Deliberately narrow: this only ever answers "does username have a live
-game right now, and as which seat" - never "is that seat currently
-disconnected." That finer-grained fact stays entirely in-process (see
-server/session.py's GameSession.mark_reconnected/is_disconnected, only
+game right now, as which seat, and on which shard" - never "is that seat
+currently disconnected." That finer-grained fact stays entirely in-process
+(see server/session.py's GameSession.mark_reconnected/is_disconnected, only
 ever called from the same process that holds the live GameSession - see
 server/router.py's CommandRouter.decide_identify, reached via a new
 IDENTIFY websocket message, not this index). Mixing that into this index
 would mean keeping it live-updated on every disconnect/reconnect
-transition for no REST caller that actually needs it yet.
+transition for no caller that actually needs it yet.
+
+shard_address (see server/interfaces.py's ActiveGameLocation) is what lets
+a standalone WS Gateway (services/ws_gateway/main.py) resolve which shard
+to open its own internal relay connection to - GameLoop only ever writes
+its own SHARD_ADDRESS into it (see GameLoop's own shard_address
+constructor param), never a peer's.
 
 Written by server/game_loop.py's GameLoop._start_game (alongside
 server/redis/busy_set.py's BusySet.add, for both seats), removed on game
@@ -50,7 +56,12 @@ class ActiveGameIndex:
         self._redis = redis.Redis.from_url(redis_url, decode_responses=True)
 
     def set(self, username: str, location: ActiveGameLocation) -> None:
-        payload = {"game_id": location.game_id, "room_id": location.room_id, "seat": location.seat}
+        payload = {
+            "game_id": location.game_id,
+            "room_id": location.room_id,
+            "seat": location.seat,
+            "shard_address": location.shard_address,
+        }
         self._redis.set(f"{_KEY_PREFIX}{username}", json.dumps(payload))
 
     def remove(self, username: str) -> None:
@@ -61,4 +72,9 @@ class ActiveGameIndex:
         if raw is None:
             return None
         payload = json.loads(raw)
-        return ActiveGameLocation(game_id=payload["game_id"], room_id=payload["room_id"], seat=payload["seat"])
+        return ActiveGameLocation(
+            game_id=payload["game_id"],
+            room_id=payload["room_id"],
+            seat=payload["seat"],
+            shard_address=payload["shard_address"],
+        )

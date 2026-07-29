@@ -190,6 +190,12 @@ async def _main() -> None:
     lifecycle_publisher = await _build_lifecycle_publisher()
     busy_set = _build_busy_set()
     active_game_index = _build_active_game_index()
+    # Same env var _maybe_start_shard_heartbeat already reads below - handed
+    # to GameServer/GameLoop too now, so every ActiveGameLocation this shard
+    # writes carries its own real, reachable address (see
+    # server/interfaces.py's ActiveGameLocation and services/ws_gateway/main.py,
+    # which resolves a shard to open its own internal relay connection to).
+    shard_address = os.environ.get("SHARD_ADDRESS")
     server = GameServer(
         _new_board,
         user_store,
@@ -201,6 +207,7 @@ async def _main() -> None:
         lifecycle_publisher=lifecycle_publisher,
         busy_set=busy_set,
         active_game_index=active_game_index,
+        shard_address=shard_address,
     )
     await _build_matchmaking_relay(server)
     _maybe_start_shard_heartbeat()
