@@ -229,25 +229,41 @@ class GameLoop:
     # Subscribes to the standalone Game Allocator service's game.allocated
     # event (see services/game_allocator/main.py) and starts the matched game
     # exactly as _try_start_a_match used to do directly - see
-    # start_matched_game. Only meaningful once start_matchmaking_relay has
-    # set external=True - otherwise this GameLoop is still finding and
-    # starting its own matches locally, and nothing ever publishes
-    # match.found/game.allocated for this to react to in the first place.
+    # start_matched_game. room_id is present for a room allocated this way
+    # (services/api_gateway/main.py's handle_join_room -> Game Allocator's
+    # own _handle_room_opponent_joined - see that module's docstring) and
+    # absent (None) for an ordinary PLAY match, same optional field
+    # start_room_game/_start_game already thread through below. Only
+    # meaningful once start_matchmaking_relay has set external=True -
+    # otherwise this GameLoop is still finding and starting its own matches
+    # locally, and nothing ever publishes match.found/room.opponent_joined/
+    # game.allocated for this to react to in the first place.
     async def start_game_allocation_relay(self, nats_connection) -> None:
         async def _on_allocated(msg) -> None:
             payload = json.loads(msg.data)
-            await self.start_matched_game(payload["game_id"], payload["white_username"], payload["black_username"])
+            await self.start_matched_game(
+                payload["game_id"], payload["white_username"], payload["black_username"], room_id=payload.get("room_id")
+            )
 
         await nats_connection.subscribe("game.allocated", cb=_on_allocated)
 
-    # Public wrapper around _start_game for a PLAY match - the exact same
-    # build-GameSession-and-seat-both-players logic _try_start_a_match
-    # already calls in-process, now also reachable from
-    # start_game_allocation_relay's subscription once a standalone Game
-    # Allocator service decides this pair should start, rather than this
-    # GameLoop deciding it locally.
-    async def start_matched_game(self, game_id: str, white_username: str, black_username: str) -> ActiveGame:
-        return await self._start_game(game_id, white_username, black_username)
+    # Public wrapper around _start_game for a match allocated by a
+    # standalone Game Allocator - the exact same build-GameSession-and-
+    # seat-both-players logic _try_start_a_match already calls in-process
+    # for a PLAY match (room_id=None), now also reachable from
+    # start_game_allocation_relay's subscription for *either* a PLAY match
+    # or a room whose opponent seat the standalone API Gateway just filled
+    # (room_id set - see this method's own room_id param). Unlike
+    # start_room_game, this never re-seats already-persisted spectators -
+    # a room reaching here is always freshly started (the API Gateway path
+    # publishes room.opponent_joined the instant the opponent joins, never
+    # after a restart), so room.spectators is always empty at this point;
+    # start_room_game itself is untouched and still owns the post-restart-
+    # resume case (see server/router.py's decide_login).
+    async def start_matched_game(
+        self, game_id: str, white_username: str, black_username: str, room_id: Optional[str] = None
+    ) -> ActiveGame:
+        return await self._start_game(game_id, white_username, black_username, room_id=room_id)
 
     async def _advance_matchmaking(self, whole_ms: int) -> None:
         tick = self.matchmaking.advance_time(whole_ms)

@@ -1,39 +1,45 @@
 """Standalone Game Allocator service - subscribes to the Matchmaker's
-match.found event and decides which Game Server Shard should host the new
-game, the "Game Allocator" role from Server_Design.md §3-4 (docs/
-server-scaling-design branch). Which shard "wins" an allocation is
-discovered from the real Shard Registry (server/redis/shard_registry.py) -
-each game-server heartbeats its own address into Redis, and this service
-just picks a live one (server/main.py's own registration side resolves
-Server_Design.md §12's open question on this). The room-ownership lease
-itself (Server_Design.md §4 - "a lease, not just a registry entry") is
-real too, acquired in Redis before the game is ever announced, not faked:
-a freshly-minted game_id whose lease is already held would mean this same
-match was somehow allocated twice (shouldn't happen with one Matchmaker
-instance publishing match.found exactly once per pair, but the lease is
-what would actually catch it if it ever did, rather than silently starting
-the same game_id in two places).
+match.found event *and* the API Gateway's room.opponent_joined event (see
+services/api_gateway/main.py's handle_join_room), and decides which Game
+Server Shard should host the new game either way - the "Game Allocator"
+role from Server_Design.md §3-4 (docs/server-scaling-design branch). Which
+shard "wins" an allocation is discovered from the real Shard Registry
+(server/redis/shard_registry.py) - each game-server heartbeats its own
+address into Redis, and this service just picks a live one (server/main.py's
+own registration side resolves Server_Design.md §12's open question on
+this). The room-ownership lease itself (Server_Design.md §4 - "a lease, not
+just a registry entry") is real too, acquired in Redis before the game is
+ever announced, not faked: a freshly-minted game_id (or, for a room, the
+room_id itself) whose lease is already held would mean this same match/room
+was somehow allocated twice (shouldn't happen with one Matchmaker instance
+publishing match.found exactly once per pair, or one RedisRoomRegistry.join
+ever letting exactly one joiner become the opponent, but the lease is what
+would actually catch it if it ever did, rather than silently starting the
+same game_id in two places).
 
 Publishes:
-    game.allocated  {"game_id": str, "room_id": null, "white_username": str,
-                      "black_username": str, "shard_address": str}
+    game.allocated  {"game_id": str, "room_id": str|null, "white_username":
+                      str, "black_username": str, "shard_address": str}
 
-(room_id is always null here - this service only ever handles PLAY matches
-from the Matchmaker; room games still start via GameLoop.start_room_game's
-existing in-process path, untouched.)
+For a PLAY match, room_id is null and game_id is freshly minted
+("play-<hex>"). For a room, game_id *is* the room_id (the room's own
+identity already uniquely names its game - see _handle_room_opponent_joined
+below), and creator/opponent map onto white_username/black_username exactly
+the way GameLoop.start_room_game's existing in-process path already does.
 
 game-server subscribes to this and calls GameLoop.start_matched_game (see
 server/game_loop.py's start_game_allocation_relay - it only reads game_id/
-white_username/black_username, so shard_address is a no-op for today's
-merged WS-Gateway+Shard deployment; it exists to match Server_Design.md
-§6.3/§11's own stated payload, {room_id, shard_address}, for whenever WS
-Gateway is ever actually split out as its own component and needs to
-learn which shard to open a data-plane stream to. Deliberately kept as
-"game.allocated", not renamed to the document's literal "game-created" -
-server/nats/lifecycle.py already publishes a real, different game.created
-event, fired by the shard itself once it starts hosting a room, carrying
-no shard address; colliding the two names would be a worse mismatch than
-keeping today's distinct name and just enriching its payload.)
+room_id/white_username/black_username, so shard_address is a no-op for
+today's merged WS-Gateway+Shard deployment; it exists to match
+Server_Design.md §6.3/§11's own stated payload, {room_id, shard_address},
+for whenever WS Gateway is ever actually split out as its own component and
+needs to learn which shard to open a data-plane stream to. Deliberately
+kept as "game.allocated", not renamed to the document's literal
+"game-created" - server/nats/lifecycle.py already publishes a real,
+different game.created event, fired by the shard itself once it starts
+hosting a room, carrying no shard address; colliding the two names would be
+a worse mismatch than keeping today's distinct name and just enriching its
+payload.)
 """
 
 import asyncio
@@ -58,32 +64,64 @@ def _acquire_lease(redis_client, game_id: str, shard_address: str, ttl_ms: int =
     return bool(redis_client.set(f"kfchess:game:{game_id}:owner", shard_address, nx=True, px=ttl_ms))
 
 
-async def _handle_match_found(redis_client, nats_connection, shard_address: Optional[str], msg) -> None:
-    if shard_address is None:
-        _logger.error("no live Game Server Shard registered - dropping match.found (%s)", msg.data)
-        return
-
-    payload = json.loads(msg.data)
-    white_username = payload["white_username"]
-    black_username = payload["black_username"]
-
-    # Freshly minted per allocation - the in-process "play-N" incrementing
-    # counter GameLoop._try_start_a_match used doesn't survive as a
-    # cross-process id scheme (nothing here coordinates a shared counter).
-    game_id = f"play-{uuid.uuid4().hex[:8]}"
+# Shared by _handle_match_found and _handle_room_opponent_joined below - the
+# only two things that ever differ between a PLAY match and a room are how
+# game_id/room_id are computed and where white/black come from, both
+# resolved by the caller before this runs.
+async def _allocate(
+    redis_client,
+    nats_connection,
+    shard_address: str,
+    game_id: str,
+    room_id: Optional[str],
+    white_username: str,
+    black_username: str,
+) -> None:
     if not _acquire_lease(redis_client, game_id, shard_address):
-        _logger.error("failed to acquire lease for freshly-minted game_id %s - not allocating", game_id)
+        _logger.error("failed to acquire lease for game_id %s - not allocating", game_id)
         return
 
     out_payload = {
         "game_id": game_id,
-        "room_id": None,
+        "room_id": room_id,
         "white_username": white_username,
         "black_username": black_username,
         "shard_address": shard_address,
     }
     await nats_connection.publish("game.allocated", json.dumps(out_payload).encode("utf-8"))
     _logger.info("allocated game %s ('%s' vs '%s') to %s", game_id, white_username, black_username, shard_address)
+
+
+async def _handle_match_found(redis_client, nats_connection, shard_address: Optional[str], msg) -> None:
+    if shard_address is None:
+        _logger.error("no live Game Server Shard registered - dropping match.found (%s)", msg.data)
+        return
+
+    payload = json.loads(msg.data)
+    # Freshly minted per allocation - the in-process "play-N" incrementing
+    # counter GameLoop._try_start_a_match used doesn't survive as a
+    # cross-process id scheme (nothing here coordinates a shared counter).
+    game_id = f"play-{uuid.uuid4().hex[:8]}"
+    await _allocate(
+        redis_client, nats_connection, shard_address, game_id, None, payload["white_username"], payload["black_username"]
+    )
+
+
+# Mirrors _handle_match_found for the room-flow's own equivalent event,
+# published the instant a room's opponent seat fills (see
+# services/api_gateway/main.py's handle_join_room) - the one structural
+# difference: a room's game_id *is* its own room_id, never a freshly minted
+# one, since the room already has a unique, wire-visible identity of its
+# own. creator/opponent map onto white/black exactly the way
+# GameLoop.start_room_game's existing in-process path already does.
+async def _handle_room_opponent_joined(redis_client, nats_connection, shard_address: Optional[str], msg) -> None:
+    if shard_address is None:
+        _logger.error("no live Game Server Shard registered - dropping room.opponent_joined (%s)", msg.data)
+        return
+
+    payload = json.loads(msg.data)
+    room_id = payload["room_id"]
+    await _allocate(redis_client, nats_connection, shard_address, room_id, room_id, payload["creator"], payload["opponent"])
 
 
 async def _main() -> None:
@@ -98,10 +136,15 @@ async def _main() -> None:
         shard_address = registry.pick_shard()
         await _handle_match_found(redis_client, nats_connection, shard_address, msg)
 
+    async def _on_room_opponent_joined(msg) -> None:
+        shard_address = registry.pick_shard()
+        await _handle_room_opponent_joined(redis_client, nats_connection, shard_address, msg)
+
     await nats_connection.subscribe("match.found", cb=_on_match_found)
+    await nats_connection.subscribe("room.opponent_joined", cb=_on_room_opponent_joined)
 
     _logger.info("game-allocator running (redis=%s nats=%s)", redis_url, nats_url)
-    await asyncio.Event().wait()  # driven entirely by the subscription callback above
+    await asyncio.Event().wait()  # driven entirely by the subscription callbacks above
 
 
 def main() -> None:  # pragma: no cover

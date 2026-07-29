@@ -137,5 +137,36 @@ services:
       game-allocator:
         condition: service_started
 
+  # A second, independent shard - same image, same everything as
+  # game-server above except its own SHARD_ADDRESS/port, so
+  # ShardRegistry.pick_shard() (services/game_allocator/main.py) actually
+  # has more than one live shard to choose between. Without this, PLAY/room
+  # allocation always resolves to the one shard above regardless of
+  # whether the lease/allocation logic itself is correct - this is what
+  # lets that routing be exercised for real instead of only in theory.
+  game-server-2:
+    build: .
+    ports:
+      - "8766:8765"
+    environment:
+      KFCHESS_HOST: "0.0.0.0"
+      KFCHESS_PORT: "8765"
+      DATABASE_URL: "postgresql://kfchess:kfchess@postgres:5432/kfchess"
+      REDIS_URL: "redis://redis:6379/0"
+      NATS_URL: "nats://nats:4222"
+      EXTERNAL_MATCHMAKER: "1"
+      SHARD_ADDRESS: "game-server-2"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      matchmaker:
+        condition: service_started
+      game-allocator:
+        condition: service_started
+
 volumes:
   postgres-data:
