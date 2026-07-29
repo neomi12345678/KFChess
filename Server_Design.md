@@ -137,60 +137,110 @@ original draft survives the alignment, kept for an arithmetic reason
 stated in §7 rather than dropped just to match the sketch exactly —
 called out where it appears below.
 
-```
-                              Clients
-                    REST/HTTP    │    WebSocket
-                        │        │        │
-             ┌──────────┘        │        └──────────┐
-             ▼                                        ▼
-       API Gateway                                WS Gateway
-  (stateless — login,                         (stateless — socket
-   rooms, history,                              termination, no game
-   matchmaking requests)                        logic, publish/
-             │                                   subscribe bridge only)
-   ┌─────────┴─────────┐                                │
-   ▼                   ▼                                │
-Auth Service        Rooms API                            │
-(stateless)         (stateless)                          │
-   └─────────┬─────────┘                                 │
-             ▼                                           │
-      NATS Event Bus  ◄─────────────────────────────────┘
-   (control plane only — low-volume events: matchmaking
-    requests, game-created, game-finished, presence)
-             │
-   ┌─────────┼──────────────────────┐
-   ▼                                ▼
-Matchmaker                    Game Allocator ◄──── Agones (optional
-(shared ELO queue,        (holds the Room                fleet manager:
- Redis sorted set)         Registry lease — §4 —          allocates/health-
-             │              picks a Game Server            checks the shard
-             └─────────────►Shard for each new room)       fleet)
-                                     │
-                    ┌────────────────┼────────────────┐
-                    ▼                ▼                ▼
-             Game Server       Game Server       Game Server
-             Shard (stateful,  Shard             Shard
-             owns N rooms,
-             authoritative
-             GameEngine,
-             direct data-plane
-             stream to WS Gateway — bypasses NATS, see below)
-                    │
-                    ▼
-             Persistence Workers (stateless consumers of
-             "game-finished" events)
-                    │
-        ┌───────────┴───────────┐
-        ▼                       ▼
-   PostgreSQL               Redis
- (users, games,          (presence,
-  results, move           matchmaking,
-  history)                 leaderboard)
+```mermaid
+flowchart TD
+    subgraph internet["Public internet"]
+        Clients(["Clients"])
+    end
+
+    subgraph edgetier["Edge tier — only roles with a public IP (DDoS insulation)"]
+        APIGW["API Gateway<br/>stateless — login, rooms,<br/>history, matchmaking requests"]
+        WSGW["WS Gateway<br/>stateless — socket termination,<br/>no game logic, pub/sub bridge only"]
+    end
+
+    subgraph reqtier["Stateless request handlers"]
+        Auth["Auth Service<br/>stateless"]
+        Rooms["Rooms API<br/>stateless"]
+    end
+
+    NATS{{"NATS Event Bus<br/>control plane only — matchmaking requests,<br/>game-created, game-finished, presence"}}
+
+    subgraph matchtier["Matchmaking &amp; allocation"]
+        MM["Matchmaker<br/>shared ELO queue<br/>(Redis sorted set)"]
+        GA["Game Allocator<br/>holds Room Registry lease (§4)<br/>picks a shard for each new room"]
+        Agones["Agones (optional)<br/>fleet manager — allocates /<br/>health-checks the shard fleet"]
+    end
+
+    subgraph shardtier["Game Server Shards — stateful, no public IP"]
+        Shard1["Game Server Shard<br/>owns N rooms, authoritative<br/>GameEngine"]
+        Shard2["Game Server Shard"]
+        Shard3["Game Server Shard"]
+    end
+
+    PW["Persistence Workers<br/>stateless consumers of<br/>'game-finished' events"]
+
+    PG[("PostgreSQL<br/>users, games, results,<br/>move history")]
+    RedisDB[("Redis<br/>presence, matchmaking queue,<br/>leaderboard, room leases")]
+
+    Obs["Observability<br/>metrics · structured logs · health probes"]
+
+    Clients -->|REST/HTTP| APIGW
+    Clients -->|WebSocket| WSGW
+
+    APIGW --> Auth
+    APIGW --> Rooms
+    APIGW -->|"publish matchmaking request"| NATS
+    Auth -.->|reads/writes| PG
+    Rooms -.->|reads/writes| PG
+
+    WSGW <-->|"pub/sub: game-created,<br/>presence"| NATS
+
+    NATS -->|"consume matchmaking<br/>requests"| MM
+    MM -->|"hand off matched pair"| GA
+    GA -.->|"allocate / health-check"| Agones
+    GA -->|"acquire lease,<br/>assign room"| Shard1
+    GA -->|"acquire lease,<br/>assign room"| Shard2
+    GA -->|"acquire lease,<br/>assign room"| Shard3
+    GA -->|"publish game-created<br/>{room_id, shard_address}"| NATS
+    MM <-.->|"ZADD / queue reads"| RedisDB
+    GA <-.->|"room:owner leases"| RedisDB
+
+    WSGW ==>|"direct data-plane stream<br/>(bypasses NATS — §3/§7)"| Shard1
+    WSGW ==>|"direct data-plane stream"| Shard2
+    WSGW ==>|"direct data-plane stream"| Shard3
+
+    Shard1 -.->|"publish game-finished<br/>(same for every shard)"| NATS
+    NATS -.->|"consume game-finished"| PW
+    PW --> PG
+    PW -->|"leaderboard update"| RedisDB
+
+    APIGW -.-> Obs
+    WSGW -.-> Obs
+    MM -.-> Obs
+    GA -.-> Obs
+    Shard1 -.-> Obs
+    PW -.-> Obs
+
+    subgraph Legend["Legend"]
+        direction LR
+        L1["Stateless"]
+        L2["Stateful"]
+        L3(("Broker"))
+        L4[("Data store")]
+        L5["Optional"]
+        L6["Observability"]
+    end
+
+    classDef stateless fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f
+    classDef stateful fill:#fed7aa,stroke:#ea580c,color:#7c2d12
+    classDef broker fill:#e5e7eb,stroke:#6b7280,color:#1f2937
+    classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef optional fill:#f3f4f6,stroke:#9ca3af,color:#4b5563,stroke-dasharray: 5 5
+    classDef obs fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
+
+    class APIGW,WSGW,Auth,Rooms,MM,GA,PW,L1 stateless
+    class Shard1,Shard2,Shard3,L2 stateful
+    class NATS,L3 broker
+    class PG,RedisDB,L4 store
+    class Agones,L5 optional
+    class Obs,L6 obs
 ```
 
-*(Every role above also exports to Observability — logs, metrics, health
-checks — omitted from the boxes for readability; see the Observability
-subsection under §9.)*
+*(Dashed arrows into Observability are drawn only for the six roles §9
+names explicitly — API Gateway, WS Gateway, Matchmaker, Game Allocator,
+Game Server Shards, Persistence Workers. Every one of them exports the
+same three things — metrics, structured logs, health probes — to the same
+collector; see the Observability subsection under §9.)*
 
 **Two different transports, deliberately** — the one place this design
 refines the course sketch:
