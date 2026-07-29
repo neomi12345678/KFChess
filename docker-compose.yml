@@ -44,13 +44,52 @@ services:
       timeout: 3s
       retries: 15
 
-  game-server:
-    build: .
-    ports:
-      - "8765:8765"
+  matchmaker:
+    build:
+      context: .
+      dockerfile: services/matchmaker/Dockerfile
     environment:
-      KFCHESS_HOST: "0.0.0.0"
-      KFCHESS_PORT: "8765"
+      REDIS_URL: "redis://redis:6379/0"
+      NATS_URL: "nats://nats:4222"
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  game-allocator:
+    build:
+      context: .
+      dockerfile: services/game_allocator/Dockerfile
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      NATS_URL: "nats://nats:4222"
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  persistence-worker:
+    build:
+      context: .
+      dockerfile: services/persistence_worker/Dockerfile
+    environment:
+      DATABASE_URL: "postgresql://kfchess:kfchess@postgres:5432/kfchess"
+      NATS_URL: "nats://nats:4222"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: services/api_gateway/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
       DATABASE_URL: "postgresql://kfchess:kfchess@postgres:5432/kfchess"
       REDIS_URL: "redis://redis:6379/0"
       NATS_URL: "nats://nats:4222"
@@ -61,6 +100,42 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+
+  game-server:
+    build: .
+    ports:
+      - "8765:8765"
+    environment:
+      KFCHESS_HOST: "0.0.0.0"
+      KFCHESS_PORT: "8765"
+      DATABASE_URL: "postgresql://kfchess:kfchess@postgres:5432/kfchess"
+      REDIS_URL: "redis://redis:6379/0"
+      NATS_URL: "nats://nats:4222"
+      # The standalone matchmaker/game-allocator services above are doing
+      # the matchmaking tick/pairing/allocation now - see
+      # GameLoop.start_matchmaking_relay's own docstring for why this must
+      # stay in lockstep with whether matchmaker is actually running (both
+      # polling the same Redis-backed queue at once would race).
+      EXTERNAL_MATCHMAKER: "1"
+      # This shard's own self-identification, heartbeated into
+      # server/redis/shard_registry.py's ShardRegistry (see
+      # server/main.py's _maybe_start_shard_heartbeat) - "game-server", the
+      # real Compose service/DNS name, so it's a genuine, reachable address
+      # rather than a made-up label. game-allocator discovers this
+      # dynamically now instead of being told it directly (compare: it used
+      # to hold its own now-removed SHARD_ADDRESS above).
+      SHARD_ADDRESS: "game-server"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      matchmaker:
+        condition: service_started
+      game-allocator:
+        condition: service_started
 
 volumes:
   postgres-data:

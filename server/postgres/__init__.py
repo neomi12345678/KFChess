@@ -6,6 +6,7 @@ deployment sets DATABASE_URL (see server/main.py's _build_stores and
 docker-compose.yml). The SQLite originals are untouched and stay the
 default for a bare-metal run.
 
-    accounts.py   PostgresAccountsDatabase, PostgresUserStore, PostgresRatingStore
-    rooms.py      PostgresRoomStore
+    accounts.py       PostgresAccountsDatabase, PostgresUserStore, PostgresRatingStore
+    rooms.py          PostgresRoomStore
+    game_history.py   PostgresGameHistoryStore (used by services/persistence_worker/main.py, not server/main.py)
 """
