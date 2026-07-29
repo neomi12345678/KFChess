@@ -29,6 +29,8 @@ import json
 import queue
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Type, TypeVar
 
@@ -101,12 +103,34 @@ def decode_incoming(raw_text: str) -> object:
 
 
 class NetworkGameClient:
-    def __init__(self, host: str, port: int, connect_timeout: float = CONNECT_TIMEOUT_S):
+    # api_gateway_port unset (the default) keeps play() sending PlayMessage
+    # over the websocket exactly as before - the same "opt-in, off by
+    # default" convention every other piece of split-service infra in this
+    # project follows (DATABASE_URL/REDIS_URL/NATS_URL/EXTERNAL_MATCHMAKER):
+    # a bare-metal run (README's own `python -m server.main` + `python
+    # play_online.py`, and every existing test building a real GameServer
+    # with no API Gateway anywhere) has nothing at that port to answer.
+    # Only a caller that knows a real services/api_gateway/main.py is actually
+    # running (see play_online.py's own --api-gateway-port) should pass
+    # this. api_gateway_host defaults to the same host the websocket
+    # connects to (the common case: both services published on the same
+    # machine/DNS name, just different ports - see docker-compose.yml).
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        connect_timeout: float = CONNECT_TIMEOUT_S,
+        api_gateway_host: Optional[str] = None,
+        api_gateway_port: Optional[int] = None,
+    ):
         self._incoming: "queue.Queue[object]" = queue.Queue()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._websocket = None
         self._connected = threading.Event()
         self._connect_error: Optional[BaseException] = None
+        self._username: Optional[str] = None
+        self._api_gateway_host = api_gateway_host if api_gateway_host is not None else host
+        self._api_gateway_port = api_gateway_port
 
         self._thread = threading.Thread(target=self._run, args=(host, port), daemon=True)
         self._thread.start()
@@ -176,11 +200,44 @@ class NetworkGameClient:
     # is draining self._incoming concurrently at that point.
     def login(self, username: str, password: str, timeout: float = 10.0) -> LoginAckMessage:
         self.send_command(encode_json_message(LoginMessage(username=username, password=password)))
-        return self._wait_for_type(LoginAckMessage, timeout)
+        ack = self._wait_for_type(LoginAckMessage, timeout)
+        if ack.accepted:
+            # Needed by play() below - PLAY is no longer a wire message
+            # this class sends over the websocket (see its own docstring),
+            # so the username has to be remembered here instead of being
+            # implicit in "whichever connection sent it."
+            self._username = ack.username
+        return ack
 
+    # api_gateway_port unset (the default - see __init__'s own docstring):
+    # PlayMessage over the websocket, exactly as before - server/router.py's
+    # CommandRouter still has this PLAY branch (see server/ws_server.py),
+    # kept specifically so this default path (and every test building a
+    # plain GameServer with no API Gateway) keeps working unchanged. Set:
+    # an HTTP POST to the standalone API Gateway instead (see
+    # services/api_gateway/main.py). Either way, wait_for_seat below is unchanged:
+    # SeatMessage/MatchmakingStatusMessage/MatchmakingTimeoutMessage still
+    # arrive over this same websocket connection, since the API Gateway
+    # itself holds no websocket to send anything on - only the enqueue
+    # step ever moves, not the notifications.
     def play(self, timeout: float = 10.0) -> PlayAckMessage:
-        self.send_command(encode_json_message(PlayMessage()))
-        return self._wait_for_type(PlayAckMessage, timeout)
+        if self._api_gateway_port is None:
+            self.send_command(encode_json_message(PlayMessage()))
+            return self._wait_for_type(PlayAckMessage, timeout)
+
+        url = f"http://{self._api_gateway_host}:{self._api_gateway_port}/play"
+        request = urllib.request.Request(
+            url,
+            data=json.dumps({"username": self._username}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = json.loads(response.read())
+        except (urllib.error.URLError, TimeoutError) as error:
+            raise NetworkClientError(f"could not reach the API Gateway for /play: {error}") from error
+        return PlayAckMessage(accepted=body["accepted"], reason=body["reason"])
 
     # timeout is a defensive upper bound, not the expected path - the server
     # gives up and reports matchmaking_timeout on its own after

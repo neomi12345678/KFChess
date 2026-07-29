@@ -66,12 +66,20 @@ def _parse_args() -> argparse.Namespace:  # pragma: no cover
     parser = argparse.ArgumentParser(description="KFChess networked GUI client")
     parser.add_argument("--host", default=HOST, help=f"server host (default: {HOST})")
     parser.add_argument("--port", type=int, default=PORT, help=f"server port (default: {PORT})")
+    # Unset by default (bare-metal `python -m server.main`, no API Gateway
+    # anywhere) - see client/network_client.py's NetworkGameClient.__init__
+    # own docstring on why PLAY only moves to the API Gateway when a caller
+    # explicitly opts in. Pass this only when actually running the full
+    # split-service docker-compose.yml stack.
+    parser.add_argument(
+        "--api-gateway-port", type=int, default=None, help="API Gateway port (unset: PLAY over the websocket)"
+    )
     return parser.parse_args()
 
 
 def main() -> None:  # pragma: no cover
     args = _parse_args()
-    client = NetworkGameClient(args.host, args.port)
+    client = NetworkGameClient(args.host, args.port, api_gateway_port=args.api_gateway_port)
 
     try:
         # run_login only ever returns once the server has accepted the

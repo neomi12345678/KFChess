@@ -12,6 +12,7 @@ _advance_game's own self._rooms.close on game over).
 """
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional, Set
@@ -23,7 +24,13 @@ from protocol.game_messages import DisconnectCountdownMessage, ErrorMessage, Gam
 from protocol.lobby_messages import MatchmakingStatusMessage, MatchmakingTimeoutMessage
 from protocol.snapshot_codec import panel_to_json, snapshot_to_json
 from server.connections import WirePayload
-from server.interfaces import LifecyclePublisher, MatchmakingQueueProtocol, MessageSender, RatingRepository
+from server.interfaces import (
+    BusySetProtocol,
+    LifecyclePublisher,
+    MatchmakingQueueProtocol,
+    MessageSender,
+    RatingRepository,
+)
 from server.matchmaking import MatchmakingQueue
 from server.publisher import NetworkPublisher
 from server.rooms import Room, RoomRegistry
@@ -94,6 +101,12 @@ class GameLoop:
         # caller/test omits this and gets today's behavior unchanged (no
         # publish calls at all).
         lifecycle_publisher: Optional[LifecyclePublisher] = None,
+        # Overridable so server/main.py can hand in a Redis-backed set (see
+        # server/redis/busy_set.py, gated behind REDIS_URL) - a standalone
+        # api-gateway's PLAY busy-check reads this instead of reaching into
+        # this class's own in-memory self._games. None (the default) is a
+        # no-op - every existing caller/test is unaffected.
+        busy_set: Optional[BusySetProtocol] = None,
     ):
         self._board_factory = board_factory
         self._rating_store = rating_store
@@ -105,8 +118,14 @@ class GameLoop:
         self._disconnect_grace_ms = disconnect_grace_ms
         self._tick_interval_s = tick_interval_s
         self._lifecycle_publisher = lifecycle_publisher
+        self._busy_set = busy_set
         self._games: Dict[str, ActiveGame] = {}
         self._next_play_game_id = 0
+        # Flipped by start_matchmaking_relay - see its own docstring for why
+        # this must never be True without an active NATS relay subscription
+        # already forwarding matchmaking.status/matchmaking.timeout, or
+        # waiting players would silently stop hearing anything at all.
+        self._matchmaker_is_external = False
 
     def get(self, game_id: str) -> Optional[ActiveGame]:
         return self._games.get(game_id)
@@ -149,8 +168,13 @@ class GameLoop:
             await asyncio.sleep(self._tick_interval_s)
             whole_ms = clock.tick()
 
-            await self._advance_matchmaking(whole_ms)
-            await self._try_start_a_match()
+            # Skipped once a standalone Matchmaker service is doing this
+            # polling instead (see start_matchmaking_relay) - running both
+            # at once would be two independent consumers racing to
+            # find_match()/remove() the same shared Redis-backed queue.
+            if not self._matchmaker_is_external:
+                await self._advance_matchmaking(whole_ms)
+                await self._try_start_a_match()
 
             # list(...) up front - a game finishing mid-loop below mutates
             # self._games (see _advance_game), which would otherwise be
@@ -165,6 +189,55 @@ class GameLoop:
                     await self._advance_game(game_id, game, whole_ms)
                 except Exception as error:
                     await self._fail_game(game_id, game, error)
+
+    # Subscribes to the standalone Matchmaker service's matchmaking.status/
+    # matchmaking.timeout events (see services/matchmaker/main.py, gated behind
+    # EXTERNAL_MATCHMAKER in server/main.py) and forwards them to the named
+    # username's live websocket - the exact same wire messages
+    # _advance_matchmaking used to compute and send directly, now arriving
+    # from a separate process instead, since that process holds no
+    # websocket of its own to send anything on. external=True also stops
+    # this GameLoop's own local _advance_matchmaking/_try_start_a_match
+    # polling (see run_forever's own comment on why running both at once
+    # would double-consume the same shared Redis-backed queue).
+    async def start_matchmaking_relay(self, nats_connection, external: bool) -> None:
+        self._matchmaker_is_external = external
+
+        async def _on_status(msg) -> None:
+            payload = json.loads(msg.data)
+            await self._connections.send_to_username(
+                payload["username"], MatchmakingStatusMessage(seconds_remaining=payload["seconds_remaining"])
+            )
+
+        async def _on_timeout(msg) -> None:
+            payload = json.loads(msg.data)
+            await self._connections.send_to_username(payload["username"], MatchmakingTimeoutMessage())
+
+        await nats_connection.subscribe("matchmaking.status", cb=_on_status)
+        await nats_connection.subscribe("matchmaking.timeout", cb=_on_timeout)
+
+    # Subscribes to the standalone Game Allocator service's game.allocated
+    # event (see services/game_allocator/main.py) and starts the matched game
+    # exactly as _try_start_a_match used to do directly - see
+    # start_matched_game. Only meaningful once start_matchmaking_relay has
+    # set external=True - otherwise this GameLoop is still finding and
+    # starting its own matches locally, and nothing ever publishes
+    # match.found/game.allocated for this to react to in the first place.
+    async def start_game_allocation_relay(self, nats_connection) -> None:
+        async def _on_allocated(msg) -> None:
+            payload = json.loads(msg.data)
+            await self.start_matched_game(payload["game_id"], payload["white_username"], payload["black_username"])
+
+        await nats_connection.subscribe("game.allocated", cb=_on_allocated)
+
+    # Public wrapper around _start_game for a PLAY match - the exact same
+    # build-GameSession-and-seat-both-players logic _try_start_a_match
+    # already calls in-process, now also reachable from
+    # start_game_allocation_relay's subscription once a standalone Game
+    # Allocator service decides this pair should start, rather than this
+    # GameLoop deciding it locally.
+    async def start_matched_game(self, game_id: str, white_username: str, black_username: str) -> ActiveGame:
+        return await self._start_game(game_id, white_username, black_username)
 
     async def _advance_matchmaking(self, whole_ms: int) -> None:
         tick = self.matchmaking.advance_time(whole_ms)
@@ -207,6 +280,10 @@ class GameLoop:
         game = ActiveGame(session=session, publisher=NetworkPublisher(session.bus), room_id=room_id)
         self._games[game_id] = game
 
+        if self._busy_set is not None:
+            self._busy_set.add(white_username)
+            self._busy_set.add(black_username)
+
         if self._lifecycle_publisher is not None:
             await self._lifecycle_publisher.game_created(game_id, room_id, white_username, black_username)
 
@@ -236,7 +313,12 @@ class GameLoop:
         if rating_update is not None:
             await self._broadcast_to_game(game, GameOverMessage(ratings=rating_update))
             if self._lifecycle_publisher is not None:
-                await self._lifecycle_publisher.game_finished(game_id, game.room_id, rating_update)
+                await self._lifecycle_publisher.game_finished(
+                    game_id, game.room_id, session.username_for(WHITE), session.username_for(BLACK), rating_update
+                )
+            if self._busy_set is not None:
+                self._busy_set.remove(session.username_for(WHITE))
+                self._busy_set.remove(session.username_for(BLACK))
             del self._games[game_id]
             if game.room_id is not None:
                 self._rooms.close(game.room_id)
@@ -265,6 +347,9 @@ class GameLoop:
         _logger.error("game %s crashed during its tick - ending it", game_id, exc_info=error)
 
         self._games.pop(game_id, None)
+        if self._busy_set is not None:
+            self._busy_set.remove(game.session.username_for(WHITE))
+            self._busy_set.remove(game.session.username_for(BLACK))
         if game.room_id is not None:
             self._rooms.close(game.room_id)
 

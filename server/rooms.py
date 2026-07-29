@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol, Set
 
 from protocol.types import Reason
+from server.interfaces import BusySetProtocol
 from server.server_config import ROOM_ID_LENGTH
 
 
@@ -68,12 +69,13 @@ class RoomRegistry:
     # server/sqlite/rooms.py's RoomStore itself needs to import Room from
     # this module, so importing it back at the top of this file would be
     # circular.
-    def __init__(self, store: Optional[RoomStoreProtocol] = None):
+    def __init__(self, store: Optional[RoomStoreProtocol] = None, busy_set: Optional[BusySetProtocol] = None):
         if store is None:
             from server.sqlite.rooms import RoomStore
 
             store = RoomStore(":memory:")
         self._store = store
+        self._busy_set = busy_set
         self._rooms: Dict[str, Room] = {}
         # A username is creator/opponent/spectator of at most one room at a
         # time - mirrors server/matchmaking.py's own "already queued" rule,
@@ -99,6 +101,8 @@ class RoomRegistry:
         self._rooms[room.room_id] = room
         self._room_id_by_username[username] = room.room_id
         self._store.save(room)
+        if self._busy_set is not None:
+            self._busy_set.add(username)
         return room
 
     # The first join fills the opponent seat; every join after that is a
@@ -115,6 +119,8 @@ class RoomRegistry:
 
         if room.is_pending:
             room.opponent = username
+            if self._busy_set is not None:
+                self._busy_set.add(username)
         else:
             room.spectators.add(username)
         self._room_id_by_username[username] = room_id
@@ -159,6 +165,10 @@ class RoomRegistry:
         for spectator in room.spectators:
             self._room_id_by_username.pop(spectator, None)
         self._store.delete(room.room_id)
+        if self._busy_set is not None:
+            self._busy_set.remove(room.creator)
+            if room.opponent is not None:
+                self._busy_set.remove(room.opponent)
 
     # Short and arbitrary (see the Home-screen slide's own room-id wording)
     # - collisions are checked and retried rather than assumed impossible,

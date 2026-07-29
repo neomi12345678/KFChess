@@ -74,6 +74,21 @@ def _build_matchmaking():
     return RedisMatchmakingQueue(redis_url)
 
 
+# REDIS_URL unset (the default) keeps room/game busy-tracking purely
+# in-memory (RoomRegistry/GameLoop's own default of no busy set at all) -
+# fine for a single process, since it's the only thing that ever needs to
+# know. Set, this becomes the cross-process source of truth a standalone
+# api-gateway's PLAY busy-check reads (see server/redis/busy_set.py).
+def _build_busy_set():
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url is None:
+        return None
+
+    from server.redis.busy_set import BusySet
+
+    return BusySet(redis_url)
+
+
 # NATS_URL unset (the default) keeps today's behavior exactly as before -
 # GameLoop treats no lifecycle_publisher as a pure no-op (see its own
 # docstring). Set (see docker-compose.yml) switches to
@@ -91,10 +106,73 @@ async def _build_lifecycle_publisher():
     return await NatsLifecyclePublisher.connect(nats_url)
 
 
+# NATS_URL unset skips the relay entirely - GameLoop keeps polling its own
+# matchmaking queue locally, exactly as before (see GameLoop's own
+# _matchmaker_is_external default of False). Set, this subscribes to the
+# standalone Matchmaker service's matchmaking.status/matchmaking.timeout
+# events regardless (harmless even with no separate Matchmaker running -
+# nothing publishes them, so nothing arrives). EXTERNAL_MATCHMAKER=1 is the
+# separate opt-in that actually stops GameLoop's own local polling - see
+# GameLoop.start_matchmaking_relay's own docstring for why these can't be
+# the same flag: NATS_URL is already set today (Step 1's deployment) purely
+# for game-created/game-finished lifecycle events, with no separate
+# Matchmaker service running at all - reusing it here would silently break
+# that deployment by disabling local polling with nothing to replace it.
+async def _build_matchmaking_relay(server: GameServer) -> None:
+    nats_url = os.environ.get("NATS_URL")
+    if nats_url is None:
+        return
+
+    import nats
+
+    connection = await nats.connect(nats_url)
+    external = os.environ.get("EXTERNAL_MATCHMAKER") == "1"
+    await server.start_matchmaking_relay(connection, external=external)
+    # Same connection, a second subscription - see
+    # GameLoop.start_game_allocation_relay's own docstring for why this is
+    # harmless to set up even without a standalone Game Allocator actually
+    # running (nothing publishes game.allocated, so nothing arrives).
+    await server.start_game_allocation_relay(connection)
+
+
+# SHARD_ADDRESS unset (the default) skips shard registration entirely - a
+# bare-metal run, or any deployment not meant to receive matched games, has
+# nothing to register. Set alongside REDIS_URL (see docker-compose.yml),
+# this starts a background heartbeat task that keeps this shard's own
+# entry alive in server/redis/shard_registry.py's ShardRegistry - the Game
+# Allocator discovers and picks a live shard from there instead of being
+# told a fixed address up front (see services/game_allocator/main.py). SHARD_ADDRESS
+# set without REDIS_URL is a misconfiguration - logged and skipped, not
+# raised, matching every other opt-in feature's own "fail soft" convention
+# in this module.
+def _maybe_start_shard_heartbeat() -> None:
+    shard_address = os.environ.get("SHARD_ADDRESS")
+    if shard_address is None:
+        return
+
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url is None:
+        _logger.warning("SHARD_ADDRESS is set but REDIS_URL is not - shard registration skipped")
+        return
+
+    from server.redis.shard_registry import ShardRegistry
+
+    asyncio.create_task(_run_shard_heartbeat(ShardRegistry(redis_url), shard_address))
+
+
+# interval_s is well under ShardRegistry's own default 10s TTL, so one slow
+# tick never causes this shard to be seen as dead when it's not.
+async def _run_shard_heartbeat(registry, shard_address: str, interval_s: float = 3.0) -> None:
+    while True:
+        registry.register(shard_address)
+        await asyncio.sleep(interval_s)
+
+
 async def _main() -> None:
     user_store, rating_store, room_store = _build_stores()
     matchmaking = _build_matchmaking()
     lifecycle_publisher = await _build_lifecycle_publisher()
+    busy_set = _build_busy_set()
     server = GameServer(
         _new_board,
         user_store,
@@ -104,7 +182,10 @@ async def _main() -> None:
         room_store=room_store,
         matchmaking=matchmaking,
         lifecycle_publisher=lifecycle_publisher,
+        busy_set=busy_set,
     )
+    await _build_matchmaking_relay(server)
+    _maybe_start_shard_heartbeat()
     _logger.info("KFChess server listening on ws://%s:%s", HOST, PORT)
     await server.run_forever()
 

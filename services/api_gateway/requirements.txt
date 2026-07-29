@@ -1,0 +1,4 @@
+aiohttp
+redis
+psycopg[binary]
+nats-py

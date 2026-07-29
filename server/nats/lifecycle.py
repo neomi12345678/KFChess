@@ -41,6 +41,19 @@ class NatsLifecyclePublisher:
         }
         await self._connection.publish("game.created", json.dumps(payload).encode("utf-8"))
 
-    async def game_finished(self, game_id: str, room_id: Optional[str], ratings: Dict[str, int]) -> None:
-        payload = {"game_id": game_id, "room_id": room_id, "ratings": ratings}
+    async def game_finished(
+        self,
+        game_id: str,
+        room_id: Optional[str],
+        white_username: str,
+        black_username: str,
+        ratings: Dict[str, int],
+    ) -> None:
+        payload = {
+            "game_id": game_id,
+            "room_id": room_id,
+            "white_username": white_username,
+            "black_username": black_username,
+            "ratings": ratings,
+        }
         await self._connection.publish("game.finished", json.dumps(payload).encode("utf-8"))

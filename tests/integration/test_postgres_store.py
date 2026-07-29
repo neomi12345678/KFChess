@@ -20,6 +20,7 @@ import pytest
 
 from server.accounts import InvalidCredentialsError
 from server.postgres.accounts import PostgresRatingStore, PostgresUserStore, open_postgres_accounts_database
+from server.postgres.game_history import PostgresGameHistoryStore
 from server.postgres.rooms import PostgresRoomStore
 from server.rooms import RoomRegistry
 from server.server_config import STARTING_RATING
@@ -131,3 +132,48 @@ def test_a_new_registry_over_the_same_store_reconstructs_opponent_and_spectators
     assert reloaded.room_id == room.room_id
     assert reloaded.opponent == "bob"
     assert reloaded.spectators == {"carol"}
+
+
+@pytest.fixture
+def game_history_store():
+    store = PostgresGameHistoryStore(DSN)
+    with psycopg.connect(DSN) as connection:
+        connection.execute("TRUNCATE game_history")
+        connection.commit()
+    yield store
+    store.close()
+
+
+def test_all_games_on_a_fresh_store_is_empty(game_history_store):
+    assert game_history_store.all_games() == []
+
+
+def test_record_game_round_trips_all_fields(game_history_store):
+    game_history_store.record_game("play-abc123", "room-1", "alice", "bob", 1214, 1186)
+
+    [game] = game_history_store.all_games()
+    assert game == {
+        "game_id": "play-abc123",
+        "room_id": "room-1",
+        "white_username": "alice",
+        "black_username": "bob",
+        "white_rating": 1214,
+        "black_rating": 1186,
+    }
+
+
+def test_record_game_with_no_room_id_stores_null(game_history_store):
+    game_history_store.record_game("play-def456", None, "alice", "bob", 1200, 1200)
+
+    [game] = game_history_store.all_games()
+    assert game["room_id"] is None
+
+
+def test_recording_the_same_game_id_twice_is_a_no_op(game_history_store):
+    game_history_store.record_game("play-abc123", "room-1", "alice", "bob", 1214, 1186)
+
+    game_history_store.record_game("play-abc123", "room-1", "alice", "bob", 9999, 9999)  # must not raise or overwrite
+
+    [game] = game_history_store.all_games()
+    assert game["white_rating"] == 1214
+    assert game["black_rating"] == 1186

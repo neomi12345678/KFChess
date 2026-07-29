@@ -99,4 +99,29 @@ class LifecyclePublisher(Protocol):
         self, game_id: str, room_id: Optional[str], white_username: str, black_username: str
     ) -> None: ...
 
-    async def game_finished(self, game_id: str, room_id: Optional[str], ratings: Dict[str, int]) -> None: ...
+    async def game_finished(
+        self,
+        game_id: str,
+        room_id: Optional[str],
+        white_username: str,
+        black_username: str,
+        ratings: Dict[str, int],
+    ) -> None: ...
+
+
+# What server/rooms.py's RoomRegistry and server/game_loop.py's GameLoop
+# both call on the "who's currently busy" set they're given - satisfied by
+# server/redis/busy_set.py's BusySet. The one piece of PLAY-busy-check
+# state (room membership as creator/opponent, or a seated PLAY game) that
+# needs to be visible *outside* the process that actually runs games/rooms
+# - a standalone api-gateway service can't reach into GameLoop's/
+# RoomRegistry's own in-memory state directly, so it reads this instead.
+# Optional everywhere it's threaded through (None is a no-op, see
+# RoomRegistry's/GameLoop's own constructors) - every existing caller/test
+# that omits it keeps today's single-process-only behavior unchanged.
+class BusySetProtocol(Protocol):
+    def add(self, username: str) -> None: ...
+
+    def remove(self, username: str) -> None: ...
+
+    def contains(self, username: str) -> bool: ...
