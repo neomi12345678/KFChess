@@ -26,6 +26,24 @@ class LoginMessage:
     type: str = MessageType.LOGIN
 
 
+# Sent instead of LoginMessage once a client has already authenticated over
+# REST (see services/api_gateway/main.py's POST /login, and
+# client/network_client.py's own api_gateway_port-gated login()) - no
+# password, since that already happened. Attaches this websocket to
+# username the same way LoginMessage's own connection-registration half
+# does (see server/ws_server.py's _handle_identify), and, if username is
+# mid-game and was marked disconnected, reconnects it into that live
+# GameSession (server/router.py's CommandRouter.decide_identify) - the one
+# piece of LoginMessage's three branches this narrower message replicates;
+# it does not replicate the room-survived-a-restart branch (see that
+# method's own docstring).
+@register(MessageType.IDENTIFY)
+@dataclass(frozen=True)
+class IdentifyMessage:
+    username: str
+    type: str = MessageType.IDENTIFY
+
+
 @register(MessageType.PLAY)
 @dataclass(frozen=True)
 class PlayMessage:
@@ -71,6 +89,15 @@ class LoginAckMessage:
     color: Optional[str] = None
     resuming_room_id: Optional[str] = None
     type: str = MessageType.LOGIN_ACK
+
+
+# Always accepted=True - decide_identify's own docstring explains why this
+# is registration, not a business decision that could be rejected.
+@register(MessageType.IDENTIFY_ACK)
+@dataclass(frozen=True)
+class IdentifyAckMessage:
+    accepted: bool
+    type: str = MessageType.IDENTIFY_ACK
 
 
 @register(MessageType.PLAY_ACK)

@@ -20,6 +20,16 @@ PORT = 8765
 # notifications) stays on the websocket at HOST/PORT above, unchanged.
 API_GATEWAY_PORT = 8080
 
+# The standalone WS Gateway's own public websocket port (see
+# services/ws_gateway/main.py, docker-compose.yml) - a fully-split
+# deployment points a client's existing HOST/PORT connection at this
+# instead of straight at a Game Server Shard's own PORT above. No client
+# code change needed to use it (see services/ws_gateway/main.py's own
+# docstring on why it's a transparent relay) - this constant exists only
+# for docker-compose.yml/services/ws_gateway/main.py's own default to share,
+# the same way API_GATEWAY_PORT does.
+WS_GATEWAY_PORT = 8767
+
 # Wire message "type" values - the vocabulary every message in either
 # direction carries (see protocol/registry.py's register()/message_to_dict):
 # client->server (LOGIN/PLAY/.../MOVE/JUMP, see lobby_messages.py/
@@ -33,6 +43,7 @@ API_GATEWAY_PORT = 8080
 # still compares/serializes identically either way.
 class MessageType(str, Enum):
     LOGIN = "login"
+    IDENTIFY = "identify"
     PLAY = "play"
     CREATE_ROOM = "create_room"
     CANCEL_ROOM = "cancel_room"
@@ -41,6 +52,7 @@ class MessageType(str, Enum):
     JUMP = "jump"
 
     LOGIN_ACK = "login_ack"
+    IDENTIFY_ACK = "identify_ack"
     PLAY_ACK = "play_ack"
     CREATE_ROOM_ACK = "create_room_ack"
     JOIN_ROOM_ACK = "join_room_ack"

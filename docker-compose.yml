@@ -101,10 +101,33 @@ services:
       nats:
         condition: service_healthy
 
+  # The public entry point for the live game itself (moves/snapshots) -
+  # see services/ws_gateway/main.py's own docstring. Needs no Postgres (no
+  # auth/rating here) and no dependency on game-server/game-server-2 being
+  # up yet - it only ever opens an internal connection to one lazily, once
+  # a real client actually identifies.
+  ws-gateway:
+    build:
+      context: .
+      dockerfile: services/ws_gateway/Dockerfile
+    ports:
+      - "8767:8767"
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      NATS_URL: "nats://nats:4222"
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  # No public "ports:" mapping - Server_Design.md §3's "Game Server Shards
+  # carry no public IP at all" - only ws-gateway (below) ever opens a
+  # connection to this, from inside the compose network. A bare-metal
+  # `python -m server.main` (no compose at all) is unaffected - the
+  # protocol/types.py-default port it binds was never this container's.
   game-server:
     build: .
-    ports:
-      - "8765:8765"
     environment:
       KFCHESS_HOST: "0.0.0.0"
       KFCHESS_PORT: "8765"
@@ -146,8 +169,6 @@ services:
   # lets that routing be exercised for real instead of only in theory.
   game-server-2:
     build: .
-    ports:
-      - "8766:8765"
     environment:
       KFCHESS_HOST: "0.0.0.0"
       KFCHESS_PORT: "8765"

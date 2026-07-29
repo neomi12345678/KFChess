@@ -41,6 +41,8 @@ from protocol.game_messages import SeatMessage
 from protocol.lobby_messages import (
     CreateRoomAckMessage,
     CreateRoomMessage,
+    IdentifyAckMessage,
+    IdentifyMessage,
     JoinRoomAckMessage,
     JoinRoomMessage,
     LoginAckMessage,
@@ -198,15 +200,55 @@ class NetworkGameClient:
     # terminal login/matchmaking handshake (see play_online.py), before
     # the GUI window opens and poll_messages() takes over - nothing else
     # is draining self._incoming concurrently at that point.
+    # api_gateway_port unset (the default - see __init__'s own docstring):
+    # LoginMessage over the websocket, exactly as before. Set: an HTTP POST
+    # to the standalone API Gateway instead (see services/api_gateway/main.py's
+    # POST /login) - authentication only, so once accepted this still sends
+    # an IdentifyMessage over the websocket and waits for its ack, the same
+    # connection-registration step _handle_login itself performs on the
+    # all-websocket path (see server/ws_server.py's _handle_identify). Either
+    # way, the returned LoginAckMessage carries the same reconnected/color
+    # fields - server/interfaces.py's ActiveGameIndexProtocol is what lets
+    # POST /login answer those without reaching into any GameLoop directly
+    # (see its own docstring for the one branch - a room surviving a server
+    # restart - this REST path doesn't replicate).
     def login(self, username: str, password: str, timeout: float = 10.0) -> LoginAckMessage:
-        self.send_command(encode_json_message(LoginMessage(username=username, password=password)))
-        ack = self._wait_for_type(LoginAckMessage, timeout)
+        if self._api_gateway_port is None:
+            self.send_command(encode_json_message(LoginMessage(username=username, password=password)))
+            ack = self._wait_for_type(LoginAckMessage, timeout)
+            if ack.accepted:
+                # Needed by play() below - PLAY is no longer a wire message
+                # this class sends over the websocket (see its own docstring),
+                # so the username has to be remembered here instead of being
+                # implicit in "whichever connection sent it."
+                self._username = ack.username
+            return ack
+
+        url = f"http://{self._api_gateway_host}:{self._api_gateway_port}/login"
+        request = urllib.request.Request(
+            url,
+            data=json.dumps({"username": username, "password": password}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = json.loads(response.read())
+        except (urllib.error.URLError, TimeoutError) as error:
+            raise NetworkClientError(f"could not reach the API Gateway for /login: {error}") from error
+
+        ack = LoginAckMessage(
+            accepted=body["accepted"],
+            reason=body.get("reason"),
+            username=body.get("username"),
+            rating=body.get("rating"),
+            reconnected=body.get("reconnected"),
+            color=body.get("color"),
+        )
         if ack.accepted:
-            # Needed by play() below - PLAY is no longer a wire message
-            # this class sends over the websocket (see its own docstring),
-            # so the username has to be remembered here instead of being
-            # implicit in "whichever connection sent it."
             self._username = ack.username
+            self.send_command(encode_json_message(IdentifyMessage(username=ack.username)))
+            self._wait_for_type(IdentifyAckMessage, timeout)
         return ack
 
     # api_gateway_port unset (the default - see __init__'s own docstring):

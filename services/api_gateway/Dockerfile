@@ -1,7 +1,8 @@
 # API-Gateway-only image: this service only ever imports
 # server/postgres/accounts.py (+ its own server/accounts.py dependency for
-# the shared Account/_hash_password), server/redis/matchmaking.py,
-# server/redis/busy_set.py, and server/redis/rooms.py (+ its own
+# the shared Account/InvalidCredentialsError/_hash_password),
+# server/redis/matchmaking.py, server/redis/busy_set.py,
+# server/redis/active_game_index.py, and server/redis/rooms.py (+ its own
 # server/rooms.py dependency for the shared Room/RoomError) - none of the
 # game engine (model/, rules/, physics/, realtime/, engine/, boardio/,
 # events/, protocol/'s message classes aside) or SQLite stores, so none of

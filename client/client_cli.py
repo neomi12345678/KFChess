@@ -34,6 +34,8 @@ from protocol.game_messages import GameOverMessage, JumpMessage, MoveMessage, Se
 from protocol.lobby_messages import (
     CancelRoomMessage,
     CreateRoomMessage,
+    IdentifyAckMessage,
+    IdentifyMessage,
     JoinRoomMessage,
     LoginAckMessage,
     LoginMessage,
@@ -160,6 +162,21 @@ def _post_play(username: str, api_gateway_host: str, api_gateway_port: int) -> d
         return json.loads(response.read())
 
 
+# Same pattern as _post_play above, for services/api_gateway/main.py's own
+# POST /login (see that module's docstring for the one branch of
+# LoginMessage's decide_login this narrower endpoint doesn't replicate).
+def _post_login(username: str, password: str, api_gateway_host: str, api_gateway_port: int) -> dict:
+    url = f"http://{api_gateway_host}:{api_gateway_port}/login"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"username": username, "password": password}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10.0) as response:
+        return json.loads(response.read())
+
+
 async def _read_commands(
     websocket, state: _ClientState, username: str, api_gateway_host: str, api_gateway_port: Optional[int]
 ) -> None:
@@ -235,8 +252,37 @@ async def _main(host: str, port: int, api_gateway_host: str, api_gateway_port: O
 
     uri = f"ws://{host}:{port}"
     async with websockets.connect(uri) as websocket:
-        await websocket.send(encode_json_message(LoginMessage(username=username, password=password)))
-        login_ack = await _recv_of_type(websocket, LoginAckMessage)
+        # api_gateway_port unset (the default): LoginMessage over the
+        # websocket, exactly as before. Set: an HTTP POST to the standalone
+        # API Gateway instead (see _post_login above) - authentication only,
+        # so once accepted this still sends an IdentifyMessage over the
+        # websocket and waits for its ack, the same connection-registration
+        # step _handle_login itself performs on the all-websocket path (see
+        # server/ws_server.py's _handle_identify).
+        if api_gateway_port is None:
+            await websocket.send(encode_json_message(LoginMessage(username=username, password=password)))
+            login_ack = await _recv_of_type(websocket, LoginAckMessage)
+        else:
+            loop = asyncio.get_event_loop()
+            try:
+                body = await loop.run_in_executor(
+                    None, _post_login, username, password, api_gateway_host, api_gateway_port
+                )
+            except urllib.error.URLError as error:
+                print(f"(could not reach the API Gateway: {error})")
+                return
+            login_ack = LoginAckMessage(
+                accepted=body["accepted"],
+                reason=body.get("reason"),
+                username=body.get("username"),
+                rating=body.get("rating"),
+                reconnected=body.get("reconnected"),
+                color=body.get("color"),
+            )
+            if login_ack.accepted:
+                await websocket.send(encode_json_message(IdentifyMessage(username=login_ack.username)))
+                await _recv_of_type(websocket, IdentifyAckMessage)
+
         if not login_ack.accepted:
             print(f"Login failed: {login_ack.reason}")
             return

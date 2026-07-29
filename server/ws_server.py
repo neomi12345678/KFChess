@@ -58,6 +58,7 @@ from protocol.game_messages import ErrorMessage, JumpMessage, MoveMessage
 from protocol.lobby_messages import (
     CancelRoomMessage,
     CreateRoomMessage,
+    IdentifyMessage,
     JoinRoomMessage,
     LoginAckMessage,
     LoginMessage,
@@ -71,6 +72,7 @@ from server.accounts import InvalidCredentialsError
 from server.connections import ConnectionRegistry
 from server.game_loop import GameLoop
 from server.interfaces import (
+    ActiveGameIndexProtocol,
     BusySetProtocol,
     LifecyclePublisher,
     MatchmakingQueueProtocol,
@@ -130,6 +132,14 @@ class GameServer:
         # (see server/redis/busy_set.py) - passed to both RoomRegistry and
         # GameLoop, see their own docstrings on this same param.
         busy_set: Optional[BusySetProtocol] = None,
+        # Overridable so server/main.py can hand in a Redis-backed index
+        # (see server/redis/active_game_index.py) - passed straight through
+        # to GameLoop, see its own docstring on this same param.
+        active_game_index: Optional[ActiveGameIndexProtocol] = None,
+        # This shard's own address (see server/main.py's SHARD_ADDRESS env
+        # var) - passed straight through to GameLoop, see its own docstring
+        # on this same param.
+        shard_address: Optional[str] = None,
     ):
         self._user_store = user_store
         self._rating_store = rating_store
@@ -147,6 +157,8 @@ class GameServer:
             matchmaking=matchmaking,
             lifecycle_publisher=lifecycle_publisher,
             busy_set=busy_set,
+            active_game_index=active_game_index,
+            shard_address=shard_address,
         )
         self._router = CommandRouter(self._rooms, self._loop, rating_store, self._connections)
         self._host = host
@@ -237,6 +249,9 @@ class GameServer:
         if isinstance(decoded, LoginMessage):
             return await self._handle_login(websocket, decoded)
 
+        if isinstance(decoded, IdentifyMessage):
+            return await self._handle_identify(websocket, decoded)
+
         if username is None:
             await self._connections.send(websocket, ErrorMessage(message="login_required"))
             return username
@@ -319,6 +334,26 @@ class GameServer:
         error = task.exception()
         if error is not None:
             _logger.warning("failed to close a stale connection during reconnect", exc_info=error)
+
+    # IDENTIFY's own counterpart to _handle_login - the same connection-
+    # registration half (stale-socket eviction, ConnectionRegistry.set), but
+    # no password to verify and no rating to look up: a client sending this
+    # already authenticated over REST (see services/api_gateway/main.py's
+    # POST /login), so username here is simply asserted, not proven. Same
+    # "just for presentation" trust level this project's login already has
+    # (see server/accounts.py's own docstring) - not a new relaxation.
+    async def _handle_identify(self, websocket, identify_message: IdentifyMessage) -> Optional[str]:
+        username = identify_message.username
+
+        stale_websocket = self._connections.get(username)
+        if stale_websocket is not None and stale_websocket is not websocket:
+            close_task = asyncio.ensure_future(stale_websocket.close())
+            close_task.add_done_callback(self._log_stale_close_failure)
+
+        self._connections.set(username, websocket)
+
+        await self._connections.send(websocket, self._router.decide_identify(username))
+        return username
 
     async def _handle_join_room(self, websocket, username: str, room_id: str) -> None:
         decision = self._router.decide_join_room(username, room_id)

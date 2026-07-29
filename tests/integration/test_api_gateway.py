@@ -60,6 +60,11 @@ def running_app(monkeypatch):
     redis_client = redis_lib.Redis.from_url(REDIS_URL, decode_responses=True)
     redis_client.delete("kfchess:busy_usernames")
     redis_client.delete("kfchess:matchmaking:order", "kfchess:matchmaking:waiting")
+    # Active-game entries are dynamic (kfchess:active_game:{username}) -
+    # wiped by prefix scan rather than by name, same approach
+    # tests/unit/test_active_game_index.py's own fixture uses.
+    for key in redis_client.scan_iter(match="kfchess:active_game:*"):
+        redis_client.delete(key)
     # Room keys are dynamic (kfchess:room:{room_id}) - wiped by prefix scan
     # rather than by name, same approach test_redis_room_registry.py's own
     # fixture uses, so a rerun never trips "already_in_a_room" on a room
@@ -146,6 +151,10 @@ def _post_json(port: int, path: str, body: dict) -> dict:
         return json.loads(response.read())
 
 
+def _post_login(port: int, username: str, password: str) -> dict:
+    return _post_json(port, "/login", {"username": username, "password": password})
+
+
 def _post_play(port: int, username: str) -> dict:
     return _post_json(port, "/play", {"username": username})
 
@@ -180,6 +189,52 @@ def test_a_busy_user_is_rejected_without_touching_the_queue(running_app):
 
     assert body == {"accepted": False, "reason": "already_in_game"}
     assert not redis_client.hexists("kfchess:matchmaking:waiting", "gw_test_busy")
+
+
+def test_a_first_time_username_is_registered_and_logged_in(running_app):
+    port, _redis_client = running_app
+
+    body = _post_login(port, "gw_test_new_user", "pw12345")
+
+    assert body["accepted"] is True
+    assert body["username"] == "gw_test_new_user"
+    assert body["rating"] == 1200
+    assert "reconnected" not in body
+
+
+def test_a_returning_username_with_the_wrong_password_is_rejected(running_app):
+    port, _redis_client = running_app
+
+    body = _post_login(port, "gw_test_alice", "wrong-password")
+
+    assert body == {"accepted": False, "reason": "wrong_password"}
+
+
+def test_a_username_with_an_active_game_is_reported_as_reconnected(running_app):
+    from server.interfaces import ActiveGameLocation
+    from server.postgres.accounts import PostgresRatingStore, open_postgres_accounts_database
+    from server.redis.active_game_index import ActiveGameIndex
+
+    port, _redis_client = running_app
+
+    ActiveGameIndex(REDIS_URL).set(
+        "gw_test_alice", ActiveGameLocation(game_id="play-1", room_id=None, seat="white", shard_address="shard-a")
+    )
+    # Not assumed to be 1200 - gw_test_alice's account persists in this
+    # real (non-:memory:) Postgres database across test runs, so her
+    # actual current rating (fetched independently here) is what /login
+    # must echo back, not a hardcoded starting value.
+    rating = PostgresRatingStore(open_postgres_accounts_database(DATABASE_URL)).rating_for("gw_test_alice")
+
+    body = _post_login(port, "gw_test_alice", "pw12345")
+
+    assert body == {
+        "accepted": True,
+        "username": "gw_test_alice",
+        "rating": rating,
+        "reconnected": True,
+        "color": "white",
+    }
 
 
 def test_creating_a_room_returns_a_room_id(running_app):
