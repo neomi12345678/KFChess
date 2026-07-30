@@ -45,12 +45,17 @@ import logging
 import os
 
 import nats
+from prometheus_client import Gauge
 
 from server.logging_config import configure_logging, username_ctx
+from server.observability_server import start_observability_server
 from server.redis.matchmaking import RedisMatchmakingQueue
 from server.server_config import DEFAULT_TICK_INTERVAL_S
 
 _logger = logging.getLogger(__name__)
+
+# Server_Design.md §9's own "queue depth per Matchmaker replica".
+_QUEUE_DEPTH_GAUGE = Gauge("kfchess_matchmaker_queue_depth", "Usernames currently waiting for a PLAY match")
 
 
 async def _on_matchmaking_requested(queue: RedisMatchmakingQueue, msg) -> None:
@@ -67,26 +72,43 @@ async def _run_forever(queue: RedisMatchmakingQueue, nats_connection, tick_inter
         elapsed_ms = int((now - last) * 1000)
         last = now
 
-        tick = queue.advance_time(elapsed_ms)
-        for username in tick.timed_out:
-            username_ctx.set(username)
-            await nats_connection.publish(
-                "matchmaking.timeout", json.dumps({"username": username}).encode("utf-8")
-            )
-        for username, seconds_remaining in tick.due_for_status:
-            username_ctx.set(username)
-            payload = {"username": username, "seconds_remaining": seconds_remaining}
-            await nats_connection.publish("matchmaking.status", json.dumps(payload).encode("utf-8"))
+        # A transient Redis blip must not take this whole process down -
+        # found for real during this pass's own docker-compose verification
+        # (a deliberate, brief `docker compose stop redis` to prove /readyz
+        # correctly degrades - see server/observability_server.py - instead
+        # crashed this service outright with an unhandled
+        # redis.exceptions.ConnectionError from queue.advance_time). One
+        # bad tick is skipped and retried next interval, the same
+        # "isolate, don't crash the whole loop" reasoning
+        # server/game_loop.py's own run_forever already applies per-game.
+        try:
+            await _run_one_tick(queue, nats_connection, elapsed_ms)
+        except Exception:
+            _logger.exception("matchmaker tick failed - skipping this tick")
 
-        match = queue.find_match()
-        if match is not None:
-            white_username, black_username = match
-            username_ctx.set(white_username)
-            queue.remove(white_username)
-            queue.remove(black_username)
-            payload = {"white_username": white_username, "black_username": black_username}
-            await nats_connection.publish("match.found", json.dumps(payload).encode("utf-8"))
-            _logger.info("matched '%s' vs '%s'", white_username, black_username)
+
+async def _run_one_tick(queue: RedisMatchmakingQueue, nats_connection, elapsed_ms: int) -> None:
+    tick = queue.advance_time(elapsed_ms)
+    _QUEUE_DEPTH_GAUGE.set(queue.queue_depth())
+    for username in tick.timed_out:
+        username_ctx.set(username)
+        await nats_connection.publish(
+            "matchmaking.timeout", json.dumps({"username": username}).encode("utf-8")
+        )
+    for username, seconds_remaining in tick.due_for_status:
+        username_ctx.set(username)
+        payload = {"username": username, "seconds_remaining": seconds_remaining}
+        await nats_connection.publish("matchmaking.status", json.dumps(payload).encode("utf-8"))
+
+    match = queue.find_match()
+    if match is not None:
+        white_username, black_username = match
+        username_ctx.set(white_username)
+        queue.remove(white_username)
+        queue.remove(black_username)
+        payload = {"white_username": white_username, "black_username": black_username}
+        await nats_connection.publish("match.found", json.dumps(payload).encode("utf-8"))
+        _logger.info("matched '%s' vs '%s'", white_username, black_username)
 
 
 async def _main() -> None:
@@ -101,6 +123,18 @@ async def _main() -> None:
         await _on_matchmaking_requested(queue, msg)
 
     await nats_connection.subscribe("matchmaking.requested", cb=_on_message)
+
+    import redis as redis_lib
+
+    # Explicit, short timeouts - redis-py's own default is *no* timeout at
+    # all, which would hang this check instead of failing it fast.
+    health_redis_client = redis_lib.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+
+    health_port = int(os.environ.get("HEALTH_PORT", 9102))
+    start_observability_server(
+        health_port,
+        {"redis": lambda: bool(health_redis_client.ping()), "nats": lambda: nats_connection.is_connected},
+    )
 
     _logger.info("matchmaker running (redis=%s nats=%s)", redis_url, nats_url)
     await _run_forever(queue, nats_connection, tick_interval_s)

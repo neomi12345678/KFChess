@@ -2,3 +2,4 @@ websockets
 psycopg[binary]
 redis
 nats-py
+prometheus_client

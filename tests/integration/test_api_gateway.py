@@ -151,12 +151,51 @@ def _post_json(port: int, path: str, body: dict) -> dict:
         return json.loads(response.read())
 
 
+def _get(port: int, path: str):
+    import urllib.request
+
+    request = urllib.request.Request(f"http://localhost:{port}{path}", method="GET")
+    with urllib.request.urlopen(request, timeout=5.0) as response:
+        return response.status, response.getheader("Content-Type"), response.read()
+
+
 def _post_login(port: int, username: str, password: str) -> dict:
     return _post_json(port, "/login", {"username": username, "password": password})
 
 
 def _post_play(port: int, username: str) -> dict:
     return _post_json(port, "/play", {"username": username})
+
+
+# Real aiohttp Response construction via a genuinely running server (this
+# fixture's own AppRunner/TCPSite) is what actually caught a real bug here
+# during manual docker-compose verification: aiohttp's own web.Response
+# rejects a content_type string that already carries a charset (which
+# prometheus_client's own CONTENT_TYPE_LATEST does) - calling handle_metrics
+# as a plain coroutine with a fake request (as a unit test would) never
+# constructs a real Response object, so it never would have caught this.
+def test_healthz_readyz_and_metrics_are_real_working_routes(running_app):
+    import json as json_module
+
+    port, _redis_client = running_app
+
+    health_status, _health_content_type, health_body = _get(port, "/healthz")
+    assert health_status == 200
+    assert health_body == b"ok"
+
+    ready_status, _ready_content_type, ready_body = _get(port, "/readyz")
+    assert ready_status == 200
+    assert json_module.loads(ready_body) == {"redis": True, "postgres": True, "nats": True}
+
+    # A real request first, so the request-rate counter has at least one
+    # labeled observation to report - a Counter with no observations at all
+    # emits nothing in Prometheus text format, by design.
+    _post_login(port, "gw_test_alice", "pw12345")
+
+    metrics_status, metrics_content_type, metrics_body = _get(port, "/metrics")
+    assert metrics_status == 200
+    assert metrics_content_type.startswith("text/plain")
+    assert b"kfchess_api_requests_total" in metrics_body
 
 
 def test_a_registered_user_gets_enqueued_into_the_real_shared_queue(running_app):

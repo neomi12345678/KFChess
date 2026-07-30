@@ -63,6 +63,7 @@ import os
 from typing import Dict, Optional
 
 import websockets
+from prometheus_client import Gauge
 
 from protocol.game_messages import ErrorMessage
 from protocol.lobby_messages import (
@@ -75,12 +76,18 @@ from protocol.registry import decode_json_message, encode_json_message
 from protocol.types import PORT as SHARD_PORT
 from protocol.types import WS_GATEWAY_PORT
 from server.logging_config import configure_logging, username_ctx
+from server.observability_server import start_observability_server
 from server.redis.active_game_index import ActiveGameIndex
 from server.redis.room_shard_index import RoomShardIndex
 from server.redis.rooms import RedisRoomRegistry
 from server.server_config import MATCHMAKING_TIMEOUT_MS
 
 _logger = logging.getLogger(__name__)
+
+# Server_Design.md §9's own "connection count... per Gateway pod" - every
+# currently relayed (or still-resolving) client, from the moment
+# _handle_client accepts it to the moment it disconnects.
+_CONNECTIONS_GAUGE = Gauge("kfchess_ws_gateway_connections", "Currently connected clients")
 
 
 # One shared table per process - {username: Future[shard_address or None]}
@@ -226,6 +233,25 @@ async def _handle_client(
     shard_port: int,
     client_ws,
 ) -> None:
+    # _CONNECTIONS_GAUGE covers this client's whole lifetime - accepted
+    # through disconnected - not just its relay phase, so it counts a
+    # still-resolving (waiting on allocation) client too.
+    _CONNECTIONS_GAUGE.inc()
+    try:
+        await _handle_client_inner(active_game_index, rooms, room_shard_index, waiters, status_relay, shard_port, client_ws)
+    finally:
+        _CONNECTIONS_GAUGE.dec()
+
+
+async def _handle_client_inner(
+    active_game_index: ActiveGameIndex,
+    rooms: RedisRoomRegistry,
+    room_shard_index: RoomShardIndex,
+    waiters: _AllocationWaiters,
+    status_relay: _StatusRelay,
+    shard_port: int,
+    client_ws,
+) -> None:
     try:
         raw = await client_ws.recv()
     except websockets.exceptions.ConnectionClosed:
@@ -278,6 +304,20 @@ async def _main() -> None:
     status_relay = _StatusRelay()
     nats_connection = await nats.connect(nats_url)
     await _subscribe_matchmaking_events(nats_connection, waiters, status_relay)
+
+    import redis as redis_lib
+
+    # Explicit, short timeouts - redis-py's own default is *no* timeout at
+    # all, which would hang this check (and, via
+    # server/observability_server.py's own threaded WSGI server, only that
+    # one request - but still worth failing fast) instead of failing it.
+    _health_redis_client = redis_lib.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+
+    health_port = int(os.environ.get("HEALTH_PORT", 9101))
+    start_observability_server(
+        health_port,
+        {"redis": lambda: bool(_health_redis_client.ping()), "nats": lambda: nats_connection.is_connected},
+    )
 
     async def _handler(client_ws) -> None:
         await _handle_client(active_game_index, rooms, room_shard_index, waiters, status_relay, shard_port, client_ws)

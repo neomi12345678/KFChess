@@ -9,6 +9,7 @@ from boardio.starting_position import STARTING_BOARD
 from protocol.types import HOST as DEFAULT_HOST
 from protocol.types import PORT as DEFAULT_PORT
 from server.logging_config import configure_logging
+from server.observability_server import start_observability_server
 from server.sqlite.accounts import UserStore
 from server.sqlite.accounts_db import open_accounts_database
 from server.sqlite.rating_store import RatingStore
@@ -28,6 +29,12 @@ ROOM_DB_PATH = os.path.join(os.path.dirname(__file__), "rooms.db")
 # keeps today's "localhost:8765" default. See docker-compose.yml.
 HOST = os.environ.get("KFCHESS_HOST", DEFAULT_HOST)
 PORT = int(os.environ.get("KFCHESS_PORT", DEFAULT_PORT))
+
+# Server_Design.md §9's own health/readiness/metrics HTTP surface (see
+# server/observability_server.py) - a distinct default port from every
+# other service's own (see docker-compose.yml), overridable the same way
+# every other port in this project already is.
+HEALTH_PORT = int(os.environ.get("HEALTH_PORT", 9105))
 
 _logger = logging.getLogger(__name__)
 
@@ -223,6 +230,42 @@ async def _run_shard_heartbeat(registry, shard_address: str, interval_s: float =
         await asyncio.sleep(interval_s)
 
 
+# Server_Design.md §9's own readiness probe - checks only the dependencies
+# this shard was actually configured with (REDIS_URL/DATABASE_URL/NATS_URL
+# all optional here, see this module's own "None is a no-op" convention
+# throughout) via dedicated, synchronous clients of its own, safe to call
+# from server/observability_server.py's own background thread. lifecycle_publisher
+# is reused rather than opening a fourth NATS connection just for this -
+# see its own connection property.
+def _build_readiness_checks(redis_url, database_url, lifecycle_publisher) -> dict:
+    checks = {}
+
+    if redis_url is not None:
+        import redis as redis_lib
+
+        # Explicit, short timeouts - redis-py's own default is *no* timeout
+        # at all, which would make an unreachable Redis hang this check
+        # instead of failing it (see server/observability_server.py's own
+        # docstring on why that matters here specifically).
+        redis_client = redis_lib.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+        checks["redis"] = lambda: bool(redis_client.ping())
+
+    if database_url is not None:
+        import psycopg
+
+        def _check_postgres() -> bool:
+            with psycopg.connect(database_url, connect_timeout=2) as connection:
+                connection.execute("SELECT 1")
+            return True
+
+        checks["postgres"] = _check_postgres
+
+    if lifecycle_publisher is not None:
+        checks["nats"] = lambda: lifecycle_publisher.connection.is_connected
+
+    return checks
+
+
 async def _main() -> None:
     user_store, rating_store, room_store = _build_stores()
     matchmaking = _build_matchmaking()
@@ -254,6 +297,10 @@ async def _main() -> None:
     )
     await _build_matchmaking_relay(server)
     _maybe_start_shard_heartbeat()
+    readiness_checks = _build_readiness_checks(
+        os.environ.get("REDIS_URL"), os.environ.get("DATABASE_URL"), lifecycle_publisher
+    )
+    start_observability_server(HEALTH_PORT, readiness_checks)
     _logger.info("KFChess server listening on ws://%s:%s", HOST, PORT)
     await server.run_forever()
 

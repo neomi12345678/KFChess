@@ -20,6 +20,7 @@ from typing import Callable, Dict, Optional, Set
 from frame_clock import FrameClock
 from model.board import BoardStore
 from model.piece import BLACK, WHITE
+from prometheus_client import Gauge, Histogram
 from protocol.game_messages import DisconnectCountdownMessage, ErrorMessage, GameOverMessage, SeatMessage
 from protocol.lobby_messages import MatchmakingStatusMessage, MatchmakingTimeoutMessage
 from protocol.snapshot_codec import panel_to_json, snapshot_to_json
@@ -47,6 +48,18 @@ from server.server_config import (
 from server.session import OTHER_SEAT, GameSession
 
 _logger = logging.getLogger(__name__)
+
+# Server_Design.md §9's own per-role metrics for a Game Server Shard -
+# module level (not per-GameLoop-instance) since prometheus_client's
+# default registry raises on a duplicate metric name, and this module is
+# only ever imported once per process regardless of how many GameLoop
+# instances exist within it (true in production - one shard, one GameLoop
+# - and also what keeps the test suite's own many _make_loop(...) calls
+# from colliding). See run_forever's own use of both.
+_ACTIVE_ROOMS_GAUGE = Gauge("kfchess_shard_active_rooms", "Number of active games this shard currently hosts")
+_TICK_DURATION_HISTOGRAM = Histogram(
+    "kfchess_shard_tick_duration_seconds", "Wall-clock time to advance every active game once per tick"
+)
 
 
 # {color: username} for panel_to_json's own names argument (see
@@ -228,11 +241,21 @@ class GameLoop:
             # shares this one tick task, so an unhandled exception from a
             # single buggy/corrupted GameSession must not take every other
             # concurrently-running game down with it (see _fail_game).
-            for game_id, game in list(self._games.items()):
-                try:
-                    await self._advance_game(game_id, game, whole_ms)
-                except Exception as error:
-                    await self._fail_game(game_id, game, error)
+            #
+            # Server_Design.md §9's own "active-room count and tick latency
+            # per Game Server Shard" metrics - _ACTIVE_ROOMS_GAUGE reflects
+            # this tick's own set (list(...) already snapshotted above, so
+            # a game finishing mid-loop doesn't change what's measured for
+            # *this* tick), _TICK_DURATION_HISTOGRAM times the whole
+            # advance-every-game pass, not any single game.
+            games_this_tick = list(self._games.items())
+            _ACTIVE_ROOMS_GAUGE.set(len(games_this_tick))
+            with _TICK_DURATION_HISTOGRAM.time():
+                for game_id, game in games_this_tick:
+                    try:
+                        await self._advance_game(game_id, game, whole_ms)
+                    except Exception as error:
+                        await self._fail_game(game_id, game, error)
 
     # Subscribes to the standalone Matchmaker service's matchmaking.status/
     # matchmaking.timeout events (see services/matchmaker/main.py, gated behind

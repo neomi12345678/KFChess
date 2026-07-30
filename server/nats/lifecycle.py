@@ -16,6 +16,7 @@ resolves to the installed library on sys.path, not to this package
 """
 
 import json
+import time
 from typing import Dict, Optional
 
 
@@ -29,6 +30,16 @@ class NatsLifecyclePublisher:
 
         connection = await nats.connect(nats_url)
         return cls(connection)
+
+    # Exposed read-only so server/main.py's own readiness check can read
+    # this connection's is_connected property (a plain, thread-safe
+    # boolean - see server/observability_server.py's own docstring on why
+    # a synchronous read, not an awaited call, is what a background-thread
+    # readiness check needs) without this class needing to know anything
+    # about health checks itself.
+    @property
+    def connection(self):
+        return self._connection
 
     async def game_created(
         self, game_id: str, room_id: Optional[str], white_username: str, black_username: str
@@ -55,5 +66,10 @@ class NatsLifecyclePublisher:
             "white_username": white_username,
             "black_username": black_username,
             "ratings": ratings,
+            # Server_Design.md §9's own "consumer lag per Persistence
+            # Worker" metric needs a publish-time timestamp to measure
+            # against - nothing in this payload carried one before (see
+            # services/persistence_worker/main.py's own lag gauge).
+            "published_at": time.time(),
         }
         await self._connection.publish("game.finished", json.dumps(payload).encode("utf-8"))

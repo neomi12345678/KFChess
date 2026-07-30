@@ -65,9 +65,10 @@ import asyncio
 import json
 import logging
 import os
-from typing import Optional
+from typing import Dict, Optional
 
 from aiohttp import web
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
 
 from protocol.types import Reason, Role
 from server.accounts import InvalidCredentialsError
@@ -87,6 +88,104 @@ from server.rooms import RoomError
 _logger = logging.getLogger(__name__)
 
 routes = web.RouteTableDef()
+
+# Server_Design.md §9's own "connection count and request rate per Gateway
+# pod" - request rate half, per route (see _count_requests below); this
+# service has no persistent "connection" of its own to count (each request
+# is a stateless REST call, unlike services/ws_gateway/main.py's own
+# long-lived relay - see its own kfchess_ws_gateway_connections gauge).
+_REQUEST_COUNTER = Counter("kfchess_api_requests_total", "Total API Gateway requests", ["route"])
+
+
+# Counts every ordinary route below by its own canonical path pattern
+# (e.g. "/rooms/{room_id}/join", never the raw request.path with a real
+# room_id in it - unbounded label cardinality would otherwise turn every
+# distinct room into its own Prometheus timeseries forever). Excludes the
+# observability routes themselves (/healthz//readyz//metrics) - polled far
+# more often than real traffic and not meaningfully "an API request" in
+# the same sense.
+_OBSERVABILITY_PATHS = frozenset({"/healthz", "/readyz", "/metrics"})
+
+
+@web.middleware
+async def _count_requests(request: web.Request, handler):
+    response = await handler(request)
+    if request.path not in _OBSERVABILITY_PATHS:
+        resource = request.match_info.route.resource
+        route = resource.canonical if resource is not None else request.path
+        _REQUEST_COUNTER.labels(route=route).inc()
+    return response
+
+
+# Server_Design.md §9's own health/readiness probes - liveness always 200
+# (this handler running at all is the signal), readiness actually checks
+# this service's three real dependencies (Redis/Postgres/NATS) via
+# dedicated clients, the same synchronous-check shape server/main.py's own
+# _build_readiness_checks uses for the bare-metal shard, just inline here
+# since this service already has an aiohttp app to hang routes on instead
+# of needing server/observability_server.py's own second HTTP server.
+@routes.get("/healthz")
+async def handle_healthz(request: web.Request) -> web.Response:
+    return web.Response(text="ok")
+
+
+# Off the event loop entirely, via the default thread-pool executor - same
+# reasoning as handle_login's own PBKDF2 call above: Redis/Postgres checks
+# here are real (if brief) blocking I/O, and aiohttp runs single-threaded,
+# so calling either directly would freeze every other concurrent request
+# this service is serving - including /healthz itself - for as long as an
+# unreachable dependency takes to time out. A real docker-compose run
+# (Redis stopped mid-check) is what actually surfaced this, not a guess:
+# /healthz measured 7+ seconds to answer, blocked behind a concurrent
+# /readyz call's own un-timed-out socket connect, before this fix.
+def _check_redis_and_postgres(redis_url: str, database_url: str) -> Dict[str, bool]:
+    import psycopg
+    import redis as redis_lib
+
+    results = {}
+
+    try:
+        # Explicit, short timeouts - redis-py's own default is *no* timeout
+        # at all, which would hang this check instead of failing it fast.
+        redis_client = redis_lib.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+        results["redis"] = bool(redis_client.ping())
+    except Exception:
+        results["redis"] = False
+
+    try:
+        with psycopg.connect(database_url, connect_timeout=2) as connection:
+            connection.execute("SELECT 1")
+        results["postgres"] = True
+    except Exception:
+        results["postgres"] = False
+
+    return results
+
+
+@routes.get("/readyz")
+async def handle_readyz(request: web.Request) -> web.Response:
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(
+        None, _check_redis_and_postgres, request.app["redis_url"], request.app["database_url"]
+    )
+
+    nats_connection = request.app.get("nats_connection")
+    results["nats"] = bool(nats_connection.is_connected) if nats_connection is not None else False
+
+    return web.json_response(results, status=200 if all(results.values()) else 503)
+
+
+@routes.get("/metrics")
+async def handle_metrics(request: web.Request) -> web.Response:
+    # Not content_type=CONTENT_TYPE_LATEST - aiohttp's own Response
+    # rejects a content_type string that already carries a charset (which
+    # CONTENT_TYPE_LATEST does, "text/plain; version=1.0.0; charset=utf-8"),
+    # since it manages charset separately itself. Setting the raw header
+    # directly sidesteps that entirely - verified against a real running
+    # container, which is what actually caught this (every unit/integration
+    # test calls handle_metrics as a plain coroutine, never through
+    # aiohttp's own Response validation).
+    return web.Response(body=generate_latest(), headers={"Content-Type": CONTENT_TYPE_LATEST})
 
 
 # Authentication only - see this module's own docstring for why rooms/
@@ -305,7 +404,9 @@ def build_app() -> web.Application:
     accounts_database = open_postgres_accounts_database(database_url)
     busy_set = BusySet(redis_url)
 
-    app = web.Application()
+    app = web.Application(middlewares=[_count_requests])
+    app["redis_url"] = redis_url
+    app["database_url"] = database_url
     app["user_store"] = PostgresUserStore(accounts_database)
     app["rating_store"] = PostgresRatingStore(accounts_database)
     app["matchmaking"] = RedisMatchmakingQueue(redis_url)
