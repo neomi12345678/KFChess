@@ -74,6 +74,7 @@ from server.game_loop import GameLoop
 from server.interfaces import (
     ActiveGameIndexProtocol,
     BusySetProtocol,
+    FairnessCheckpointProtocol,
     LifecyclePublisher,
     MatchmakingQueueProtocol,
     RatingRepository,
@@ -146,6 +147,11 @@ class GameServer:
         # straight through to CommandRouter, see its own docstring on this
         # same param.
         remote_rooms: Optional[RoomLookupProtocol] = None,
+        # Overridable so server/main.py can hand in a Redis-backed
+        # checkpoint (see server/redis/fairness_checkpoint.py) - passed
+        # straight through to GameLoop, see its own docstring on this same
+        # param.
+        fairness_checkpoint: Optional[FairnessCheckpointProtocol] = None,
     ):
         self._user_store = user_store
         self._rating_store = rating_store
@@ -165,6 +171,7 @@ class GameServer:
             busy_set=busy_set,
             active_game_index=active_game_index,
             shard_address=shard_address,
+            fairness_checkpoint=fairness_checkpoint,
         )
         self._router = CommandRouter(self._rooms, self._loop, rating_store, self._connections, remote_rooms=remote_rooms)
         self._host = host

@@ -140,6 +140,14 @@ class RedisRoomRegistry:
         room_id = self._redis.get(f"{_ROOM_OWNER_KEY_PREFIX}{username}")
         return self._load_if_exists(room_id) if room_id is not None else None
 
+    # A public name for the same lookup close() already does internally -
+    # used by services/game_allocator/main.py's own recovery sweep, which
+    # only has a room_id (from server/redis/room_shard_index.py's
+    # RoomShardIndex) and needs creator/opponent before calling close(),
+    # not just a boolean "did it close."
+    def room_for_id(self, room_id: str) -> Optional[Room]:
+        return self._load_if_exists(room_id)
+
     def _forget(self, room: Room) -> None:
         room_key = f"{_ROOM_KEY_PREFIX}{room.room_id}"
         self._redis.delete(room_key, f"{room_key}:spectators")

@@ -28,6 +28,8 @@ from server.interfaces import (
     ActiveGameIndexProtocol,
     ActiveGameLocation,
     BusySetProtocol,
+    FairnessCheckpointProtocol,
+    FairnessSnapshot,
     LifecyclePublisher,
     MatchmakingQueueProtocol,
     MessageSender,
@@ -36,7 +38,11 @@ from server.interfaces import (
 from server.matchmaking import MatchmakingQueue
 from server.publisher import NetworkPublisher
 from server.rooms import Room, RoomRegistry
-from server.server_config import DEFAULT_TICK_INTERVAL_S, MATCHMAKING_STATUS_INTERVAL_MS
+from server.server_config import (
+    DEFAULT_TICK_INTERVAL_S,
+    FAIRNESS_CHECKPOINT_INTERVAL_MS,
+    MATCHMAKING_STATUS_INTERVAL_MS,
+)
 from server.session import OTHER_SEAT, GameSession
 
 _logger = logging.getLogger(__name__)
@@ -79,6 +85,15 @@ class ActiveGame:
     publisher: NetworkPublisher
     room_id: Optional[str] = None
     spectator_usernames: Set[str] = field(default_factory=set)
+    # Server_Design.md §9's own fairness-checkpoint inputs - GameSession
+    # itself tracks neither (see its own docstring: no "total elapsed"
+    # concept exists there, only per-seat disconnect grace). elapsed_ms is
+    # the running total this class accumulates every tick;
+    # _ms_since_checkpoint is separate bookkeeping for when the next
+    # periodic write is due (see _advance_game) - each game runs its own
+    # independent FAIRNESS_CHECKPOINT_INTERVAL_MS timer, not a shared one.
+    elapsed_ms: int = 0
+    _ms_since_checkpoint: int = 0
 
 
 class GameLoop:
@@ -125,6 +140,13 @@ class GameLoop:
         # _start_game's own guard) - every existing caller/test omits both
         # and is unaffected.
         shard_address: Optional[str] = None,
+        # Overridable so server/main.py can hand in a Redis-backed
+        # checkpoint (see server/redis/fairness_checkpoint.py, gated behind
+        # REDIS_URL) - Server_Design.md §9's own "lightweight fairness
+        # checkpoint," written periodically per active game (see
+        # _advance_game). None (the default) is a no-op - every existing
+        # caller/test is unaffected.
+        fairness_checkpoint: Optional[FairnessCheckpointProtocol] = None,
     ):
         self._board_factory = board_factory
         self._rating_store = rating_store
@@ -139,6 +161,7 @@ class GameLoop:
         self._busy_set = busy_set
         self._active_game_index = active_game_index
         self._shard_address = shard_address
+        self._fairness_checkpoint = fairness_checkpoint
         self._games: Dict[str, ActiveGame] = {}
         self._next_play_game_id = 0
         # Flipped by start_matchmaking_relay - see its own docstring for why
@@ -352,6 +375,29 @@ class GameLoop:
             session.resign(expired_seat)
 
         session.tick(whole_ms)
+        game.elapsed_ms += whole_ms
+
+        # Server_Design.md §9's own lightweight fairness checkpoint - each
+        # game runs its own independent FAIRNESS_CHECKPOINT_INTERVAL_MS
+        # timer (game._ms_since_checkpoint), not synchronized across games.
+        # snapshot() is already cheap enough to call every tick elsewhere
+        # (full_broadcast_payload below does exactly that) - only actually
+        # called here on the ticks a write is due.
+        if self._fairness_checkpoint is not None:
+            game._ms_since_checkpoint += whole_ms
+            if game._ms_since_checkpoint >= FAIRNESS_CHECKPOINT_INTERVAL_MS:
+                game._ms_since_checkpoint = 0
+                snapshot = session.snapshot()
+                self._fairness_checkpoint.set(
+                    game_id,
+                    FairnessSnapshot(
+                        white_score=session.score.score_for(WHITE),
+                        black_score=session.score.score_for(BLACK),
+                        elapsed_ms=game.elapsed_ms,
+                        white_pieces_remaining=sum(1 for piece in snapshot.pieces if piece.color == WHITE),
+                        black_pieces_remaining=sum(1 for piece in snapshot.pieces if piece.color == BLACK),
+                    ),
+                )
 
         # Sent before the game-over check below, not after - a king-capture
         # ArrivalEvent (and thus its "capture" wire event) is published by
@@ -374,6 +420,8 @@ class GameLoop:
             if self._active_game_index is not None:
                 self._active_game_index.remove(session.username_for(WHITE))
                 self._active_game_index.remove(session.username_for(BLACK))
+            if self._fairness_checkpoint is not None:
+                self._fairness_checkpoint.remove(game_id)
             del self._games[game_id]
             if game.room_id is not None:
                 self._rooms.close(game.room_id)
@@ -414,6 +462,8 @@ class GameLoop:
         if self._active_game_index is not None:
             self._active_game_index.remove(white_username)
             self._active_game_index.remove(black_username)
+        if self._fairness_checkpoint is not None:
+            self._fairness_checkpoint.remove(game_id)
         if game.room_id is not None:
             self._rooms.close(game.room_id)
 

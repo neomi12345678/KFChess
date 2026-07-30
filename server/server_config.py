@@ -48,3 +48,21 @@ PASSWORD_HASH_ITERATIONS = 200_000
 # server/session.py - how long a disconnected seat gets before it's ruled a
 # resignation (the Home-screen slide's own "auto-resign after 20 sec").
 DISCONNECT_GRACE_MS = 20_000
+
+# server/game_loop.py - how often GameLoop persists Server_Design.md §9's
+# own "lightweight fairness checkpoint" (score, elapsed time, remaining
+# pieces) to Redis per active game - not exact mid-flight animation state,
+# just enough for a fair void decision if the shard crashes before the game
+# ends normally. "Every few seconds" per the design doc, not a physical
+# unit - same flat-ms-constant convention as MATCHMAKING_STATUS_INTERVAL_MS
+# above.
+FAIRNESS_CHECKPOINT_INTERVAL_MS = 5_000
+
+# services/game_allocator/main.py - how often the recovery sweep checks
+# every room it's holding a shard assignment for (server/redis/room_shard_index.py's
+# RoomShardIndex) against server/redis/shard_registry.py's ShardRegistry
+# of currently-live shards, voiding any room whose shard has gone quiet.
+# Well under ShardRegistry's own default 10s TTL so a dead shard's rooms
+# get caught within one sweep of the lease actually expiring, without
+# polling Redis needlessly often.
+SHARD_RECOVERY_SWEEP_INTERVAL_MS = 5_000

@@ -125,6 +125,24 @@ def _build_remote_rooms():
     return RedisRoomRegistry(redis_url)
 
 
+# REDIS_URL unset (the default) keeps every game purely in-memory, same as
+# every other optional GameLoop dependency (GameLoop's own default of no
+# fairness checkpoint at all) - fine for a single process, since a crash
+# there takes the whole bare-metal process down anyway, nothing to hand a
+# recovery sweep. Set, this persists Server_Design.md §9's own lightweight
+# fairness checkpoint (see server/redis/fairness_checkpoint.py) so
+# services/game_allocator/main.py's own recovery sweep has something to log
+# if this shard dies mid-game.
+def _build_fairness_checkpoint():
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url is None:
+        return None
+
+    from server.redis.fairness_checkpoint import FairnessCheckpoint
+
+    return FairnessCheckpoint(redis_url)
+
+
 # NATS_URL unset (the default) keeps today's behavior exactly as before -
 # GameLoop treats no lifecycle_publisher as a pure no-op (see its own
 # docstring). Set (see docker-compose.yml) switches to
@@ -211,6 +229,7 @@ async def _main() -> None:
     busy_set = _build_busy_set()
     active_game_index = _build_active_game_index()
     remote_rooms = _build_remote_rooms()
+    fairness_checkpoint = _build_fairness_checkpoint()
     # Same env var _maybe_start_shard_heartbeat already reads below - handed
     # to GameServer/GameLoop too now, so every ActiveGameLocation this shard
     # writes carries its own real, reachable address (see
@@ -230,6 +249,7 @@ async def _main() -> None:
         active_game_index=active_game_index,
         shard_address=shard_address,
         remote_rooms=remote_rooms,
+        fairness_checkpoint=fairness_checkpoint,
     )
     await _build_matchmaking_relay(server)
     _maybe_start_shard_heartbeat()

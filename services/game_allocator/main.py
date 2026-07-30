@@ -50,6 +50,30 @@ services/api_gateway/main.py's handle_join_room and
 services/ws_gateway/main.py's _resolve_shard) learn which shard to relay
 to without ever needing its own allocation event - the room's game already
 exists by the time a spectator joins, so there is nothing to wait for.
+
+Also runs a periodic recovery sweep (_run_recovery_sweep) for Server_Design.md
+§9's own crash story: "the lease on any room it held (§4) expires on its own,
+so no Gateway routes a new joiner into a dead worker" - true for *new*
+joiners, but nothing else in this project noticed a dead shard's *existing*
+rooms on its own (this module's own _acquire_lease's TTL is a short,
+one-shot anti-double-allocation guard around the handoff itself, not a
+"this room is still live" fact - it has already expired long before a
+real game ends normally, let alone crashes). The sweep is this module's own
+choice, not something §9 spells out by name: every room RoomShardIndex still
+maps to a shard, checked against server/redis/shard_registry.py's own
+list_live_shards() - a room whose shard has gone quiet is "voided" (per §9's
+own "void the game, no rating penalty" outcome): RedisRoomRegistry.close()
+(already frees busy_set/deletes the room's own Redis keys - no new code for
+that), ActiveGameIndex entries for both seats, and the RoomShardIndex entry
+itself. Never touches Postgres/ratings here at all - nothing ever changed
+either player's rating in the first place, so "no penalty" holds trivially;
+this is deliberately not the same path as GameLoop._fail_game (a live
+shard's own in-process crash handler), which does publish game.finished,
+because there a live GameLoop/rating_store/lifecycle_publisher exist to do
+so - here, by definition, the shard that would have done that is dead.
+The Server_Design.md §9 fairness checkpoint itself (server/redis/fairness_checkpoint.py)
+is only ever logged here, not consulted for the void decision - see
+_sweep_for_dead_shards's own docstring for why.
 """
 
 import asyncio
@@ -62,8 +86,13 @@ from typing import Optional
 import nats
 import redis
 
+from server.redis.active_game_index import ActiveGameIndex
+from server.redis.busy_set import BusySet
+from server.redis.fairness_checkpoint import FairnessCheckpoint
 from server.redis.room_shard_index import RoomShardIndex
+from server.redis.rooms import RedisRoomRegistry
 from server.redis.shard_registry import ShardRegistry
+from server.server_config import SHARD_RECOVERY_SWEEP_INTERVAL_MS
 
 _logger = logging.getLogger(__name__)
 
@@ -166,6 +195,59 @@ async def _handle_room_opponent_joined(
     )
 
 
+# One pass: void every room whose RoomShardIndex entry names a shard that's
+# no longer in registry.list_live_shards(). The fairness checkpoint
+# (fairness_checkpoint) is read purely for this warning log's own benefit -
+# an audit trail of roughly how far the voided game had gotten - never to
+# pick between "void" and "re-queue" (this pass always voids; see this
+# module's own top-level docstring for why re-queueing isn't implemented).
+async def _sweep_for_dead_shards(
+    registry: ShardRegistry,
+    room_shard_index: RoomShardIndex,
+    rooms: RedisRoomRegistry,
+    active_game_index: ActiveGameIndex,
+    fairness_checkpoint: FairnessCheckpoint,
+) -> None:
+    live_shards = set(registry.list_live_shards())
+
+    for room_id in room_shard_index.all_room_ids():
+        shard_address = room_shard_index.get(room_id)
+        if shard_address is None or shard_address in live_shards:
+            continue
+
+        room = rooms.room_for_id(room_id)
+        if room is None:
+            # Already gone (e.g. the game finished normally between
+            # all_room_ids() listing it and this check) - nothing to void.
+            room_shard_index.remove(room_id)
+            continue
+
+        checkpoint = fairness_checkpoint.get(room_id)
+        _logger.warning(
+            "voiding room %s - its shard (%s) is no longer live (last checkpoint: %s)",
+            room_id, shard_address, checkpoint,
+        )
+
+        rooms.close(room_id)
+        active_game_index.remove(room.creator)
+        if room.opponent is not None:
+            active_game_index.remove(room.opponent)
+        room_shard_index.remove(room_id)
+
+
+async def _run_recovery_sweep(
+    registry: ShardRegistry,
+    room_shard_index: RoomShardIndex,
+    rooms: RedisRoomRegistry,
+    active_game_index: ActiveGameIndex,
+    fairness_checkpoint: FairnessCheckpoint,
+    interval_s: float,
+) -> None:
+    while True:
+        await asyncio.sleep(interval_s)
+        await _sweep_for_dead_shards(registry, room_shard_index, rooms, active_game_index, fairness_checkpoint)
+
+
 async def _main() -> None:
     redis_url = os.environ["REDIS_URL"]
     nats_url = os.environ["NATS_URL"]
@@ -173,6 +255,10 @@ async def _main() -> None:
     redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
     registry = ShardRegistry(redis_url)
     room_shard_index = RoomShardIndex(redis_url)
+    busy_set = BusySet(redis_url)
+    rooms = RedisRoomRegistry(redis_url, busy_set=busy_set)
+    active_game_index = ActiveGameIndex(redis_url)
+    fairness_checkpoint = FairnessCheckpoint(redis_url)
     nats_connection = await nats.connect(nats_url)
 
     async def _on_match_found(msg) -> None:
@@ -185,6 +271,17 @@ async def _main() -> None:
 
     await nats_connection.subscribe("match.found", cb=_on_match_found)
     await nats_connection.subscribe("room.opponent_joined", cb=_on_room_opponent_joined)
+
+    asyncio.create_task(
+        _run_recovery_sweep(
+            registry,
+            room_shard_index,
+            rooms,
+            active_game_index,
+            fairness_checkpoint,
+            interval_s=SHARD_RECOVERY_SWEEP_INTERVAL_MS / 1000,
+        )
+    )
 
     _logger.info("game-allocator running (redis=%s nats=%s)", redis_url, nats_url)
     await asyncio.Event().wait()  # driven entirely by the subscription callbacks above

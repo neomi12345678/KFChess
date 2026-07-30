@@ -22,7 +22,7 @@ from boardio.board_parser import parse
 from model.piece import BLACK, WHITE
 from server.connections import ConnectionRegistry
 from server.game_loop import ActiveGame, GameLoop
-from server.interfaces import ActiveGameLocation
+from server.interfaces import ActiveGameLocation, FairnessSnapshot
 from server.publisher import NetworkPublisher
 from server.rooms import RoomRegistry
 from server.session import GameSession
@@ -69,6 +69,24 @@ class _FakeLifecyclePublisher:
         self.finished.append((game_id, room_id, white_username, black_username, ratings))
 
 
+# A real, minimal in-memory fake standing in for
+# server/redis/fairness_checkpoint.py's FairnessCheckpoint - same "real
+# object, not a mock" approach as every other optional GameLoop dependency's
+# own fake in this file.
+class _FakeFairnessCheckpoint:
+    def __init__(self):
+        self._snapshots: Dict[str, FairnessSnapshot] = {}
+
+    def set(self, game_id: str, snapshot: FairnessSnapshot) -> None:
+        self._snapshots[game_id] = snapshot
+
+    def remove(self, game_id: str) -> None:
+        self._snapshots.pop(game_id, None)
+
+    def get(self, game_id: str) -> Optional[FairnessSnapshot]:
+        return self._snapshots.get(game_id)
+
+
 def _rating_store():
     database = open_accounts_database(":memory:")
     user_store = UserStore(database)
@@ -77,7 +95,14 @@ def _rating_store():
     return RatingStore(database)
 
 
-def _make_loop(rating_store, rooms=None, active_game_index=None, shard_address=None, lifecycle_publisher=None):
+def _make_loop(
+    rating_store,
+    rooms=None,
+    active_game_index=None,
+    shard_address=None,
+    lifecycle_publisher=None,
+    fairness_checkpoint=None,
+):
     return GameLoop(
         lambda: parse(STARTING_BOARD),
         rating_store,
@@ -89,6 +114,7 @@ def _make_loop(rating_store, rooms=None, active_game_index=None, shard_address=N
         active_game_index=active_game_index,
         shard_address=shard_address,
         lifecycle_publisher=lifecycle_publisher,
+        fairness_checkpoint=fairness_checkpoint,
     )
 
 
@@ -279,5 +305,99 @@ def test_a_crashing_games_lifecycle_publish_failure_does_not_prevent_cleanup():
 
         assert room.room_id not in loop._games
         assert rooms.room_for_username("carol") is None
+
+    asyncio.run(scenario())
+
+
+# ---- Server_Design.md §9's own lightweight fairness checkpoint ----
+
+
+# Forces the game-over branch on cue, the same "override one method" idea
+# as _CrashingGameSession above - not a real king-capture, since this is
+# about _advance_game's own cleanup wiring, not game-over detection itself.
+class _GameOverGameSession(GameSession):
+    def finalize_ratings_if_game_over(self):
+        return {WHITE: 1210, BLACK: 1190}
+
+
+def test_no_fairness_checkpoint_is_written_before_the_interval_elapses():
+    async def scenario():
+        rating_store = _rating_store()
+        fairness_checkpoint = _FakeFairnessCheckpoint()
+        loop = _make_loop(rating_store, fairness_checkpoint=fairness_checkpoint)
+
+        session = GameSession(parse(STARTING_BOARD), rating_store, "alice", "bob")
+        game = ActiveGame(session=session, publisher=NetworkPublisher(session.bus))
+        loop._games["play-1"] = game
+
+        await loop._advance_game("play-1", game, whole_ms=3000)  # under FAIRNESS_CHECKPOINT_INTERVAL_MS (5000)
+
+        assert fairness_checkpoint.get("play-1") is None
+
+    asyncio.run(scenario())
+
+
+def test_a_fairness_checkpoint_is_written_once_the_interval_elapses():
+    async def scenario():
+        rating_store = _rating_store()
+        fairness_checkpoint = _FakeFairnessCheckpoint()
+        loop = _make_loop(rating_store, fairness_checkpoint=fairness_checkpoint)
+
+        session = GameSession(parse(STARTING_BOARD), rating_store, "alice", "bob")
+        game = ActiveGame(session=session, publisher=NetworkPublisher(session.bus))
+        loop._games["play-1"] = game
+
+        await loop._advance_game("play-1", game, whole_ms=3000)
+        await loop._advance_game("play-1", game, whole_ms=3000)  # total 6000ms, crosses the 5000ms interval
+
+        snapshot = fairness_checkpoint.get("play-1")
+        assert snapshot is not None
+        assert snapshot.elapsed_ms == 6000
+        assert snapshot.white_score == 0
+        assert snapshot.black_score == 0
+        # STARTING_BOARD ("wR . .\n. . .\n. . .") has exactly one piece, a
+        # white rook - no black pieces at all.
+        assert snapshot.white_pieces_remaining == 1
+        assert snapshot.black_pieces_remaining == 0
+
+    asyncio.run(scenario())
+
+
+def test_a_fairness_checkpoint_is_removed_on_normal_game_over():
+    async def scenario():
+        rating_store = _rating_store()
+        fairness_checkpoint = _FakeFairnessCheckpoint()
+        fairness_checkpoint.set(
+            "play-1", FairnessSnapshot(white_score=0, black_score=0, elapsed_ms=1000, white_pieces_remaining=1, black_pieces_remaining=1)
+        )
+        loop = _make_loop(rating_store, fairness_checkpoint=fairness_checkpoint)
+
+        session = _GameOverGameSession(parse(STARTING_BOARD), rating_store, "alice", "bob")
+        game = ActiveGame(session=session, publisher=NetworkPublisher(session.bus))
+        loop._games["play-1"] = game
+
+        await loop._advance_game("play-1", game, whole_ms=100)
+
+        assert fairness_checkpoint.get("play-1") is None
+
+    asyncio.run(scenario())
+
+
+def test_a_fairness_checkpoint_is_removed_on_crash():
+    async def scenario():
+        rating_store = _rating_store()
+        fairness_checkpoint = _FakeFairnessCheckpoint()
+        fairness_checkpoint.set(
+            "play-1", FairnessSnapshot(white_score=0, black_score=0, elapsed_ms=1000, white_pieces_remaining=1, black_pieces_remaining=1)
+        )
+        loop = _make_loop(rating_store, fairness_checkpoint=fairness_checkpoint)
+
+        crashing_session = _CrashingGameSession(parse(STARTING_BOARD), rating_store, "alice", "bob")
+        game = ActiveGame(session=crashing_session, publisher=NetworkPublisher(crashing_session.bus))
+        loop._games["play-1"] = game
+
+        await loop._fail_game("play-1", game, RuntimeError("boom"))
+
+        assert fairness_checkpoint.get("play-1") is None
 
     asyncio.run(scenario())

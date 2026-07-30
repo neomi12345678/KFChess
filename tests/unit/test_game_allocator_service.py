@@ -206,3 +206,80 @@ def test_room_opponent_joined_with_no_live_shard_is_logged_and_not_allocated():
     received = asyncio.run(scenario())
 
     assert received == []
+
+
+# ---- recovery sweep (Server_Design.md §9's own crash story, this module's
+# own choice of "where" - see its own docstring) ----
+
+
+def _sweep_dependencies():
+    import redis as redis_lib
+
+    from server.redis.active_game_index import ActiveGameIndex
+    from server.redis.busy_set import BusySet
+    from server.redis.fairness_checkpoint import FairnessCheckpoint
+    from server.redis.room_shard_index import RoomShardIndex
+    from server.redis.rooms import RedisRoomRegistry
+    from server.redis.shard_registry import ShardRegistry
+
+    redis_client = redis_lib.Redis.from_url(REDIS_URL, decode_responses=True)
+    busy_set = BusySet(REDIS_URL)
+    return {
+        "redis_client": redis_client,
+        "registry": ShardRegistry(REDIS_URL),
+        "room_shard_index": RoomShardIndex(REDIS_URL),
+        "rooms": RedisRoomRegistry(REDIS_URL, busy_set=busy_set),
+        "active_game_index": ActiveGameIndex(REDIS_URL),
+        "fairness_checkpoint": FairnessCheckpoint(REDIS_URL),
+        "busy_set": busy_set,
+    }
+
+
+def test_recovery_sweep_voids_a_room_whose_shard_is_no_longer_live():
+    from model.piece import BLACK, WHITE
+    from server.interfaces import ActiveGameLocation
+    from services.game_allocator.main import _sweep_for_dead_shards
+
+    deps = _sweep_dependencies()
+    room = deps["rooms"].create("gwa_sweep_creator")
+    deps["rooms"].join(room.room_id, "gwa_sweep_opponent")
+    deps["room_shard_index"].set(room.room_id, "dead-shard")
+    deps["active_game_index"].set(
+        "gwa_sweep_creator", ActiveGameLocation(game_id=room.room_id, room_id=room.room_id, seat=WHITE, shard_address="dead-shard")
+    )
+    deps["active_game_index"].set(
+        "gwa_sweep_opponent", ActiveGameLocation(game_id=room.room_id, room_id=room.room_id, seat=BLACK, shard_address="dead-shard")
+    )
+    # No ShardRegistry.register("dead-shard") at all - it's simply not live.
+
+    asyncio.run(
+        _sweep_for_dead_shards(
+            deps["registry"], deps["room_shard_index"], deps["rooms"], deps["active_game_index"], deps["fairness_checkpoint"]
+        )
+    )
+
+    assert deps["rooms"].room_for_id(room.room_id) is None
+    assert deps["active_game_index"].get("gwa_sweep_creator") is None
+    assert deps["active_game_index"].get("gwa_sweep_opponent") is None
+    assert deps["room_shard_index"].get(room.room_id) is None
+    assert not deps["busy_set"].contains("gwa_sweep_creator")
+    assert not deps["busy_set"].contains("gwa_sweep_opponent")
+
+
+def test_recovery_sweep_leaves_a_room_whose_shard_is_still_live():
+    from services.game_allocator.main import _sweep_for_dead_shards
+
+    deps = _sweep_dependencies()
+    room = deps["rooms"].create("gwa_sweep_alive_creator")
+    deps["rooms"].join(room.room_id, "gwa_sweep_alive_opponent")
+    deps["room_shard_index"].set(room.room_id, "alive-shard")
+    deps["registry"].register("alive-shard")
+
+    asyncio.run(
+        _sweep_for_dead_shards(
+            deps["registry"], deps["room_shard_index"], deps["rooms"], deps["active_game_index"], deps["fairness_checkpoint"]
+        )
+    )
+
+    assert deps["rooms"].room_for_id(room.room_id) is not None
+    assert deps["room_shard_index"].get(room.room_id) == "alive-shard"
