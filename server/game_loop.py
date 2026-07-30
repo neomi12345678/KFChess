@@ -12,7 +12,6 @@ _advance_game's own self._rooms.close on game over).
 """
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional, Set
@@ -39,6 +38,7 @@ from server.interfaces import (
 )
 from server.logging_config import room_id_ctx
 from server.matchmaking import MatchmakingQueue
+from server.nats.events import GameAllocated, MatchmakingStatus, MatchmakingTimeout
 from server.publisher import NetworkPublisher
 from server.rooms import Room, RoomRegistry
 from server.server_config import (
@@ -299,17 +299,17 @@ class GameLoop:
         self._matchmaker_is_external = external
 
         async def _on_status(msg) -> None:
-            payload = json.loads(msg.data)
+            event = MatchmakingStatus.decode(msg.data)
             await self._connections.send_to_username(
-                payload["username"], MatchmakingStatusMessage(seconds_remaining=payload["seconds_remaining"])
+                event.username, MatchmakingStatusMessage(seconds_remaining=event.seconds_remaining)
             )
 
         async def _on_timeout(msg) -> None:
-            payload = json.loads(msg.data)
-            await self._connections.send_to_username(payload["username"], MatchmakingTimeoutMessage())
+            event = MatchmakingTimeout.decode(msg.data)
+            await self._connections.send_to_username(event.username, MatchmakingTimeoutMessage())
 
-        await nats_connection.subscribe("matchmaking.status", cb=_on_status)
-        await nats_connection.subscribe("matchmaking.timeout", cb=_on_timeout)
+        await nats_connection.subscribe(MatchmakingStatus.SUBJECT, cb=_on_status)
+        await nats_connection.subscribe(MatchmakingTimeout.SUBJECT, cb=_on_timeout)
 
     # Subscribes to the standalone Game Allocator service's game.allocated
     # event (see services/game_allocator/main.py) and starts the matched game
@@ -335,14 +335,14 @@ class GameLoop:
     # leaving the others silently ticking away for nothing.
     async def start_game_allocation_relay(self, nats_connection) -> None:
         async def _on_allocated(msg) -> None:
-            payload = json.loads(msg.data)
-            if self._shard_address is not None and payload["shard_address"] != self._shard_address:
+            event = GameAllocated.decode(msg.data)
+            if self._shard_address is not None and event.shard_address != self._shard_address:
                 return
             await self.start_matched_game(
-                payload["game_id"], payload["white_username"], payload["black_username"], room_id=payload.get("room_id")
+                event.game_id, event.white_username, event.black_username, room_id=event.room_id
             )
 
-        await nats_connection.subscribe("game.allocated", cb=_on_allocated)
+        await nats_connection.subscribe(GameAllocated.SUBJECT, cb=_on_allocated)
 
     # Public wrapper around _start_game for a match allocated by a
     # standalone Game Allocator - the exact same build-GameSession-and-

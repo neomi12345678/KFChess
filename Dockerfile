@@ -24,6 +24,11 @@ COPY protocol/ protocol/
 COPY server/ server/
 COPY logic_config.py .
 COPY frame_clock.py .
+# server/main.py's own get_server_ssl_context call (SSL_CERT_FILE/
+# SSL_KEY_FILE) - only imports the stdlib ssl module at this path, so no
+# requirements.txt change is needed alongside it (see tls_config.py's own
+# docstring on why cryptography stays out of every image's dependencies).
+COPY tls_config.py .
 
 EXPOSE 8765
 

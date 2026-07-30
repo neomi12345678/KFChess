@@ -49,6 +49,7 @@ connection is always detected well inside DISCONNECT_GRACE_MS, not after it.
 import asyncio
 import json
 import logging
+import ssl
 from typing import Callable, Optional
 
 import websockets
@@ -123,6 +124,11 @@ class GameServer:
         ping_interval_s: float = PING_INTERVAL_S,
         ping_timeout_s: float = PING_TIMEOUT_S,
         close_timeout_s: float = CLOSE_TIMEOUT_S,
+        # Overridable so server/main.py can hand in a real ssl.SSLContext
+        # (see tls_config.py's get_server_ssl_context) - passed straight
+        # through to websockets.serve below. None (the default, every
+        # existing caller/test) keeps today's plaintext ws:// behavior.
+        ssl_context: Optional[ssl.SSLContext] = None,
         room_store: Optional[RoomStoreProtocol] = None,
         # Overridable so server/main.py can hand in a Redis-backed queue
         # (see server/redis/matchmaking.py) - passed straight through to
@@ -195,6 +201,7 @@ class GameServer:
         self._ping_interval_s = ping_interval_s
         self._ping_timeout_s = ping_timeout_s
         self._close_timeout_s = close_timeout_s
+        self._ssl_context = ssl_context
         self._ws_server = None
         self._started = asyncio.Event()
 
@@ -227,6 +234,7 @@ class GameServer:
             ping_interval=self._ping_interval_s,
             ping_timeout=self._ping_timeout_s,
             close_timeout=self._close_timeout_s,
+            ssl=self._ssl_context,
         ) as ws_server:
             self._ws_server = ws_server
             self._started.set()

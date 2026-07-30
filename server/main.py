@@ -15,6 +15,7 @@ from server.sqlite.accounts_db import open_accounts_database
 from server.sqlite.rating_store import RatingStore
 from server.sqlite.rooms import RoomStore
 from server.ws_server import GameServer
+from tls_config import get_server_ssl_context
 
 # Alongside this file, not CWD-relative - a real, persistent file (unlike
 # tests, which each get their own ":memory:" accounts database/RoomStore -
@@ -35,6 +36,19 @@ PORT = int(os.environ.get("KFCHESS_PORT", DEFAULT_PORT))
 # other service's own (see docker-compose.yml), overridable the same way
 # every other port in this project already is.
 HEALTH_PORT = int(os.environ.get("HEALTH_PORT", 9105))
+
+# SSL_CERT_FILE/SSL_KEY_FILE both unset (the default) keeps today's
+# plaintext ws:// behavior - see tls_config.py's own docstring. Set (see
+# docker-compose.yml/k8s's own commented-out example), this shard speaks
+# wss:// to whatever connects to it directly instead - relevant for a
+# bare-metal/direct deployment with no WS Gateway in front of it at all
+# (see README's own `python -m server.main` + `python play_online.py`).
+# When a WS Gateway *is* in front of this shard, its own internal relay
+# hop stays plain ws:// regardless (see services/ws_gateway/main.py's own
+# _relay) - Server_Design.md §3's own "Game Server Shards carry no public
+# IP at all" already keeps that hop inside the compose/cluster network,
+# out of reach of anything this cert would protect against.
+SSL_CONTEXT = get_server_ssl_context(os.environ.get("SSL_CERT_FILE"), os.environ.get("SSL_KEY_FILE"))
 
 _logger = logging.getLogger(__name__)
 
@@ -341,6 +355,7 @@ async def _main() -> None:
         rating_store,
         host=HOST,
         port=PORT,
+        ssl_context=SSL_CONTEXT,
         room_store=room_store,
         matchmaking=matchmaking,
         lifecycle_publisher=lifecycle_publisher,
@@ -358,7 +373,8 @@ async def _main() -> None:
         os.environ.get("REDIS_URL"), os.environ.get("DATABASE_URL"), lifecycle_publisher
     )
     start_observability_server(HEALTH_PORT, readiness_checks)
-    _logger.info("KFChess server listening on ws://%s:%s", HOST, PORT)
+    scheme = "wss" if SSL_CONTEXT is not None else "ws"
+    _logger.info("KFChess server listening on %s://%s:%s", scheme, HOST, PORT)
     await server.run_forever()
 
 

@@ -16,6 +16,11 @@ COPY server/server_config.py server/server_config.py
 COPY server/logging_config.py server/logging_config.py
 COPY server/observability_server.py server/observability_server.py
 COPY server/redis/ server/redis/
+# server/nats/events.py's typed MatchmakingRequested/MatchmakingStatus/
+# MatchmakingTimeout/MatchFound - this service's own main.py builds/decodes
+# NATS payloads through these instead of a raw dict now (see that module's
+# own docstring).
+COPY server/nats/ server/nats/
 COPY services/matchmaker/ services/matchmaker/
 
 CMD ["python", "-m", "services.matchmaker.main"]

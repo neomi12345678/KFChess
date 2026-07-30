@@ -73,6 +73,14 @@ move, `jump e4` to jump - see `client/client_cli.py`'s `build_command`). No
 `view/`/`input/` dependency at all, useful for scripting or a headless
 second player.
 
+Every server/service above speaks plaintext `ws://`/`http://` by default;
+`SSL_CERT_FILE`/`SSL_KEY_FILE` (see `tls_config.py`) switch a given
+process to `wss://`/`https://`, and either client's own `--tls`/
+`--insecure-tls` flag opts into speaking it back (`--insecure-tls` for a
+local self-signed dev cert, generated once via
+`python -m tls_config <cert> <key>`) - see `.env.example`'s own worked
+example.
+
 ## Architecture
 
 The codebase is organized so each layer only knows about the layer below it

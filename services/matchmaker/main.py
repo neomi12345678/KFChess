@@ -40,7 +40,6 @@ specifically, not that fallback.
 """
 
 import asyncio
-import json
 import logging
 import os
 
@@ -48,6 +47,7 @@ import nats
 from prometheus_client import Gauge
 
 from server.logging_config import configure_logging, username_ctx
+from server.nats.events import MatchFound, MatchmakingRequested, MatchmakingStatus, MatchmakingTimeout
 from server.observability_server import start_observability_server
 from server.redis.matchmaking import RedisMatchmakingQueue
 from server.server_config import DEFAULT_TICK_INTERVAL_S
@@ -59,9 +59,9 @@ _QUEUE_DEPTH_GAUGE = Gauge("kfchess_matchmaker_queue_depth", "Usernames currentl
 
 
 async def _on_matchmaking_requested(queue: RedisMatchmakingQueue, msg) -> None:
-    payload = json.loads(msg.data)
-    username_ctx.set(payload["username"])
-    queue.enqueue(payload["username"], payload["rating"])
+    event = MatchmakingRequested.decode(msg.data)
+    username_ctx.set(event.username)
+    queue.enqueue(event.username, event.rating)
 
 
 async def _run_forever(queue: RedisMatchmakingQueue, nats_connection, tick_interval_s: float) -> None:
@@ -92,13 +92,11 @@ async def _run_one_tick(queue: RedisMatchmakingQueue, nats_connection, elapsed_m
     _QUEUE_DEPTH_GAUGE.set(queue.queue_depth())
     for username in tick.timed_out:
         username_ctx.set(username)
-        await nats_connection.publish(
-            "matchmaking.timeout", json.dumps({"username": username}).encode("utf-8")
-        )
+        await nats_connection.publish(MatchmakingTimeout.SUBJECT, MatchmakingTimeout(username=username).encode())
     for username, seconds_remaining in tick.due_for_status:
         username_ctx.set(username)
-        payload = {"username": username, "seconds_remaining": seconds_remaining}
-        await nats_connection.publish("matchmaking.status", json.dumps(payload).encode("utf-8"))
+        event = MatchmakingStatus(username=username, seconds_remaining=seconds_remaining)
+        await nats_connection.publish(MatchmakingStatus.SUBJECT, event.encode())
 
     match = queue.find_match()
     if match is not None:
@@ -106,8 +104,8 @@ async def _run_one_tick(queue: RedisMatchmakingQueue, nats_connection, elapsed_m
         username_ctx.set(white_username)
         queue.remove(white_username)
         queue.remove(black_username)
-        payload = {"white_username": white_username, "black_username": black_username}
-        await nats_connection.publish("match.found", json.dumps(payload).encode("utf-8"))
+        event = MatchFound(white_username=white_username, black_username=black_username)
+        await nats_connection.publish(MatchFound.SUBJECT, event.encode())
         _logger.info("matched '%s' vs '%s'", white_username, black_username)
 
 
@@ -122,7 +120,7 @@ async def _main() -> None:
     async def _on_message(msg) -> None:
         await _on_matchmaking_requested(queue, msg)
 
-    await nats_connection.subscribe("matchmaking.requested", cb=_on_message)
+    await nats_connection.subscribe(MatchmakingRequested.SUBJECT, cb=_on_message)
 
     import redis as redis_lib
 

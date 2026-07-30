@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import getpass
 import json
+import ssl
 import urllib.error
 import urllib.request
 from typing import Optional, Type, Union
@@ -43,6 +44,7 @@ from protocol.lobby_messages import (
 )
 from protocol.registry import encode_json_message
 from protocol.types import API_GATEWAY_PORT, HOST, PORT
+from tls_config import get_client_ssl_context
 
 
 class InputError(Exception):
@@ -150,35 +152,44 @@ async def _print_incoming(websocket, state: _ClientState) -> None:
 # services/api_gateway/main.py) - a plain blocking call, same as this module's own
 # build_command/input() calls, run via run_in_executor so it doesn't block
 # this coroutine's event loop.
-def _post_play(username: str, api_gateway_host: str, api_gateway_port: int) -> dict:
-    url = f"http://{api_gateway_host}:{api_gateway_port}/play"
+def _post_play(username: str, api_gateway_host: str, api_gateway_port: int, ssl_context: Optional[ssl.SSLContext]) -> dict:
+    scheme = "https" if ssl_context is not None else "http"
+    url = f"{scheme}://{api_gateway_host}:{api_gateway_port}/play"
     request = urllib.request.Request(
         url,
         data=json.dumps({"username": username}).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=10.0) as response:
+    with urllib.request.urlopen(request, timeout=10.0, context=ssl_context) as response:
         return json.loads(response.read())
 
 
 # Same pattern as _post_play above, for services/api_gateway/main.py's own
 # POST /login (see that module's docstring for the one branch of
 # LoginMessage's decide_login this narrower endpoint doesn't replicate).
-def _post_login(username: str, password: str, api_gateway_host: str, api_gateway_port: int) -> dict:
-    url = f"http://{api_gateway_host}:{api_gateway_port}/login"
+def _post_login(
+    username: str, password: str, api_gateway_host: str, api_gateway_port: int, ssl_context: Optional[ssl.SSLContext]
+) -> dict:
+    scheme = "https" if ssl_context is not None else "http"
+    url = f"{scheme}://{api_gateway_host}:{api_gateway_port}/login"
     request = urllib.request.Request(
         url,
         data=json.dumps({"username": username, "password": password}).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=10.0) as response:
+    with urllib.request.urlopen(request, timeout=10.0, context=ssl_context) as response:
         return json.loads(response.read())
 
 
 async def _read_commands(
-    websocket, state: _ClientState, username: str, api_gateway_host: str, api_gateway_port: Optional[int]
+    websocket,
+    state: _ClientState,
+    username: str,
+    api_gateway_host: str,
+    api_gateway_port: Optional[int],
+    ssl_context: Optional[ssl.SSLContext],
 ) -> None:
     loop = asyncio.get_event_loop()
     while True:
@@ -191,7 +202,9 @@ async def _read_commands(
                 await websocket.send(encode_json_message(PlayMessage()))
                 continue
             try:
-                body = await loop.run_in_executor(None, _post_play, username, api_gateway_host, api_gateway_port)
+                body = await loop.run_in_executor(
+                    None, _post_play, username, api_gateway_host, api_gateway_port, ssl_context
+                )
             except urllib.error.URLError as error:
                 print(f"(could not reach the API Gateway: {error})")
                 continue
@@ -243,15 +256,30 @@ def _parse_args() -> argparse.Namespace:  # pragma: no cover
         default=None,
         help=f"API Gateway port (unset: PLAY over the websocket; typically {API_GATEWAY_PORT})",
     )
+    # Both unset by default (the same "opt-in, plaintext unless asked"
+    # convention as every other feature here - see tls_config.py's own
+    # docstring): wss/https, same as --tls, but without verifying the
+    # server's certificate - for a local self-signed dev cert
+    # (tls_config.py's own generate_self_signed_cert), where there's no CA
+    # to trust in the first place.
+    parser.add_argument("--tls", action="store_true", help="connect over wss/https instead of ws/http")
+    parser.add_argument(
+        "--insecure-tls",
+        action="store_true",
+        help="like --tls, but skip certificate verification (for a local self-signed dev cert)",
+    )
     return parser.parse_args()
 
 
-async def _main(host: str, port: int, api_gateway_host: str, api_gateway_port: Optional[int]) -> None:  # pragma: no cover
+async def _main(
+    host: str, port: int, api_gateway_host: str, api_gateway_port: Optional[int], ssl_context: Optional[ssl.SSLContext]
+) -> None:  # pragma: no cover
     username = input("Username: ").strip()
     password = getpass.getpass("Password: ")
 
-    uri = f"ws://{host}:{port}"
-    async with websockets.connect(uri) as websocket:
+    ws_scheme = "wss" if ssl_context is not None else "ws"
+    uri = f"{ws_scheme}://{host}:{port}"
+    async with websockets.connect(uri, ssl=ssl_context) as websocket:
         # api_gateway_port unset (the default): LoginMessage over the
         # websocket, exactly as before. Set: an HTTP POST to the standalone
         # API Gateway instead (see _post_login above) - authentication only,
@@ -266,7 +294,7 @@ async def _main(host: str, port: int, api_gateway_host: str, api_gateway_port: O
             loop = asyncio.get_event_loop()
             try:
                 body = await loop.run_in_executor(
-                    None, _post_login, username, password, api_gateway_host, api_gateway_port
+                    None, _post_login, username, password, api_gateway_host, api_gateway_port, ssl_context
                 )
             except urllib.error.URLError as error:
                 print(f"(could not reach the API Gateway: {error})")
@@ -297,14 +325,17 @@ async def _main(host: str, port: int, api_gateway_host: str, api_gateway_port: O
 
         await asyncio.gather(
             _print_incoming(websocket, state),
-            _read_commands(websocket, state, username, api_gateway_host, api_gateway_port),
+            _read_commands(websocket, state, username, api_gateway_host, api_gateway_port, ssl_context),
         )
 
 
 def main() -> None:  # pragma: no cover
     args = _parse_args()
     api_gateway_host = args.api_gateway_host if args.api_gateway_host is not None else args.host
-    asyncio.run(_main(args.host, args.port, api_gateway_host, args.api_gateway_port))
+    ssl_context = None
+    if args.tls or args.insecure_tls:
+        ssl_context = get_client_ssl_context(verify=not args.insecure_tls)
+    asyncio.run(_main(args.host, args.port, api_gateway_host, args.api_gateway_port, ssl_context))
 
 
 if __name__ == "__main__":  # pragma: no cover

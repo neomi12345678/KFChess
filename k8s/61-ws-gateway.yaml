@@ -5,7 +5,11 @@
 # kfchess_ws_gateway_connections (services/ws_gateway/main.py's own Gauge)
 # would drive a real HPA on once a Prometheus Adapter is in place (see
 # 00-namespace-and-config.yaml's own top comment) - CPU below is a
-# placeholder for that.
+# placeholder for that. Same TLS-termination note as
+# 60-api-gateway.yaml's own top comment: an Ingress/L4 LoadBalancer
+# terminating TLS itself needs no change here; otherwise
+# services/ws_gateway/main.py speaks wss:// directly given
+# SSL_CERT_FILE/SSL_KEY_FILE (see tls_config.py).
 
 apiVersion: v1
 kind: Service

@@ -41,6 +41,7 @@ from model.piece import BLACK, WHITE
 from protocol.game_messages import build_jump, build_move
 from protocol.registry import encode_json_message
 from protocol.types import HOST, PORT
+from tls_config import get_client_ssl_context
 from view.canvas.img_canvas import ImgCanvas
 from view.canvas.window import GameWindow
 from view.renderer import Renderer
@@ -74,12 +75,26 @@ def _parse_args() -> argparse.Namespace:  # pragma: no cover
     parser.add_argument(
         "--api-gateway-port", type=int, default=None, help="API Gateway port (unset: PLAY over the websocket)"
     )
+    # Both unset by default (plaintext ws/http, same as always - see
+    # tls_config.py's own docstring). --insecure-tls is wss/https without
+    # verifying the server's certificate, for a local self-signed dev cert
+    # (tls_config.py's own generate_self_signed_cert) - there's no CA to
+    # trust in that case, same as client/client_cli.py's own pair of flags.
+    parser.add_argument("--tls", action="store_true", help="connect over wss/https instead of ws/http")
+    parser.add_argument(
+        "--insecure-tls",
+        action="store_true",
+        help="like --tls, but skip certificate verification (for a local self-signed dev cert)",
+    )
     return parser.parse_args()
 
 
 def main() -> None:  # pragma: no cover
     args = _parse_args()
-    client = NetworkGameClient(args.host, args.port, api_gateway_port=args.api_gateway_port)
+    ssl_context = None
+    if args.tls or args.insecure_tls:
+        ssl_context = get_client_ssl_context(verify=not args.insecure_tls)
+    client = NetworkGameClient(args.host, args.port, api_gateway_port=args.api_gateway_port, ssl_context=ssl_context)
 
     try:
         # run_login only ever returns once the server has accepted the

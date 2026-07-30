@@ -20,6 +20,8 @@ import os
 
 import pytest
 
+from server.nats.events import GameFinished
+
 DSN = os.environ.get("KFCHESS_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(DSN is None, reason="set KFCHESS_TEST_DATABASE_URL to run these")
 
@@ -40,17 +42,15 @@ def store():
 
 def _fake_game_finished_payload(
     game_id="play-a1b2c3d4", room_id=None, white="alice", black="bob", ratings=None, published_at=None
-):
-    payload = {
-        "game_id": game_id,
-        "room_id": room_id,
-        "white_username": white,
-        "black_username": black,
-        "ratings": ratings or {"white": 1214, "black": 1186},
-    }
-    if published_at is not None:
-        payload["published_at"] = published_at
-    return payload
+) -> GameFinished:
+    return GameFinished(
+        game_id=game_id,
+        room_id=room_id,
+        white_username=white,
+        black_username=black,
+        ratings=ratings or {"white": 1214, "black": 1186},
+        published_at=published_at,
+    )
 
 
 def test_flush_batch_records_a_real_row(store):
@@ -161,4 +161,4 @@ def test_batch_flusher_flushes_a_partial_batch_after_the_interval(store):
 
     batch = asyncio.run(scenario())
     assert len(batch) == 1
-    assert batch[0]["game_id"] == "lone-game"
+    assert batch[0].game_id == "lone-game"

@@ -19,6 +19,10 @@ COPY server/server_config.py server/server_config.py
 # server/redis/ copy - this service only imports game_history.py from it,
 # but nothing else in server/postgres/ depends on anything outside it.
 COPY server/postgres/ server/postgres/
+# server/nats/events.py's typed GameFinished - this service's own main.py
+# builds/decodes the game.finished NATS payload through it instead of a raw
+# dict now (see that module's own docstring).
+COPY server/nats/ server/nats/
 COPY services/persistence_worker/ services/persistence_worker/
 
 CMD ["python", "-m", "services.persistence_worker.main"]

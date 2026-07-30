@@ -27,6 +27,7 @@ import asyncio
 import concurrent.futures
 import json
 import queue
+import ssl
 import threading
 import time
 import urllib.error
@@ -124,6 +125,14 @@ class NetworkGameClient:
         connect_timeout: float = CONNECT_TIMEOUT_S,
         api_gateway_host: Optional[str] = None,
         api_gateway_port: Optional[int] = None,
+        # None (the default) keeps today's plaintext ws://, http:// behavior
+        # unchanged - see tls_config.py's own docstring. A real ssl.SSLContext
+        # (tls_config.get_client_ssl_context) switches both the websocket
+        # connection below and every api_gateway_port REST call in login()/
+        # play() to wss://, https:// together - one flag for both, since a
+        # real deployment always terminates TLS the same way on every public
+        # listener a client talks to (see Server_Design.md §3's edge tier).
+        ssl_context: Optional[ssl.SSLContext] = None,
     ):
         self._incoming: "queue.Queue[object]" = queue.Queue()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -133,14 +142,17 @@ class NetworkGameClient:
         self._username: Optional[str] = None
         self._api_gateway_host = api_gateway_host if api_gateway_host is not None else host
         self._api_gateway_port = api_gateway_port
+        self._ssl_context = ssl_context
+        self._ws_scheme = "wss" if ssl_context is not None else "ws"
+        self._http_scheme = "https" if ssl_context is not None else "http"
 
         self._thread = threading.Thread(target=self._run, args=(host, port), daemon=True)
         self._thread.start()
 
         if not self._connected.wait(timeout=connect_timeout):
-            raise NetworkClientError(f"timed out connecting to ws://{host}:{port}")
+            raise NetworkClientError(f"timed out connecting to {self._ws_scheme}://{host}:{port}")
         if self._connect_error is not None:
-            raise NetworkClientError(f"could not connect to ws://{host}:{port}") from self._connect_error
+            raise NetworkClientError(f"could not connect to {self._ws_scheme}://{host}:{port}") from self._connect_error
 
     # Runs entirely on the background thread - owns the event loop and the
     # real websocket connection for this client's whole lifetime.
@@ -154,7 +166,7 @@ class NetworkGameClient:
 
     async def _connect_and_receive(self, host: str, port: int) -> None:
         try:
-            self._websocket = await websockets.connect(f"ws://{host}:{port}")
+            self._websocket = await websockets.connect(f"{self._ws_scheme}://{host}:{port}", ssl=self._ssl_context)
         except Exception as error:  # reported back to the constructor, never swallowed
             self._connect_error = error
             self._connected.set()
@@ -224,7 +236,7 @@ class NetworkGameClient:
                 self._username = ack.username
             return ack
 
-        url = f"http://{self._api_gateway_host}:{self._api_gateway_port}/login"
+        url = f"{self._http_scheme}://{self._api_gateway_host}:{self._api_gateway_port}/login"
         request = urllib.request.Request(
             url,
             data=json.dumps({"username": username, "password": password}).encode("utf-8"),
@@ -232,7 +244,7 @@ class NetworkGameClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urllib.request.urlopen(request, timeout=timeout, context=self._ssl_context) as response:
                 body = json.loads(response.read())
         except (urllib.error.URLError, TimeoutError) as error:
             raise NetworkClientError(f"could not reach the API Gateway for /login: {error}") from error
@@ -267,7 +279,7 @@ class NetworkGameClient:
             self.send_command(encode_json_message(PlayMessage()))
             return self._wait_for_type(PlayAckMessage, timeout)
 
-        url = f"http://{self._api_gateway_host}:{self._api_gateway_port}/play"
+        url = f"{self._http_scheme}://{self._api_gateway_host}:{self._api_gateway_port}/play"
         request = urllib.request.Request(
             url,
             data=json.dumps({"username": self._username}).encode("utf-8"),
@@ -275,7 +287,7 @@ class NetworkGameClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urllib.request.urlopen(request, timeout=timeout, context=self._ssl_context) as response:
                 body = json.loads(response.read())
         except (urllib.error.URLError, TimeoutError) as error:
             raise NetworkClientError(f"could not reach the API Gateway for /play: {error}") from error

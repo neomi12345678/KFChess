@@ -165,6 +165,16 @@ services:
       DATABASE_URL_REPLICA: "postgresql://kfchess:kfchess@postgres-replica:5432/kfchess"
       REDIS_URL: "redis://redis:6379/0"
       NATS_URL: "nats://nats:4222"
+      # Both unset (the default) keeps this listening on plain http:// -
+      # see tls_config.py's own docstring. To try TLS locally: generate a
+      # throwaway dev cert once (from the host, into a directory mounted
+      # below) -
+      #   python -m tls_config ./docker/certs/cert.pem ./docker/certs/key.pem
+      # - then uncomment these two plus the "volumes:" block underneath.
+      # SSL_CERT_FILE: "/certs/cert.pem"
+      # SSL_KEY_FILE: "/certs/key.pem"
+    # volumes:
+    #   - ./docker/certs:/certs:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -198,6 +208,13 @@ services:
     environment:
       REDIS_URL: "redis://redis:6379/0"
       NATS_URL: "nats://nats:4222"
+      # See api-gateway's own comment above on both of these, and the
+      # "volumes:" line underneath - same opt-in TLS, this being the other
+      # public-facing listener (Server_Design.md §3's edge tier).
+      # SSL_CERT_FILE: "/certs/cert.pem"
+      # SSL_KEY_FILE: "/certs/key.pem"
+    # volumes:
+    #   - ./docker/certs:/certs:ro
     depends_on:
       redis:
         condition: service_healthy

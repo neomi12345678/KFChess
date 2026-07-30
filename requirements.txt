@@ -1,2 +1,6 @@
 opencv-python
 websockets
+# Only tls_config.py's generate_self_signed_cert (dev-only local cert
+# generation, see that module's own docstring) imports this - not needed to
+# run with TLS off, or to run against a real, already-issued certificate.
+cryptography
