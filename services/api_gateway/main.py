@@ -71,6 +71,7 @@ from aiohttp import web
 
 from protocol.types import Reason, Role
 from server.accounts import InvalidCredentialsError
+from server.logging_config import configure_logging, room_id_ctx, username_ctx
 from server.postgres.accounts import (
     PostgresRatingStore,
     PostgresUserStore,
@@ -107,6 +108,7 @@ routes = web.RouteTableDef()
 async def handle_login(request: web.Request) -> web.Response:
     body = await request.json()
     username = body["username"]
+    username_ctx.set(username)
     password = body["password"]
 
     user_store: PostgresUserStore = request.app["user_store"]
@@ -154,6 +156,7 @@ def _busy_reason(username: str, busy_set: BusySet, matchmaking: RedisMatchmaking
 async def handle_play(request: web.Request) -> web.Response:
     body = await request.json()
     username = body["username"]
+    username_ctx.set(username)
 
     busy_set: BusySet = request.app["busy_set"]
     matchmaking: RedisMatchmakingQueue = request.app["matchmaking"]
@@ -175,6 +178,7 @@ async def handle_play(request: web.Request) -> web.Response:
 async def handle_create_room(request: web.Request) -> web.Response:
     body = await request.json()
     username = body["username"]
+    username_ctx.set(username)
 
     busy_set: BusySet = request.app["busy_set"]
     matchmaking: RedisMatchmakingQueue = request.app["matchmaking"]
@@ -207,8 +211,10 @@ async def handle_create_room(request: web.Request) -> web.Response:
 @routes.post("/rooms/{room_id}/join")
 async def handle_join_room(request: web.Request) -> web.Response:
     room_id = request.match_info["room_id"]
+    room_id_ctx.set(room_id)
     body = await request.json()
     username = body["username"]
+    username_ctx.set(username)
 
     busy_set: BusySet = request.app["busy_set"]
     matchmaking: RedisMatchmakingQueue = request.app["matchmaking"]
@@ -242,6 +248,7 @@ async def handle_join_room(request: web.Request) -> web.Response:
 async def handle_cancel_room(request: web.Request) -> web.Response:
     body = await request.json()
     username = body["username"]
+    username_ctx.set(username)
 
     rooms: RedisRoomRegistry = request.app["rooms"]
     try:
@@ -265,6 +272,7 @@ async def _on_game_finished(rooms: RedisRoomRegistry, room_shard_index: RoomShar
     payload = json.loads(msg.data)
     room_id = payload.get("room_id")
     if room_id is not None:
+        room_id_ctx.set(room_id)
         rooms.close(room_id)
         room_shard_index.remove(room_id)
 
@@ -312,7 +320,7 @@ def build_app() -> web.Application:
 
 
 def main() -> None:  # pragma: no cover
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    configure_logging()
     port = int(os.environ.get("API_GATEWAY_PORT", 8080))
     web.run_app(build_app(), host="0.0.0.0", port=port)
 

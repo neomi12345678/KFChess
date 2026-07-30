@@ -18,6 +18,7 @@ COPY services/__init__.py services/__init__.py
 COPY protocol/ protocol/
 COPY server/interfaces.py server/interfaces.py
 COPY server/server_config.py server/server_config.py
+COPY server/logging_config.py server/logging_config.py
 COPY server/rooms.py server/rooms.py
 # Whole directory, same as services/matchmaker/Dockerfile's own server/redis/
 # copy.

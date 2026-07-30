@@ -86,6 +86,7 @@ from typing import Optional
 import nats
 import redis
 
+from server.logging_config import configure_logging, room_id_ctx
 from server.redis.active_game_index import ActiveGameIndex
 from server.redis.busy_set import BusySet
 from server.redis.fairness_checkpoint import FairnessCheckpoint
@@ -118,6 +119,11 @@ async def _allocate(
     white_username: str,
     black_username: str,
 ) -> None:
+    # game_id doubles as the correlation id for a PLAY match (no real
+    # room_id exists) - see server/logging_config.py's own docstring on why
+    # one contextvar serves both.
+    room_id_ctx.set(room_id if room_id is not None else game_id)
+
     if not _acquire_lease(redis_client, game_id, shard_address):
         _logger.error("failed to acquire lease for game_id %s - not allocating", game_id)
         return
@@ -211,6 +217,7 @@ async def _sweep_for_dead_shards(
     live_shards = set(registry.list_live_shards())
 
     for room_id in room_shard_index.all_room_ids():
+        room_id_ctx.set(room_id)
         shard_address = room_shard_index.get(room_id)
         if shard_address is None or shard_address in live_shards:
             continue
@@ -288,7 +295,7 @@ async def _main() -> None:
 
 
 def main() -> None:  # pragma: no cover
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    configure_logging()
     asyncio.run(_main())
 
 

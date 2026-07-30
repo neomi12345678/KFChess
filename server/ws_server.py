@@ -80,6 +80,7 @@ from server.interfaces import (
     RatingRepository,
     UserRepository,
 )
+from server.logging_config import username_ctx
 from server.router import CommandRouter
 from server.rooms import RoomLookupProtocol, RoomRegistry, RoomStoreProtocol
 from server.server_config import (
@@ -293,6 +294,7 @@ class GameServer:
         return username
 
     async def _handle_login(self, websocket, login_message: LoginMessage) -> Optional[str]:
+        username_ctx.set(login_message.username)
         # Off the event loop entirely, via the default thread-pool executor
         # - UserStore.login's PBKDF2 hash is real, non-trivial CPU work
         # (see server/accounts.py), and calling it directly here would
@@ -357,6 +359,7 @@ class GameServer:
     # (see server/accounts.py's own docstring) - not a new relaxation.
     async def _handle_identify(self, websocket, identify_message: IdentifyMessage) -> Optional[str]:
         username = identify_message.username
+        username_ctx.set(username)
 
         stale_websocket = self._connections.get(username)
         if stale_websocket is not None and stale_websocket is not websocket:

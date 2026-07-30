@@ -35,6 +35,7 @@ from server.interfaces import (
     MessageSender,
     RatingRepository,
 )
+from server.logging_config import room_id_ctx
 from server.matchmaking import MatchmakingQueue
 from server.publisher import NetworkPublisher
 from server.rooms import Room, RoomRegistry
@@ -341,6 +342,7 @@ class GameLoop:
     async def _start_game(
         self, game_id: str, white_username: str, black_username: str, room_id: Optional[str] = None
     ) -> ActiveGame:
+        room_id_ctx.set(game_id)
         session = GameSession(
             self._board_factory(),
             self._rating_store,
@@ -368,6 +370,7 @@ class GameLoop:
         return game
 
     async def _advance_game(self, game_id: str, game: ActiveGame, whole_ms: int) -> None:
+        room_id_ctx.set(game_id)
         session = game.session
 
         expired_seat = session.advance_disconnect_grace(whole_ms)
@@ -450,6 +453,7 @@ class GameLoop:
     # still be torn down cleanly instead of re-raising out of here and
     # taking the whole tick loop down anyway.
     async def _fail_game(self, game_id: str, game: ActiveGame, error: BaseException) -> None:
+        room_id_ctx.set(game_id)
         _logger.error("game %s crashed during its tick - ending it", game_id, exc_info=error)
 
         white_username = game.session.username_for(WHITE)

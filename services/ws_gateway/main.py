@@ -74,6 +74,7 @@ from protocol.lobby_messages import (
 from protocol.registry import decode_json_message, encode_json_message
 from protocol.types import PORT as SHARD_PORT
 from protocol.types import WS_GATEWAY_PORT
+from server.logging_config import configure_logging, username_ctx
 from server.redis.active_game_index import ActiveGameIndex
 from server.redis.room_shard_index import RoomShardIndex
 from server.redis.rooms import RedisRoomRegistry
@@ -236,6 +237,7 @@ async def _handle_client(
         return
 
     username = decoded.username
+    username_ctx.set(username)
     # Registered for the duration of the wait only - once _resolve_shard
     # returns (either a real shard or a give-up), status_relay has nothing
     # left to push to for this username: a relay has started (or the
@@ -289,7 +291,7 @@ async def _main() -> None:
 
 
 def main() -> None:  # pragma: no cover
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    configure_logging()
     asyncio.run(_main())
 
 

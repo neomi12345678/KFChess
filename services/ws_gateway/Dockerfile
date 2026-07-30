@@ -34,6 +34,7 @@ COPY events/ events/
 COPY boardio/ boardio/
 COPY server/interfaces.py server/interfaces.py
 COPY server/server_config.py server/server_config.py
+COPY server/logging_config.py server/logging_config.py
 COPY server/rooms.py server/rooms.py
 COPY server/redis/ server/redis/
 COPY services/ws_gateway/ services/ws_gateway/
