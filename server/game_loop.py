@@ -248,9 +248,21 @@ class GameLoop:
     # otherwise this GameLoop is still finding and starting its own matches
     # locally, and nothing ever publishes match.found/room.opponent_joined/
     # game.allocated for this to react to in the first place.
+    #
+    # game.allocated is a single global NATS subject every shard subscribes
+    # to - the payload's own shard_address (already there for
+    # services/ws_gateway/main.py's own resolution) is what tells *this*
+    # shard whether the event is actually meant for it. Without this guard,
+    # every shard in a multi-shard deployment (docker-compose.yml's
+    # game-server/game-server-2) would start its own redundant copy of
+    # every allocated game - previously-undiscovered, since ActiveGameIndex's
+    # last-write-wins always routed clients to exactly one of the copies,
+    # leaving the others silently ticking away for nothing.
     async def start_game_allocation_relay(self, nats_connection) -> None:
         async def _on_allocated(msg) -> None:
             payload = json.loads(msg.data)
+            if self._shard_address is not None and payload["shard_address"] != self._shard_address:
+                return
             await self.start_matched_game(
                 payload["game_id"], payload["white_username"], payload["black_username"], room_id=payload.get("room_id")
             )

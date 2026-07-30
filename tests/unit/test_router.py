@@ -17,7 +17,7 @@ from protocol.game_messages import build_jump, build_move
 from server.connections import ConnectionRegistry
 from server.game_loop import ActiveGame, GameLoop
 from server.publisher import NetworkPublisher
-from server.rooms import RoomRegistry
+from server.rooms import Room, RoomRegistry
 from server.router import CommandRouter
 from server.session import GameSession
 from server.sqlite.accounts import UserStore
@@ -35,7 +35,7 @@ def _rating_store(*usernames):
     return RatingStore(database)
 
 
-def _router(rating_store=None, rooms=None, connections=None):
+def _router(rating_store=None, rooms=None, connections=None, remote_rooms=None):
     rating_store = rating_store if rating_store is not None else _rating_store()
     rooms = rooms if rooms is not None else RoomRegistry()
     connections = connections if connections is not None else ConnectionRegistry()
@@ -47,7 +47,21 @@ def _router(rating_store=None, rooms=None, connections=None):
         matchmaking_timeout_ms=60_000,
         disconnect_grace_ms=20_000,
     )
-    return CommandRouter(rooms, loop, rating_store, connections), loop, rooms, connections
+    return CommandRouter(rooms, loop, rating_store, connections, remote_rooms=remote_rooms), loop, rooms, connections
+
+
+# A real, minimal in-memory fake standing in for server/redis/rooms.py's
+# RedisRoomRegistry - same "real object, not a mock" approach as every
+# other optional CommandRouter/GameLoop dependency's own test fake in this
+# project (see tests/unit/test_server_game_loop.py's _FakeActiveGameIndex).
+# Only implements room_for_username - the one method decide_identify's own
+# RoomLookupProtocol (server/rooms.py) actually calls.
+class _FakeRemoteRooms:
+    def __init__(self, rooms_by_username=None):
+        self._rooms_by_username = rooms_by_username or {}
+
+    def room_for_username(self, username):
+        return self._rooms_by_username.get(username)
 
 
 def _seat_alice_and_bob(loop, rating_store, game_id="play-1"):
@@ -214,6 +228,106 @@ def test_decide_join_room_gives_a_spectator_no_snapshot_before_the_game_has_actu
     assert decision.ack.accepted is True
     assert decision.ack.role == "spectator"
     assert decision.spectator_snapshot is None
+
+
+# ---- decide_identify ----
+
+
+def test_decide_identify_for_a_username_with_no_active_game_is_ack_only():
+    router, _loop, _rooms, _connections = _router()
+
+    decision = router.decide_identify("alice")
+
+    assert decision.ack.accepted is True
+    assert decision.seat is None
+    assert decision.snapshot is None
+
+
+def test_decide_identify_for_a_seated_player_resends_seat_and_snapshot():
+    rating_store = _rating_store()
+    router, loop, _rooms, _connections = _router(rating_store=rating_store)
+    _seat_alice_and_bob(loop, rating_store)
+
+    decision = router.decide_identify("alice")
+
+    assert decision.ack.accepted is True
+    assert decision.seat == WHITE
+    assert decision.snapshot is not None
+
+
+def test_decide_identify_reconnects_a_disconnected_seat():
+    rating_store = _rating_store()
+    router, loop, _rooms, _connections = _router(rating_store=rating_store)
+    session = _seat_alice_and_bob(loop, rating_store)
+    session.mark_disconnected(WHITE)
+
+    decision = router.decide_identify("alice")
+
+    assert decision.seat == WHITE
+    assert session.is_disconnected(WHITE) is False
+
+
+def test_decide_identify_for_an_already_tracked_spectator_resends_a_snapshot_with_no_seat():
+    rating_store = _rating_store("alice", "bob", "carol")
+    router, loop, _rooms, _connections = _router(rating_store=rating_store)
+    _seat_alice_and_bob(loop, rating_store)
+    loop.get("play-1").spectator_usernames.add("carol")
+
+    decision = router.decide_identify("carol")
+
+    assert decision.ack.accepted is True
+    assert decision.seat is None
+    assert decision.snapshot is not None
+
+
+# The spectator self-heal case this pass adds: a REST-joined spectator
+# (services/api_gateway/main.py's handle_join_room) whose room membership
+# already lives in the cross-process RedisRoomRegistry, but who has never
+# reached this shard's own spectator_usernames yet, since a spectator join
+# publishes no event of its own (see server/router.py's decide_identify
+# docstring). Also proves the self-heal actually mutates spectator_usernames,
+# not just this one response - a later broadcast must reach them too.
+def test_decide_identify_self_heals_a_spectator_known_only_to_remote_rooms():
+    rating_store = _rating_store("alice", "bob", "carol")
+    room = Room(room_id="room-1", creator="alice", opponent="bob", spectators={"carol"})
+    remote_rooms = _FakeRemoteRooms({"carol": room})
+    router, loop, _rooms, _connections = _router(rating_store=rating_store, remote_rooms=remote_rooms)
+    _seat_alice_and_bob(loop, rating_store, game_id="room-1")
+
+    decision = router.decide_identify("carol")
+
+    assert decision.ack.accepted is True
+    assert decision.seat is None
+    assert decision.snapshot is not None
+    assert "carol" in loop.get("room-1").spectator_usernames
+
+
+# remote_rooms knows about the room, but this shard doesn't host its game
+# (wrong shard, or the game hasn't started here) - self.loop.get(room_id) is
+# None, so there is nothing to heal into; falls back to ack-only rather than
+# raising.
+def test_decide_identify_does_not_crash_when_remote_rooms_names_a_room_this_shard_does_not_host():
+    remote_rooms = _FakeRemoteRooms({"carol": Room(room_id="room-1", creator="alice", opponent="bob", spectators={"carol"})})
+    router, _loop, _rooms, _connections = _router(remote_rooms=remote_rooms)
+
+    decision = router.decide_identify("carol")
+
+    assert decision.ack.accepted is True
+    assert decision.seat is None
+    assert decision.snapshot is None
+
+
+# remote_rooms omitted entirely (default None, the bare-metal/single-process
+# case) - decide_identify must not even attempt the lookup, and behaves
+# exactly as it did before this pass.
+def test_decide_identify_without_remote_rooms_configured_is_unaffected():
+    router, _loop, _rooms, _connections = _router()
+
+    decision = router.decide_identify("carol")
+
+    assert decision.ack.accepted is True
+    assert decision.seat is None
+    assert decision.snapshot is None
 
 
 # ---- decide_cancel_room ----

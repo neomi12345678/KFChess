@@ -20,14 +20,22 @@ client/network_client.py's own docstring on why it's transparent) - only
 a deployment pointed at this service's own host:port instead of straight
 at a Shard's.
 
-Resolving *which* shard to relay to has two cases, both driven by existing
+Resolving *which* shard to relay to has three cases, all driven by existing
 cross-process state rather than anything new invented here:
 
-    1. The username already has a live game (reconnect, or already
-       allocated by the time this connection arrives) - answered directly
-       by server/redis/active_game_index.py's ActiveGameIndex.get().
-    2. The username is still waiting (just called POST /play, or joined a
-       room's opponent seat - allocation hasn't landed yet) - this service
+    1. The username already has a live game as a seated player (reconnect,
+       or already allocated by the time this connection arrives) - answered
+       directly by server/redis/active_game_index.py's ActiveGameIndex.get().
+    2. The username is an existing room's spectator (see
+       services/api_gateway/main.py's handle_join_room, which only ever
+       records this in RedisRoomRegistry - no event of its own) - answered
+       by server/redis/rooms.py's RedisRoomRegistry.room_for_username()
+       plus server/redis/room_shard_index.py's RoomShardIndex.get(), the
+       Server_Design.md §4 `room_id -> worker` mapping itself. No waiting:
+       the room's game already exists by the time anyone can join it as a
+       spectator, so there's nothing left to be allocated.
+    3. The username is still waiting on a fresh allocation (just called
+       POST /play, or just filled a room's opponent seat) - this service
        waits on the same game.allocated event services/game_allocator/main.py
        already publishes (see server/game_loop.py's own
        start_game_allocation_relay for the Shard-side sibling of this same
@@ -37,20 +45,14 @@ cross-process state rather than anything new invented here:
        same efficiency server/game_loop.py's own relay methods already have
        - not a separate subscription per client.
 
-While a client is still waiting on _resolve_shard below (no shard to relay
-to yet), it also gets every matchmaking.status "still searching" heartbeat
-relayed straight through (see _StatusRelay) - the same periodic
+While a client is still waiting on case 3 above (no shard to relay to yet),
+it also gets every matchmaking.status "still searching" heartbeat relayed
+straight through (see _StatusRelay) - the same periodic
 MatchmakingStatusMessage a bare-metal GameServer already sends directly
 (server/game_loop.py's own _advance_matchmaking), now arriving from the
 standalone Matchmaker service instead over the same one-shared-subscription
-shape as game.allocated/matchmaking.timeout above.
-
-Deliberately out of scope for this pass (declared, not silently dropped):
-    - Spectators - server/redis/active_game_index.py only ever tracks a
-      room's creator/opponent (see its own docstring), and today's REST
-      room-join path doesn't yet add a spectator to GameLoop's own
-      spectator_usernames either (a pre-existing gap, not this pass's to
-      fix).
+shape as game.allocated/matchmaking.timeout above. A spectator (case 2)
+never reaches this wait at all - nothing to be "still searching" for.
 """
 
 import asyncio
@@ -73,6 +75,8 @@ from protocol.registry import decode_json_message, encode_json_message
 from protocol.types import PORT as SHARD_PORT
 from protocol.types import WS_GATEWAY_PORT
 from server.redis.active_game_index import ActiveGameIndex
+from server.redis.room_shard_index import RoomShardIndex
+from server.redis.rooms import RedisRoomRegistry
 from server.server_config import MATCHMAKING_TIMEOUT_MS
 
 _logger = logging.getLogger(__name__)
@@ -155,10 +159,25 @@ async def _subscribe_matchmaking_events(
 # - not a new constant) is a safety net for the case nothing ever arrives,
 # same reasoning client/network_client.py's own _wait_for_type already has
 # for every blocking wire wait in this project.
-async def _resolve_shard(username: str, active_game_index: ActiveGameIndex, waiters: _AllocationWaiters) -> Optional[str]:
+async def _resolve_shard(
+    username: str,
+    active_game_index: ActiveGameIndex,
+    rooms: RedisRoomRegistry,
+    room_shard_index: RoomShardIndex,
+    waiters: _AllocationWaiters,
+) -> Optional[str]:
     location = active_game_index.get(username)
     if location is not None:
         return location.shard_address
+
+    # A spectator of an already-existing room's game - see this module's
+    # own docstring, case 2. Synchronous, no waiting: by the time a room
+    # shows up here as a room_for_username hit with this username in its
+    # spectators, the room's game already exists (that's the only way a
+    # join ever becomes a spectator join rather than an opponent one).
+    room = rooms.room_for_username(username)
+    if room is not None and username in room.spectators:
+        return room_shard_index.get(room.room_id)
 
     future = waiters.wait_for(username)
     try:
@@ -177,13 +196,20 @@ async def _relay(client_ws, shard_address: str, shard_port: int, username: str) 
     async with websockets.connect(uri) as internal_ws:
         await internal_ws.send(encode_json_message(IdentifyMessage(username=username)))
 
-        # Discards anything interleaved before the ack - nothing else is
-        # published to a freshly-identified shard connection before its own
-        # IdentifyAckMessage, but reading past a mismatch rather than
-        # assuming the very next frame is the one waited for matches this
-        # project's own client-side convention (see client/network_client.py's
-        # _wait_for_type).
+        # Forwards everything the shard sends in response to this internal
+        # IDENTIFY - including the IdentifyAckMessage itself - straight to
+        # the public client, same as ordinary pump content below; only
+        # *watches* for the ack to know when the handshake is done and the
+        # two-way pump should start. This client is a real one
+        # (client/network_client.py's own login()) that explicitly sends
+        # IdentifyMessage and then waits for IdentifyAckMessage back - this
+        # module's own docstring promises "no code changes at all" for that
+        # client, which only holds if the ack (and anything else interleaved
+        # before it, though nothing else is published to a freshly-identified
+        # shard connection this early) actually reaches it rather than being
+        # silently swallowed here.
         async for raw in internal_ws:
+            await client_ws.send(raw)
             if isinstance(decode_json_message(raw), IdentifyAckMessage):
                 break
 
@@ -192,6 +218,8 @@ async def _relay(client_ws, shard_address: str, shard_port: int, username: str) 
 
 async def _handle_client(
     active_game_index: ActiveGameIndex,
+    rooms: RedisRoomRegistry,
+    room_shard_index: RoomShardIndex,
     waiters: _AllocationWaiters,
     status_relay: _StatusRelay,
     shard_port: int,
@@ -215,7 +243,7 @@ async def _handle_client(
     # "still searching" to report.
     status_relay.register(username, client_ws)
     try:
-        shard_address = await _resolve_shard(username, active_game_index, waiters)
+        shard_address = await _resolve_shard(username, active_game_index, rooms, room_shard_index, waiters)
     finally:
         status_relay.unregister(username)
     if shard_address is None:
@@ -242,13 +270,15 @@ async def _main() -> None:
     import nats
 
     active_game_index = ActiveGameIndex(redis_url)
+    rooms = RedisRoomRegistry(redis_url)
+    room_shard_index = RoomShardIndex(redis_url)
     waiters = _AllocationWaiters()
     status_relay = _StatusRelay()
     nats_connection = await nats.connect(nats_url)
     await _subscribe_matchmaking_events(nats_connection, waiters, status_relay)
 
     async def _handler(client_ws) -> None:
-        await _handle_client(active_game_index, waiters, status_relay, shard_port, client_ws)
+        await _handle_client(active_game_index, rooms, room_shard_index, waiters, status_relay, shard_port, client_ws)
 
     async with websockets.serve(_handler, "0.0.0.0", port):
         _logger.info(

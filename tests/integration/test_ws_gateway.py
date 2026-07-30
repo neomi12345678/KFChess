@@ -34,6 +34,8 @@ from protocol.lobby_messages import IdentifyMessage
 from protocol.registry import encode_json_message
 from server.interfaces import ActiveGameLocation
 from server.redis.active_game_index import ActiveGameIndex
+from server.redis.room_shard_index import RoomShardIndex
+from server.redis.rooms import RedisRoomRegistry
 from server.sqlite.accounts import UserStore
 from server.sqlite.accounts_db import open_accounts_database
 from server.sqlite.rating_store import RatingStore
@@ -61,6 +63,12 @@ async def running_shard():
         host="localhost",
         port=0,
         tick_interval_s=0.01,
+        # Real, read-only cross-process room lookup (see server/router.py's
+        # decide_identify) - harmless for every other test in this file
+        # (they never reach the spectator self-heal branch, since their own
+        # usernames are always found as seated players first), and required
+        # by the spectator test below.
+        remote_rooms=RedisRoomRegistry(REDIS_URL),
     )
     task = asyncio.create_task(server.run_forever())
     await server.wait_started()
@@ -78,13 +86,15 @@ async def running_ws_gateway(shard_port: int):
     import nats
 
     active_game_index = ActiveGameIndex(REDIS_URL)
+    rooms = RedisRoomRegistry(REDIS_URL)
+    room_shard_index = RoomShardIndex(REDIS_URL)
     waiters = _AllocationWaiters()
     status_relay = _StatusRelay()
     nats_connection = await nats.connect(NATS_URL)
     await _subscribe_matchmaking_events(nats_connection, waiters, status_relay)
 
     async def _handler(client_ws) -> None:
-        await _handle_client(active_game_index, waiters, status_relay, shard_port, client_ws)
+        await _handle_client(active_game_index, rooms, room_shard_index, waiters, status_relay, shard_port, client_ws)
 
     async with websockets.serve(_handler, "localhost", 0) as gw_server:
         port = gw_server.sockets[0].getsockname()[1]
@@ -115,6 +125,16 @@ def clean_active_game_index():
         redis_client.delete(key)
 
 
+@pytest.fixture
+def clean_room_state():
+    import redis as redis_lib
+
+    redis_client = redis_lib.Redis.from_url(REDIS_URL, decode_responses=True)
+    for pattern in ("kfchess:room:*", "kfchess:room_owner:*", "kfchess:room_shard:*"):
+        for key in redis_client.scan_iter(match=pattern):
+            redis_client.delete(key)
+
+
 def test_identify_for_an_already_allocated_username_relays_moves(clean_active_game_index):
     async def scenario():
         async with running_shard() as server:
@@ -142,6 +162,14 @@ def test_identify_for_an_already_allocated_username_relays_moves(clean_active_ga
             async with running_ws_gateway(shard_port=server.bound_port) as gw_port:
                 async with websockets.connect(f"ws://localhost:{gw_port}") as client:
                     await client.send(encode_json_message(IdentifyMessage(username="gw_alice")))
+
+                    # Proves _relay's own internal handshake frame (the
+                    # shard's IdentifyAckMessage) actually reaches the public
+                    # client instead of being silently swallowed - a real
+                    # client (client/network_client.py's own login()) waits
+                    # on exactly this after sending IdentifyMessage.
+                    identify_ack = await recv_of_type(client, "identify_ack")
+                    assert identify_ack == {"type": "identify_ack", "accepted": True}
 
                     # Proves decide_identify's own resend, not the original
                     # (already-missed) broadcast from _start_game above.
@@ -221,6 +249,56 @@ def test_matchmaking_status_heartbeat_is_relayed_while_waiting_for_allocation(cl
 
                     timeout_message = await recv_of_type(client, "matchmaking_timeout")
                     assert timeout_message == {"type": "matchmaking_timeout"}
+
+    asyncio.run(scenario())
+
+
+# Proves the whole spectator path end-to-end (gap 1 of Server_Design.md's
+# own review): a room's game already exists (no allocation event of its own
+# to wait on - see services/ws_gateway/main.py's own _resolve_shard
+# docstring, case 2), and the spectator's IDENTIFY reaches this shard with
+# no room.spectator_joined-style push ever having happened - decide_identify's
+# own self-heal (server/router.py) is what's actually being proven, exactly
+# the same way test_identify_for_an_already_allocated_username_relays_moves
+# above proves decide_identify's seat-resend, not a lucky broadcast.
+def test_identify_as_a_spectator_of_an_existing_room_relays_a_snapshot_with_no_seat(
+    clean_active_game_index, clean_room_state
+):
+    async def scenario():
+        rooms = RedisRoomRegistry(REDIS_URL)
+        room = rooms.create("gw_room_creator")
+        rooms.join(room.room_id, "gw_room_opponent")
+        rooms.join(room.room_id, "gw_room_spectator")  # third joiner - a spectator, not the opponent
+
+        async with running_shard() as server:
+            RoomShardIndex(REDIS_URL).set(room.room_id, SHARD_ADDRESS)
+            await server._loop._start_game(
+                room.room_id, "gw_room_creator", "gw_room_opponent", room_id=room.room_id
+            )
+
+            async with running_ws_gateway(shard_port=server.bound_port) as gw_port:
+                async with websockets.connect(f"ws://localhost:{gw_port}") as client:
+                    await client.send(encode_json_message(IdentifyMessage(username="gw_room_spectator")))
+
+                    ack = json.loads(await asyncio.wait_for(client.recv(), timeout=3.0))
+                    assert ack == {"type": "identify_ack", "accepted": True}
+
+                    # No "type" key at all on a raw snapshot payload (see
+                    # protocol/snapshot_codec.py) - board_width is what
+                    # decision.spectator_snapshot's own unit-test assertion
+                    # already checks for the exact same shape (see
+                    # tests/unit/test_router.py). Never a "seat" message -
+                    # a spectator has no seat to be sent one for.
+                    snapshot = json.loads(await asyncio.wait_for(client.recv(), timeout=3.0))
+                    assert "board_width" in snapshot
+
+                    # Checked *before* the client disconnects - decide_disconnect
+                    # (server/router.py) discards a disconnecting spectator
+                    # from spectator_usernames on its way out, same as any
+                    # other spectator leaving; this is proving the self-heal
+                    # actually happened, not asserting on state already
+                    # unwound by that same disconnect handling.
+                    assert "gw_room_spectator" in server._loop.get(room.room_id).spectator_usernames
 
     asyncio.run(scenario())
 

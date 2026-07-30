@@ -80,7 +80,7 @@ from server.interfaces import (
     UserRepository,
 )
 from server.router import CommandRouter
-from server.rooms import RoomRegistry, RoomStoreProtocol
+from server.rooms import RoomLookupProtocol, RoomRegistry, RoomStoreProtocol
 from server.server_config import (
     CLOSE_TIMEOUT_S,
     DEFAULT_TICK_INTERVAL_S,
@@ -140,6 +140,12 @@ class GameServer:
         # var) - passed straight through to GameLoop, see its own docstring
         # on this same param.
         shard_address: Optional[str] = None,
+        # Overridable so server/main.py can hand in a Redis-backed,
+        # read-only reference to the standalone API Gateway's own room
+        # registry (see server/redis/rooms.py's RedisRoomRegistry) - passed
+        # straight through to CommandRouter, see its own docstring on this
+        # same param.
+        remote_rooms: Optional[RoomLookupProtocol] = None,
     ):
         self._user_store = user_store
         self._rating_store = rating_store
@@ -160,7 +166,7 @@ class GameServer:
             active_game_index=active_game_index,
             shard_address=shard_address,
         )
-        self._router = CommandRouter(self._rooms, self._loop, rating_store, self._connections)
+        self._router = CommandRouter(self._rooms, self._loop, rating_store, self._connections, remote_rooms=remote_rooms)
         self._host = host
         self._port = port
         self._ping_interval_s = ping_interval_s

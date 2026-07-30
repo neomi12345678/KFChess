@@ -105,6 +105,26 @@ def _build_active_game_index():
     return ActiveGameIndex(redis_url)
 
 
+# REDIS_URL unset (the default) keeps spectator-identify purely in-process
+# (CommandRouter's own default of no remote room lookup at all) - fine for a
+# single process, since a bare-metal server/ws_server.py's own
+# _handle_join_room already adds a spectator to spectator_usernames
+# synchronously, in-process, the instant they join. Set, this becomes the
+# read-only, cross-process view of a standalone API Gateway's own room
+# membership (see server/redis/rooms.py's RedisRoomRegistry) that
+# decide_identify consults for a spectator who joined via REST instead (see
+# its own docstring). No busy_set - this shard never creates/joins/cancels
+# rooms through it, only reads room_for_username.
+def _build_remote_rooms():
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url is None:
+        return None
+
+    from server.redis.rooms import RedisRoomRegistry
+
+    return RedisRoomRegistry(redis_url)
+
+
 # NATS_URL unset (the default) keeps today's behavior exactly as before -
 # GameLoop treats no lifecycle_publisher as a pure no-op (see its own
 # docstring). Set (see docker-compose.yml) switches to
@@ -190,6 +210,7 @@ async def _main() -> None:
     lifecycle_publisher = await _build_lifecycle_publisher()
     busy_set = _build_busy_set()
     active_game_index = _build_active_game_index()
+    remote_rooms = _build_remote_rooms()
     # Same env var _maybe_start_shard_heartbeat already reads below - handed
     # to GameServer/GameLoop too now, so every ActiveGameLocation this shard
     # writes carries its own real, reachable address (see
@@ -208,6 +229,7 @@ async def _main() -> None:
         busy_set=busy_set,
         active_game_index=active_game_index,
         shard_address=shard_address,
+        remote_rooms=remote_rooms,
     )
     await _build_matchmaking_relay(server)
     _maybe_start_shard_heartbeat()
