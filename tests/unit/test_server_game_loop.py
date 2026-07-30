@@ -52,6 +52,23 @@ class _CrashingGameSession(GameSession):
         raise RuntimeError("boom")
 
 
+# A real, minimal in-memory fake standing in for
+# server/nats/lifecycle.py's NatsLifecyclePublisher - same "real object,
+# not a mock" approach as _FakeActiveGameIndex above. Records every publish
+# rather than actually reaching NATS, so a test can assert on exactly what
+# _fail_game/_advance_game handed it.
+class _FakeLifecyclePublisher:
+    def __init__(self):
+        self.created = []
+        self.finished = []
+
+    async def game_created(self, game_id, room_id, white_username, black_username):
+        self.created.append((game_id, room_id, white_username, black_username))
+
+    async def game_finished(self, game_id, room_id, white_username, black_username, ratings):
+        self.finished.append((game_id, room_id, white_username, black_username, ratings))
+
+
 def _rating_store():
     database = open_accounts_database(":memory:")
     user_store = UserStore(database)
@@ -60,7 +77,7 @@ def _rating_store():
     return RatingStore(database)
 
 
-def _make_loop(rating_store, rooms=None, active_game_index=None, shard_address=None):
+def _make_loop(rating_store, rooms=None, active_game_index=None, shard_address=None, lifecycle_publisher=None):
     return GameLoop(
         lambda: parse(STARTING_BOARD),
         rating_store,
@@ -71,6 +88,7 @@ def _make_loop(rating_store, rooms=None, active_game_index=None, shard_address=N
         tick_interval_s=0.01,
         active_game_index=active_game_index,
         shard_address=shard_address,
+        lifecycle_publisher=lifecycle_publisher,
     )
 
 
@@ -199,5 +217,67 @@ def test_a_crashing_games_active_game_index_entries_are_removed():
 
         assert active_game_index.get("carol") is None
         assert active_game_index.get("dave") is None
+
+    asyncio.run(scenario())
+
+
+def test_a_crashing_games_lifecycle_publisher_still_gets_game_finished():
+    async def scenario():
+        rating_store = _rating_store()
+        rooms = RoomRegistry()
+        room = rooms.create("carol")
+        rooms.join(room.room_id, "dave")
+        lifecycle_publisher = _FakeLifecyclePublisher()
+        loop = _make_loop(rating_store, rooms, lifecycle_publisher=lifecycle_publisher)
+
+        crashing_session = _CrashingGameSession(parse(STARTING_BOARD), rating_store, "carol", "dave")
+        game = ActiveGame(
+            session=crashing_session, publisher=NetworkPublisher(crashing_session.bus), room_id=room.room_id
+        )
+        loop._games[room.room_id] = game
+
+        carol_rating = rating_store.rating_for("carol")
+        dave_rating = rating_store.rating_for("dave")
+
+        await loop._fail_game(room.room_id, game, RuntimeError("boom"))
+
+        # Unchanged ratings - a crash never decides a winner, so
+        # persistence-worker's own record_game still gets a real row for
+        # this game (see services/persistence_worker/main.py), just with
+        # no rating movement, rather than this game's history going
+        # unwritten entirely.
+        assert lifecycle_publisher.finished == [
+            (room.room_id, room.room_id, "carol", "dave", {WHITE: carol_rating, BLACK: dave_rating})
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_a_crashing_games_lifecycle_publish_failure_does_not_prevent_cleanup():
+    async def scenario():
+        rating_store = _rating_store()
+        rooms = RoomRegistry()
+        room = rooms.create("carol")
+        rooms.join(room.room_id, "dave")
+
+        class _ExplodingLifecyclePublisher:
+            async def game_created(self, *args, **kwargs):
+                pass
+
+            async def game_finished(self, *args, **kwargs):
+                raise RuntimeError("nats is down")
+
+        loop = _make_loop(rating_store, rooms, lifecycle_publisher=_ExplodingLifecyclePublisher())
+
+        crashing_session = _CrashingGameSession(parse(STARTING_BOARD), rating_store, "carol", "dave")
+        game = ActiveGame(
+            session=crashing_session, publisher=NetworkPublisher(crashing_session.bus), room_id=room.room_id
+        )
+        loop._games[room.room_id] = game
+
+        await loop._fail_game(room.room_id, game, RuntimeError("boom"))
+
+        assert room.room_id not in loop._games
+        assert rooms.room_for_username("carol") is None
 
     asyncio.run(scenario())

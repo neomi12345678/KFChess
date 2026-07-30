@@ -76,6 +76,16 @@ class JoinRoomDecision:
     spectator_snapshot: Optional[dict] = None
 
 
+@dataclass(frozen=True)
+class IdentifyDecision:
+    ack: IdentifyAckMessage
+    # Both set together, only when username is currently seated in a live
+    # game - see decide_identify's own docstring for why this is
+    # unconditional (not just on an actual disconnect/reconnect).
+    seat: Optional[str] = None
+    snapshot: Optional[dict] = None
+
+
 class CommandRouter:
     def __init__(
         self,
@@ -139,12 +149,35 @@ class CommandRouter:
     # ordinary fresh login has nothing left to do here; REST already
     # returned rating/reconnected state). Always accepted - this is
     # registration, not a decision that can be rejected.
-    def decide_identify(self, username: str) -> IdentifyAckMessage:
+    #
+    # Unlike decide_login, this always re-sends seat/snapshot when the
+    # username is currently seated - not just when its seat was actually
+    # marked disconnected. Reason: a standalone WS Gateway
+    # (services/ws_gateway/main.py) races GameLoop._start_game's own
+    # one-shot SeatMessage broadcast - both react to the same
+    # game.allocated NATS event independently, and IDENTIFY reaching this
+    # shard *after* _start_game already ran (and already tried to send
+    # SeatMessage to a username ConnectionRegistry didn't know about yet)
+    # would otherwise silently strand that client seatless forever, since
+    # SeatMessage is never persisted or retried anywhere else. Harmless to
+    # resend to an already-synced client (the same "just tell it again"
+    # doesn't hurt, see JoinRoomDecision's own spectator_snapshot for the
+    # same idea).
+    def decide_identify(self, username: str) -> IdentifyDecision:
         game = self._loop.active_game_for(username)
-        seat = game.session.seat_for_username(username) if game is not None else None
-        if seat is not None and game.session.is_disconnected(seat):
+        if game is None:
+            return IdentifyDecision(ack=IdentifyAckMessage(accepted=True))
+
+        seat = game.session.seat_for_username(username)
+        if seat is None:
+            return IdentifyDecision(ack=IdentifyAckMessage(accepted=True))
+
+        if game.session.is_disconnected(seat):
             game.session.mark_reconnected(seat)
-        return IdentifyAckMessage(accepted=True)
+
+        return IdentifyDecision(
+            ack=IdentifyAckMessage(accepted=True), seat=seat, snapshot=full_broadcast_payload(game.session)
+        )
 
     def decide_play(self, username: str) -> PlayAckMessage:
         reason = self._busy_reason(username)

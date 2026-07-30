@@ -38,7 +38,7 @@ from server.sqlite.accounts import UserStore
 from server.sqlite.accounts_db import open_accounts_database
 from server.sqlite.rating_store import RatingStore
 from server.ws_server import GameServer
-from services.ws_gateway.main import _AllocationWaiters, _handle_client, _subscribe_allocation_events
+from services.ws_gateway.main import _AllocationWaiters, _handle_client, _StatusRelay, _subscribe_matchmaking_events
 
 STARTING_BOARD = "wR . .\n. . .\n. . ."
 SHARD_ADDRESS = "localhost"
@@ -79,11 +79,12 @@ async def running_ws_gateway(shard_port: int):
 
     active_game_index = ActiveGameIndex(REDIS_URL)
     waiters = _AllocationWaiters()
+    status_relay = _StatusRelay()
     nats_connection = await nats.connect(NATS_URL)
-    await _subscribe_allocation_events(nats_connection, waiters)
+    await _subscribe_matchmaking_events(nats_connection, waiters, status_relay)
 
     async def _handler(client_ws) -> None:
-        await _handle_client(active_game_index, waiters, shard_port, client_ws)
+        await _handle_client(active_game_index, waiters, status_relay, shard_port, client_ws)
 
     async with websockets.serve(_handler, "localhost", 0) as gw_server:
         port = gw_server.sockets[0].getsockname()[1]
@@ -121,6 +122,16 @@ def test_identify_for_an_already_allocated_username_relays_moves(clean_active_ga
             # tests/unit/test_server_game_loop.py reaches into GameLoop
             # rather than going through matchmaking/rooms - this test is
             # about the relay, not about how a game gets started.
+            #
+            # Deliberately *before* the client ever connects/identifies -
+            # _start_game's own one-shot SeatMessage broadcast has nobody
+            # registered to reach yet and is silently lost (this is exactly
+            # the real race a live docker-compose run surfaced: WS Gateway's
+            # own internal IDENTIFY handshake can lag behind the shard
+            # already having started the game via the same game.allocated
+            # event). decide_identify's own re-send (see server/router.py)
+            # is what's actually being proven below - not just that a later
+            # MOVE happens to work.
             await server._loop._start_game("play-test", "gw_alice", "gw_bob")
 
             ActiveGameIndex(REDIS_URL).set(
@@ -131,6 +142,11 @@ def test_identify_for_an_already_allocated_username_relays_moves(clean_active_ga
             async with running_ws_gateway(shard_port=server.bound_port) as gw_port:
                 async with websockets.connect(f"ws://localhost:{gw_port}") as client:
                     await client.send(encode_json_message(IdentifyMessage(username="gw_alice")))
+
+                    # Proves decide_identify's own resend, not the original
+                    # (already-missed) broadcast from _start_game above.
+                    seat = await recv_of_type(client, "seat")
+                    assert seat == {"type": "seat", "color": "white"}
 
                     await send_move(client, WHITE, "a1", "a2", board_height=3)
                     ack = await recv_of_type(client, "ack")
@@ -169,6 +185,42 @@ def test_identify_before_allocation_waits_for_game_allocated(clean_active_game_i
                     await send_move(client, WHITE, "a1", "a2", board_height=3)
                     ack = await recv_of_type(client, "ack")
                     assert ack["reason"] != "not_in_game"
+
+    asyncio.run(scenario())
+
+
+def test_matchmaking_status_heartbeat_is_relayed_while_waiting_for_allocation(clean_active_game_index):
+    async def scenario():
+        import nats
+
+        async with running_shard() as server:
+            async with running_ws_gateway(shard_port=server.bound_port) as gw_port:
+                async with websockets.connect(f"ws://localhost:{gw_port}") as client:
+                    await client.send(encode_json_message(IdentifyMessage(username="gw_frank")))
+                    # Same reasoning as test_identify_before_allocation_waits_for_game_allocated
+                    # above - gives _handle_client time to register with
+                    # _StatusRelay before this test publishes matchmaking.status.
+                    await asyncio.sleep(0.2)
+
+                    nats_connection = await nats.connect(NATS_URL)
+                    status_payload = {"username": "gw_frank", "seconds_remaining": 42}
+                    await nats_connection.publish("matchmaking.status", json.dumps(status_payload).encode("utf-8"))
+                    await nats_connection.flush()
+
+                    status_message = await recv_of_type(client, "matchmaking_status")
+                    assert status_message == {"type": "matchmaking_status", "seconds_remaining": 42}
+
+                    # Wait ends here (give-up, same as the timeout test below) -
+                    # proves the heartbeat doesn't interfere with the terminal
+                    # signal that follows it.
+                    await nats_connection.publish(
+                        "matchmaking.timeout", json.dumps({"username": "gw_frank"}).encode("utf-8")
+                    )
+                    await nats_connection.flush()
+                    await nats_connection.close()
+
+                    timeout_message = await recv_of_type(client, "matchmaking_timeout")
+                    assert timeout_message == {"type": "matchmaking_timeout"}
 
     asyncio.run(scenario())
 

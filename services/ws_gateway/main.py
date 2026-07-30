@@ -37,19 +37,24 @@ cross-process state rather than anything new invented here:
        same efficiency server/game_loop.py's own relay methods already have
        - not a separate subscription per client.
 
+While a client is still waiting on _resolve_shard below (no shard to relay
+to yet), it also gets every matchmaking.status "still searching" heartbeat
+relayed straight through (see _StatusRelay) - the same periodic
+MatchmakingStatusMessage a bare-metal GameServer already sends directly
+(server/game_loop.py's own _advance_matchmaking), now arriving from the
+standalone Matchmaker service instead over the same one-shared-subscription
+shape as game.allocated/matchmaking.timeout above.
+
 Deliberately out of scope for this pass (declared, not silently dropped):
     - Spectators - server/redis/active_game_index.py only ever tracks a
       room's creator/opponent (see its own docstring), and today's REST
       room-join path doesn't yet add a spectator to GameLoop's own
       spectator_usernames either (a pre-existing gap, not this pass's to
       fix).
-    - matchmaking.status "still searching" heartbeats - relaying
-      game.allocated/matchmaking.timeout is enough that a waiting client
-      is never left with no terminal signal; the periodic "still
-      searching" nicety isn't essential to that and is left for later.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -58,7 +63,12 @@ from typing import Dict, Optional
 import websockets
 
 from protocol.game_messages import ErrorMessage
-from protocol.lobby_messages import IdentifyAckMessage, IdentifyMessage, MatchmakingTimeoutMessage
+from protocol.lobby_messages import (
+    IdentifyAckMessage,
+    IdentifyMessage,
+    MatchmakingStatusMessage,
+    MatchmakingTimeoutMessage,
+)
 from protocol.registry import decode_json_message, encode_json_message
 from protocol.types import PORT as SHARD_PORT
 from protocol.types import WS_GATEWAY_PORT
@@ -91,7 +101,31 @@ class _AllocationWaiters:
             future.set_result(shard_address)
 
 
-async def _subscribe_allocation_events(nats_connection, waiters: _AllocationWaiters) -> None:
+# One shared table per process - {username: client_ws} - so the same
+# single matchmaking.status subscription below can push each "still
+# searching" heartbeat straight to whichever connection is currently
+# waiting for that username, mirroring _AllocationWaiters' own "one
+# subscription, many concurrent waiters" shape. A plain dict rather than
+# another Future-based waiter: unlike game.allocated/matchmaking.timeout,
+# a username can receive many of these before the wait ends, so there's
+# nothing here to ever resolve once and discard.
+class _StatusRelay:
+    def __init__(self):
+        self._waiting: Dict[str, object] = {}
+
+    def register(self, username: str, client_ws) -> None:
+        self._waiting[username] = client_ws
+
+    def unregister(self, username: str) -> None:
+        self._waiting.pop(username, None)
+
+    def get(self, username: str):
+        return self._waiting.get(username)
+
+
+async def _subscribe_matchmaking_events(
+    nats_connection, waiters: _AllocationWaiters, status_relay: _StatusRelay
+) -> None:
     async def _on_allocated(msg) -> None:
         payload = json.loads(msg.data)
         for username in (payload["white_username"], payload["black_username"]):
@@ -101,8 +135,18 @@ async def _subscribe_allocation_events(nats_connection, waiters: _AllocationWait
         payload = json.loads(msg.data)
         waiters.resolve(payload["username"], None)
 
+    async def _on_status(msg) -> None:
+        payload = json.loads(msg.data)
+        client_ws = status_relay.get(payload["username"])
+        if client_ws is None:
+            return
+        message = encode_json_message(MatchmakingStatusMessage(seconds_remaining=payload["seconds_remaining"]))
+        with contextlib.suppress(websockets.exceptions.ConnectionClosed):
+            await client_ws.send(message)
+
     await nats_connection.subscribe("game.allocated", cb=_on_allocated)
     await nats_connection.subscribe("matchmaking.timeout", cb=_on_timeout)
+    await nats_connection.subscribe("matchmaking.status", cb=_on_status)
 
 
 # None means "give up" - the caller sends MatchmakingTimeoutMessage and
@@ -147,7 +191,11 @@ async def _relay(client_ws, shard_address: str, shard_port: int, username: str) 
 
 
 async def _handle_client(
-    active_game_index: ActiveGameIndex, waiters: _AllocationWaiters, shard_port: int, client_ws
+    active_game_index: ActiveGameIndex,
+    waiters: _AllocationWaiters,
+    status_relay: _StatusRelay,
+    shard_port: int,
+    client_ws,
 ) -> None:
     try:
         raw = await client_ws.recv()
@@ -160,7 +208,16 @@ async def _handle_client(
         return
 
     username = decoded.username
-    shard_address = await _resolve_shard(username, active_game_index, waiters)
+    # Registered for the duration of the wait only - once _resolve_shard
+    # returns (either a real shard or a give-up), status_relay has nothing
+    # left to push to for this username: a relay has started (or the
+    # client's about to be told to give up), and either way there's no more
+    # "still searching" to report.
+    status_relay.register(username, client_ws)
+    try:
+        shard_address = await _resolve_shard(username, active_game_index, waiters)
+    finally:
+        status_relay.unregister(username)
     if shard_address is None:
         await client_ws.send(encode_json_message(MatchmakingTimeoutMessage()))
         return
@@ -186,11 +243,12 @@ async def _main() -> None:
 
     active_game_index = ActiveGameIndex(redis_url)
     waiters = _AllocationWaiters()
+    status_relay = _StatusRelay()
     nats_connection = await nats.connect(nats_url)
-    await _subscribe_allocation_events(nats_connection, waiters)
+    await _subscribe_matchmaking_events(nats_connection, waiters, status_relay)
 
     async def _handler(client_ws) -> None:
-        await _handle_client(active_game_index, waiters, shard_port, client_ws)
+        await _handle_client(active_game_index, waiters, status_relay, shard_port, client_ws)
 
     async with websockets.serve(_handler, "0.0.0.0", port):
         _logger.info(

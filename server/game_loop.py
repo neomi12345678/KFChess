@@ -380,24 +380,50 @@ class GameLoop:
     # Ends `game` the same way a normal game-over does (drop it from
     # self._games, close its room if any) but for an unhandled exception
     # from its own tick instead - the one difference being there's no
-    # GameOverMessage/ratings to send, since GameEngine itself never got to
-    # decide a winner. Deliberately defensive beyond that: cleanup runs
-    # first and unconditionally (pop/close can't themselves raise), and the
-    # best-effort notification is wrapped separately so a game whose crash
-    # also broke its own broadcast can still be torn down cleanly instead of
-    # re-raising out of here and taking the whole tick loop down anyway.
+    # GameOverMessage/ratings *update* to send, since GameEngine itself
+    # never got to decide a winner (see the unchanged ratings publish
+    # below, not a call to finalize_ratings_if_game_over). Deliberately
+    # defensive beyond that: cleanup runs first and unconditionally
+    # (pop/close can't themselves raise), and every best-effort
+    # notification after it is wrapped separately so a game whose crash
+    # also broke its own broadcast, or a lifecycle publish that fails, can
+    # still be torn down cleanly instead of re-raising out of here and
+    # taking the whole tick loop down anyway.
     async def _fail_game(self, game_id: str, game: ActiveGame, error: BaseException) -> None:
         _logger.error("game %s crashed during its tick - ending it", game_id, exc_info=error)
 
+        white_username = game.session.username_for(WHITE)
+        black_username = game.session.username_for(BLACK)
+
         self._games.pop(game_id, None)
         if self._busy_set is not None:
-            self._busy_set.remove(game.session.username_for(WHITE))
-            self._busy_set.remove(game.session.username_for(BLACK))
+            self._busy_set.remove(white_username)
+            self._busy_set.remove(black_username)
         if self._active_game_index is not None:
-            self._active_game_index.remove(game.session.username_for(WHITE))
-            self._active_game_index.remove(game.session.username_for(BLACK))
+            self._active_game_index.remove(white_username)
+            self._active_game_index.remove(black_username)
         if game.room_id is not None:
             self._rooms.close(game.room_id)
+
+        # Publishes game.finished the same as an ordinary game-over
+        # (unchanged ratings, since no winner was ever decided) so the
+        # standalone Persistence Worker still records this game and a
+        # standalone API Gateway's own RedisRoomRegistry still cleans up
+        # this room's Redis keys - both previously only reachable from
+        # _advance_game's own game-over path, leaving a crashed game's
+        # history unwritten and its room's Redis keys leaked forever (see
+        # server/redis/rooms.py's own close() docstring, now fixed).
+        if self._lifecycle_publisher is not None:
+            try:
+                ratings = {
+                    WHITE: self._rating_store.rating_for(white_username),
+                    BLACK: self._rating_store.rating_for(black_username),
+                }
+                await self._lifecycle_publisher.game_finished(
+                    game_id, game.room_id, white_username, black_username, ratings
+                )
+            except Exception:
+                _logger.exception("failed to publish game.finished for crashed game %s", game_id)
 
         try:
             await self._broadcast_to_game(game, ErrorMessage(message="internal_error"))
