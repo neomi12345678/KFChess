@@ -24,6 +24,10 @@ COPY server/rooms.py server/rooms.py
 # Whole directory, same as services/matchmaker/Dockerfile's own server/redis/
 # copy.
 COPY server/redis/ server/redis/
+# server/nats/events.py's typed MatchFound/RoomOpponentJoined/GameAllocated -
+# this service's own main.py builds/decodes NATS payloads through these
+# instead of a raw dict now (see that module's own docstring).
+COPY server/nats/ server/nats/
 COPY services/game_allocator/ services/game_allocator/
 
 CMD ["python", "-m", "services.game_allocator.main"]

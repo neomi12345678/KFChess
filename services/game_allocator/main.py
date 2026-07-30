@@ -95,7 +95,6 @@ their current rating.
 """
 
 import asyncio
-import json
 import logging
 import os
 import uuid
@@ -106,6 +105,7 @@ import redis
 from prometheus_client import Counter
 
 from server.logging_config import configure_logging, room_id_ctx
+from server.nats.events import GameAllocated, MatchFound, RoomOpponentJoined
 from server.observability_server import start_observability_server
 from server.redis.active_game_index import ActiveGameIndex
 from server.redis.busy_set import BusySet
@@ -173,14 +173,14 @@ async def _allocate(
 
     _ALLOCATIONS_COUNTER.inc()
 
-    out_payload = {
-        "game_id": game_id,
-        "room_id": room_id,
-        "white_username": white_username,
-        "black_username": black_username,
-        "shard_address": shard_address,
-    }
-    await nats_connection.publish("game.allocated", json.dumps(out_payload).encode("utf-8"))
+    event = GameAllocated(
+        game_id=game_id,
+        room_id=room_id,
+        white_username=white_username,
+        black_username=black_username,
+        shard_address=shard_address,
+    )
+    await nats_connection.publish(GameAllocated.SUBJECT, event.encode())
     _logger.info("allocated game %s ('%s' vs '%s') to %s", game_id, white_username, black_username, shard_address)
 
 
@@ -191,7 +191,7 @@ async def _handle_match_found(
         _logger.error("no live Game Server Shard registered - dropping match.found (%s)", msg.data)
         return
 
-    payload = json.loads(msg.data)
+    match_found = MatchFound.decode(msg.data)
     # Freshly minted per allocation - the in-process "play-N" incrementing
     # counter GameLoop._try_start_a_match used doesn't survive as a
     # cross-process id scheme (nothing here coordinates a shared counter).
@@ -203,8 +203,8 @@ async def _handle_match_found(
         shard_address,
         game_id,
         None,
-        payload["white_username"],
-        payload["black_username"],
+        match_found.white_username,
+        match_found.black_username,
     )
 
 
@@ -222,8 +222,8 @@ async def _handle_room_opponent_joined(
         _logger.error("no live Game Server Shard registered - dropping room.opponent_joined (%s)", msg.data)
         return
 
-    payload = json.loads(msg.data)
-    room_id = payload["room_id"]
+    room_opponent_joined = RoomOpponentJoined.decode(msg.data)
+    room_id = room_opponent_joined.room_id
     await _allocate(
         redis_client,
         nats_connection,
@@ -231,8 +231,8 @@ async def _handle_room_opponent_joined(
         shard_address,
         room_id,
         room_id,
-        payload["creator"],
-        payload["opponent"],
+        room_opponent_joined.creator,
+        room_opponent_joined.opponent,
     )
 
 
@@ -362,8 +362,8 @@ async def _main() -> None:
         shard_address = registry.pick_shard(max_rooms_per_shard=MAX_ROOMS_PER_SHARD)
         await _handle_room_opponent_joined(redis_client, nats_connection, room_shard_index, shard_address, msg)
 
-    await nats_connection.subscribe("match.found", cb=_on_match_found)
-    await nats_connection.subscribe("room.opponent_joined", cb=_on_room_opponent_joined)
+    await nats_connection.subscribe(MatchFound.SUBJECT, cb=_on_match_found)
+    await nats_connection.subscribe(RoomOpponentJoined.SUBJECT, cb=_on_room_opponent_joined)
 
     asyncio.create_task(
         _run_recovery_sweep(

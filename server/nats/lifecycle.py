@@ -15,9 +15,10 @@ resolves to the installed library on sys.path, not to this package
 (server.nats) importing itself.
 """
 
-import json
 import time
 from typing import Dict, Optional
+
+from server.nats.events import GameCreated, GameFinished
 
 
 class NatsLifecyclePublisher:
@@ -44,13 +45,8 @@ class NatsLifecyclePublisher:
     async def game_created(
         self, game_id: str, room_id: Optional[str], white_username: str, black_username: str
     ) -> None:
-        payload = {
-            "game_id": game_id,
-            "room_id": room_id,
-            "white_username": white_username,
-            "black_username": black_username,
-        }
-        await self._connection.publish("game.created", json.dumps(payload).encode("utf-8"))
+        event = GameCreated(game_id=game_id, room_id=room_id, white_username=white_username, black_username=black_username)
+        await self._connection.publish(GameCreated.SUBJECT, event.encode())
 
     async def game_finished(
         self,
@@ -60,16 +56,16 @@ class NatsLifecyclePublisher:
         black_username: str,
         ratings: Dict[str, int],
     ) -> None:
-        payload = {
-            "game_id": game_id,
-            "room_id": room_id,
-            "white_username": white_username,
-            "black_username": black_username,
-            "ratings": ratings,
+        event = GameFinished(
+            game_id=game_id,
+            room_id=room_id,
+            white_username=white_username,
+            black_username=black_username,
+            ratings=ratings,
             # Server_Design.md §9's own "consumer lag per Persistence
             # Worker" metric needs a publish-time timestamp to measure
             # against - nothing in this payload carried one before (see
             # services/persistence_worker/main.py's own lag gauge).
-            "published_at": time.time(),
-        }
-        await self._connection.publish("game.finished", json.dumps(payload).encode("utf-8"))
+            published_at=time.time(),
+        )
+        await self._connection.publish(GameFinished.SUBJECT, event.encode())
