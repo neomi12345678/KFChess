@@ -46,6 +46,7 @@ import os
 
 import nats
 
+from server.logging_config import configure_logging, username_ctx
 from server.redis.matchmaking import RedisMatchmakingQueue
 from server.server_config import DEFAULT_TICK_INTERVAL_S
 
@@ -54,6 +55,7 @@ _logger = logging.getLogger(__name__)
 
 async def _on_matchmaking_requested(queue: RedisMatchmakingQueue, msg) -> None:
     payload = json.loads(msg.data)
+    username_ctx.set(payload["username"])
     queue.enqueue(payload["username"], payload["rating"])
 
 
@@ -67,16 +69,19 @@ async def _run_forever(queue: RedisMatchmakingQueue, nats_connection, tick_inter
 
         tick = queue.advance_time(elapsed_ms)
         for username in tick.timed_out:
+            username_ctx.set(username)
             await nats_connection.publish(
                 "matchmaking.timeout", json.dumps({"username": username}).encode("utf-8")
             )
         for username, seconds_remaining in tick.due_for_status:
+            username_ctx.set(username)
             payload = {"username": username, "seconds_remaining": seconds_remaining}
             await nats_connection.publish("matchmaking.status", json.dumps(payload).encode("utf-8"))
 
         match = queue.find_match()
         if match is not None:
             white_username, black_username = match
+            username_ctx.set(white_username)
             queue.remove(white_username)
             queue.remove(black_username)
             payload = {"white_username": white_username, "black_username": black_username}
@@ -102,7 +107,7 @@ async def _main() -> None:
 
 
 def main() -> None:  # pragma: no cover
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    configure_logging()
     asyncio.run(_main())
 
 

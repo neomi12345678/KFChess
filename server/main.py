@@ -8,6 +8,7 @@ from boardio.board_parser import parse as parse_board
 from boardio.starting_position import STARTING_BOARD
 from protocol.types import HOST as DEFAULT_HOST
 from protocol.types import PORT as DEFAULT_PORT
+from server.logging_config import configure_logging
 from server.sqlite.accounts import UserStore
 from server.sqlite.accounts_db import open_accounts_database
 from server.sqlite.rating_store import RatingStore
@@ -262,7 +263,7 @@ def main() -> None:  # pragma: no cover
     # every other module (server/ws_server.py included) just calls
     # logging.getLogger(__name__) and trusts whoever runs the process to
     # have set this up, rather than each reaching for its own handler.
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    configure_logging()
     asyncio.run(_main())
 
 

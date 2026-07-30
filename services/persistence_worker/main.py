@@ -27,6 +27,7 @@ import os
 
 import nats
 
+from server.logging_config import configure_logging, room_id_ctx
 from server.postgres.game_history import PostgresGameHistoryStore
 
 _logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ def _record_from_payload(store: PostgresGameHistoryStore, payload: dict) -> None
 
 async def _on_game_finished(store: PostgresGameHistoryStore, msg) -> None:
     payload = json.loads(msg.data)
+    room_id_ctx.set(payload["room_id"] if payload["room_id"] is not None else payload["game_id"])
     _record_from_payload(store, payload)
     _logger.info(
         "recorded game %s ('%s' vs '%s')", payload["game_id"], payload["white_username"], payload["black_username"]
@@ -69,7 +71,7 @@ async def _main() -> None:
 
 
 def main() -> None:  # pragma: no cover
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    configure_logging()
     asyncio.run(_main())
 
 
