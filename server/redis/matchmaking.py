@@ -1,10 +1,24 @@
 """Redis-backed sibling of server/matchmaking.py's MatchmakingQueue, for
 the Dockerized deployment (see docker-compose.yml, gated behind the
 REDIS_URL env var in server/main.py) - same five-method surface
-(server/interfaces.py's MatchmakingQueueProtocol), same insertion-order-
-scanned pairing algorithm, just persisted in Redis instead of a local
-dict, so the queue survives a game-server container restart instead of
-being silently dropped.
+(server/interfaces.py's MatchmakingQueueProtocol), but a genuinely
+different pairing algorithm from its in-memory sibling: Server_Design.md
+§5's own "Matchmaking queue | Redis Sorted Set (`ZADD` by rating) | O(log n)
+proximity lookup, globally shared." find_match here returns the pair with
+the *smallest rating gap* anywhere in the queue (still bounded by
+RATING_RANGE), not "the first pair found in insertion order" the in-memory
+MatchmakingQueue uses (see its own docstring) - a deliberate divergence,
+not an oversight: the in-memory queue is a single process's local fallback
+(no separate Matchmaker service involved), while this class is what the
+real standalone Matchmaker service (services/matchmaker/main.py) runs in
+the actual distributed deployment, so it's the one Server_Design.md §5
+is actually describing.
+
+kfchess:matchmaking:by_rating is a ZSET (member=username, score=rating) -
+the index find_match scans; kfchess:matchmaking:waiting is a Hash holding
+each waiting username's {rating, waited_ms, last_notified_ms} - the
+bookkeeping advance_time ages. Both are written together on every
+enqueue/remove so they never disagree about who's currently waiting.
 
 Uses a plain sync `redis` client, not `redis.asyncio`: enqueue/remove/
 is_waiting are called from server/router.py's CommandRouter, which is
@@ -20,17 +34,6 @@ PostgresRatingStore) already make, for the same reason: it's fast enough
 in practice not to matter, and keeping this class's whole surface
 synchronous is what lets it be a drop-in for MatchmakingQueue everywhere,
 not just in GameLoop.
-
-Critical constraint (see Server_Design.md's own callout on this): the
-in-memory MatchmakingQueue.find_match depends on Python dict insertion
-order - "first pair anywhere in queue order within RATING_RANGE", not
-"nearest rating" - so this can't be a Redis Sorted Set scored by rating
-without silently changing which pair gets matched first. Instead: a
-Redis List (_ORDER_KEY) preserves enqueue order exactly the way dict
-insertion order already does, and a Redis Hash (_WAITING_KEY) holds each
-waiting username's {rating, waited_ms} - together they reproduce the
-exact same O(n^2) nested-scan algorithm, just reading from Redis instead
-of a local dict.
 
 Note this module lives at server/redis/matchmaking.py, importing the
 third-party `redis` package by its bare top-level name below - Python 3's
@@ -48,7 +51,7 @@ import redis
 from server.interfaces import MatchmakingTick
 from server.server_config import MATCHMAKING_STATUS_INTERVAL_MS, MATCHMAKING_TIMEOUT_MS, RATING_RANGE
 
-_ORDER_KEY = "kfchess:matchmaking:order"
+_RATING_INDEX_KEY = "kfchess:matchmaking:by_rating"
 _WAITING_KEY = "kfchess:matchmaking:waiting"
 
 
@@ -63,22 +66,21 @@ class RedisMatchmakingQueue:
         self._timeout_ms = timeout_ms
         self._status_interval_ms = status_interval_ms
 
-    # HSET's return value distinguishes "this field didn't exist before"
-    # (1) from "this field already existed and was just overwritten" (0) -
-    # only the former should also push onto the order list, the same way
-    # a plain dict's `self._waiting[username] = ...` on an *existing* key
-    # overwrites the value in place without moving it in iteration order.
-    # The whole-blob overwrite is also what resets last_notified_ms to 0 on
-    # a re-enqueue, same as waited_ms - no special-case code needed.
+    # ZADD on an existing member just updates its score in place - exactly
+    # what a re-enqueue (a rating that may have changed since the last
+    # queue attempt) should do. The Hash write below always resets
+    # waited_ms/last_notified_ms back to 0 regardless of whether the
+    # username was already waiting, the same "wholesale overwrite, no
+    # special-case code" behavior the in-memory MatchmakingQueue.enqueue
+    # documents for itself.
     def enqueue(self, username: str, rating: int) -> None:
+        self._redis.zadd(_RATING_INDEX_KEY, {username: rating})
         payload = json.dumps({"rating": rating, "waited_ms": 0, "last_notified_ms": 0})
-        is_new = self._redis.hset(_WAITING_KEY, username, payload) == 1
-        if is_new:
-            self._redis.rpush(_ORDER_KEY, username)
+        self._redis.hset(_WAITING_KEY, username, payload)
 
     def remove(self, username: str) -> None:
+        self._redis.zrem(_RATING_INDEX_KEY, username)
         self._redis.hdel(_WAITING_KEY, username)
-        self._redis.lrem(_ORDER_KEY, 0, username)
 
     def is_waiting(self, username: str) -> bool:
         return bool(self._redis.hexists(_WAITING_KEY, username))
@@ -91,27 +93,21 @@ class RedisMatchmakingQueue:
         return self._redis.hlen(_WAITING_KEY)
 
     # Same two-list contract as server/matchmaking.py's own advance_time -
-    # see MatchmakingTick's own docstring (server/interfaces.py) - kept to
-    # exactly one hset per surviving entry, same as before this method
-    # tracked a notify boundary at all.
+    # see MatchmakingTick's own docstring. One HGETALL round trip for every
+    # waiting entry's state, rather than the old list-then-per-key lookups
+    # this class used before the rating index became a ZSET instead of an
+    # insertion-order List.
     def advance_time(self, elapsed_ms: int) -> MatchmakingTick:
         timed_out: List[str] = []
         due_for_status: List[Tuple[str, int]] = []
 
-        for username in self._redis.lrange(_ORDER_KEY, 0, -1):
-            raw = self._redis.hget(_WAITING_KEY, username)
-            if raw is None:
-                continue  # order list and hash briefly disagree mid-call; ignore, not fatal
-
+        for username, raw in self._redis.hgetall(_WAITING_KEY).items():
             entry = json.loads(raw)
             entry["waited_ms"] += elapsed_ms
             if entry["waited_ms"] >= self._timeout_ms:
                 timed_out.append(username)
                 continue
 
-            # .get(..., 0) tolerates a pre-upgrade entry with no such field
-            # yet (a rolling deploy's in-flight queue), rather than a
-            # KeyError mid-migration.
             last_notified_ms = entry.get("last_notified_ms", 0)
             if entry["waited_ms"] - last_notified_ms >= self._status_interval_ms:
                 entry["last_notified_ms"] = entry["waited_ms"]
@@ -124,20 +120,23 @@ class RedisMatchmakingQueue:
 
         return MatchmakingTick(timed_out=timed_out, due_for_status=due_for_status)
 
+    # The pair with the smallest rating gap anywhere in the queue, bounded
+    # by RATING_RANGE - true O(log n)-built proximity search, not a scan in
+    # insertion order (see this module's own docstring on why that's a
+    # deliberate divergence from the in-memory queue). ZRANGE already
+    # returns members sorted by score, so the minimum gap between *any* two
+    # entries is always between some pair of *adjacent* entries in that
+    # sorted order - checking each adjacent pair once (O(n)) is therefore
+    # exhaustive, not a heuristic; no need to compare every pair (O(n^2)).
     def find_match(self) -> Optional[Tuple[str, str]]:
-        usernames = self._redis.lrange(_ORDER_KEY, 0, -1)
-        if not usernames:
-            return None
+        entries = self._redis.zrange(_RATING_INDEX_KEY, 0, -1, withscores=True)
 
-        entries = [
-            (username, json.loads(raw)["rating"])
-            for username, raw in zip(usernames, self._redis.hmget(_WAITING_KEY, usernames))
-            if raw is not None
-        ]
+        best: Optional[Tuple[str, str]] = None
+        best_gap: Optional[float] = None
+        for (username_a, rating_a), (username_b, rating_b) in zip(entries, entries[1:]):
+            gap = rating_b - rating_a
+            if gap <= RATING_RANGE and (best_gap is None or gap < best_gap):
+                best = (username_a, username_b)
+                best_gap = gap
 
-        for i, (username_a, rating_a) in enumerate(entries):
-            for username_b, rating_b in entries[i + 1 :]:
-                if abs(rating_a - rating_b) <= RATING_RANGE:
-                    return (username_a, username_b)
-
-        return None
+        return best

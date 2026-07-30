@@ -1,0 +1,93 @@
+# Server_Design.md §11's own role row: "Persistence workers | Stateless
+# consumer | Subscribes to game.finished | Scales on: Queue lag." Stateless,
+# no public IP (see docker-compose.yml's own persistence-worker service).
+# Safe to run with multiple replicas: every replica's own core-NATS
+# subscription gets every game.finished event (fan-out, not load-balanced -
+# same as 51-game-allocator.yaml's own reasoning), but
+# PostgresGameHistoryStore.record_games_batch's own ON CONFLICT (game_id)
+# DO NOTHING makes redundant inserts across replicas a harmless no-op, not
+# a duplicate row.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: persistence-worker
+  namespace: kfchess
+spec:
+  selector:
+    app: persistence-worker
+  ports:
+    - name: health
+      port: 9104
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: persistence-worker
+  namespace: kfchess
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: persistence-worker
+  template:
+    metadata:
+      labels:
+        app: persistence-worker
+    spec:
+      containers:
+        - name: persistence-worker
+          image: kfchess/persistence-worker:latest
+          envFrom:
+            - configMapRef:
+                name: kfchess-config
+            - secretRef:
+                name: kfchess-postgres-credentials
+          ports:
+            - containerPort: 9104
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9104
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9104
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+---
+# CPU-based - a placeholder for the real signal (§11's own "Scales on:
+# Queue lag" - services/persistence_worker/main.py's own
+# kfchess_persistence_worker_lag_seconds gauge), which needs a Prometheus
+# Adapter to drive an HPA directly (see 00-namespace-and-config.yaml's own
+# top comment).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: persistence-worker
+  namespace: kfchess
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: persistence-worker
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

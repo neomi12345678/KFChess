@@ -23,10 +23,12 @@ single-sourced regardless of which store a deployment picks.
 import os
 import threading
 from dataclasses import dataclass, field
+from typing import Optional
 
 import psycopg
 
 from server.accounts import Account, InvalidCredentialsError, _hash_password
+from server.postgres import create_table_tolerating_concurrent_creation
 from server.server_config import STARTING_RATING
 
 
@@ -38,7 +40,13 @@ class PostgresAccountsDatabase:
 
 def open_postgres_accounts_database(dsn: str) -> PostgresAccountsDatabase:
     connection = psycopg.connect(dsn, autocommit=False)
-    connection.execute(
+    # Tolerates the concurrent-first-boot race (see
+    # server/postgres/__init__.py's own docstring) - real with two Game
+    # Server Shards (docker-compose.yml's game-server/game-server-2) both
+    # constructing this store against a freshly initialized, still-empty
+    # database at once.
+    create_table_tolerating_concurrent_creation(
+        connection,
         """
         CREATE TABLE IF NOT EXISTS accounts (
             username TEXT PRIMARY KEY,
@@ -46,7 +54,7 @@ def open_postgres_accounts_database(dsn: str) -> PostgresAccountsDatabase:
             password_salt BYTEA NOT NULL,
             rating INTEGER NOT NULL
         )
-        """
+        """,
     )
     connection.commit()
     return PostgresAccountsDatabase(connection=connection)
@@ -107,6 +115,22 @@ class PostgresRatingStore:
         self._database = database
 
     def rating_for(self, username: str) -> int:
+        row = self._fetch_row(username)
+        return row[0]
+
+    # Same query as rating_for, but None instead of a crash when the row
+    # isn't there yet - the one difference services/api_gateway/main.py's
+    # own replica-with-primary-fallback rating store (see its own
+    # docstring) needs: a *replica*-backed PostgresRatingStore's row can
+    # legitimately not exist yet for a brand-new registration (streaming
+    # replication lag, however small, is still nonzero) - not the "this
+    # should never happen" case rating_for's own row[0] otherwise assumes,
+    # which stays true for every caller reading from the primary.
+    def rating_for_or_none(self, username: str) -> Optional[int]:
+        row = self._fetch_row(username)
+        return row[0] if row is not None else None
+
+    def _fetch_row(self, username: str):
         with self._database.lock:
             row = self._database.connection.execute(
                 "SELECT rating FROM accounts WHERE username = %s", (username,)
@@ -117,7 +141,7 @@ class PostgresRatingStore:
             # indefinitely (rating_for is called far more often than any
             # write path here, so this is the more consequential of the two).
             self._database.connection.rollback()
-            return row[0]
+            return row
 
     def update_rating(self, username: str, rating: int) -> None:
         with self._database.lock:

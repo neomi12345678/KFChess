@@ -74,13 +74,16 @@ from protocol.types import Reason, Role
 from server.accounts import InvalidCredentialsError
 from server.logging_config import configure_logging, room_id_ctx, username_ctx
 from server.postgres.accounts import (
+    PostgresAccountsDatabase,
     PostgresRatingStore,
     PostgresUserStore,
     open_postgres_accounts_database,
 )
 from server.redis.active_game_index import ActiveGameIndex
 from server.redis.busy_set import BusySet
+from server.redis.leaderboard import Leaderboard
 from server.redis.matchmaking import RedisMatchmakingQueue
+from server.redis.presence import Presence
 from server.redis.room_shard_index import RoomShardIndex
 from server.redis.rooms import RedisRoomRegistry
 from server.rooms import RoomError
@@ -138,7 +141,7 @@ async def handle_healthz(request: web.Request) -> web.Response:
 # (Redis stopped mid-check) is what actually surfaced this, not a guess:
 # /healthz measured 7+ seconds to answer, blocked behind a concurrent
 # /readyz call's own un-timed-out socket connect, before this fix.
-def _check_redis_and_postgres(redis_url: str, database_url: str) -> Dict[str, bool]:
+def _check_redis_and_postgres(redis_url: str, database_url: str, replica_database_url: Optional[str]) -> Dict[str, bool]:
     import psycopg
     import redis as redis_lib
 
@@ -159,6 +162,17 @@ def _check_redis_and_postgres(redis_url: str, database_url: str) -> Dict[str, bo
     except Exception:
         results["postgres"] = False
 
+    # Only checked when actually configured (see _build_rating_store) -
+    # every existing deployment with no DATABASE_URL_REPLICA at all keeps
+    # today's two-dependency readiness check unchanged.
+    if replica_database_url is not None:
+        try:
+            with psycopg.connect(replica_database_url, connect_timeout=2) as connection:
+                connection.execute("SELECT 1")
+            results["postgres_replica"] = True
+        except Exception:
+            results["postgres_replica"] = False
+
     return results
 
 
@@ -166,7 +180,11 @@ def _check_redis_and_postgres(redis_url: str, database_url: str) -> Dict[str, bo
 async def handle_readyz(request: web.Request) -> web.Response:
     loop = asyncio.get_event_loop()
     results = await loop.run_in_executor(
-        None, _check_redis_and_postgres, request.app["redis_url"], request.app["database_url"]
+        None,
+        _check_redis_and_postgres,
+        request.app["redis_url"],
+        request.app["database_url"],
+        os.environ.get("DATABASE_URL_REPLICA"),
     )
 
     nats_connection = request.app.get("nats_connection")
@@ -359,6 +377,30 @@ async def handle_cancel_room(request: web.Request) -> web.Response:
     return web.json_response({"accepted": True})
 
 
+# Server_Design.md §5's own Redis leaderboard (server/redis/leaderboard.py) -
+# an incremental read off the same ZSET every rating change already keeps
+# in sync (see server/main.py's own LeaderboardRatingStore, wrapped around
+# whichever RatingRepository a shard is using), never a live `ORDER BY`
+# over the accounts table.
+@routes.get("/leaderboard")
+async def handle_leaderboard(request: web.Request) -> web.Response:
+    leaderboard: Leaderboard = request.app["leaderboard"]
+    limit = int(request.query.get("limit", 10))
+    entries = [{"username": username, "rating": rating} for username, rating in leaderboard.top(limit)]
+    return web.json_response({"entries": entries})
+
+
+# Server_Design.md §5's own presence/session directory (server/redis/presence.py) -
+# read-only here; services/ws_gateway/main.py is what actually marks a
+# username online/offline, since it's the process that actually terminates
+# that username's socket in this deployment (see its own docstring).
+@routes.get("/presence/{username}")
+async def handle_presence(request: web.Request) -> web.Response:
+    username = request.match_info["username"]
+    presence: Presence = request.app["presence"]
+    return web.json_response({"username": username, "online": presence.is_online(username)})
+
+
 # Cleans up RedisRoomRegistry's own Redis keys, and the §4 room_id ->
 # shard_address mapping (server/redis/room_shard_index.py's RoomShardIndex,
 # written by services/game_allocator/main.py's own _allocate) once a room's
@@ -397,6 +439,69 @@ async def _on_cleanup(app: web.Application) -> None:
     await app["nats_connection"].close()
 
 
+# Prefers a replica-backed PostgresRatingStore's read but falls back to the
+# primary's when the replica doesn't have the row (yet) - a real race, not
+# a theoretical one: this project's own docker-compose verification of this
+# pass hit it on the very first try, a brand-new account's first-ever
+# rating_for running before the replica had streamed the INSERT
+# handle_login's own login() call had just committed to the primary,
+# moments earlier, in the same request. Falling back to the primary on
+# that specific case keeps the common case (a returning user, or any read
+# more than a few ms after its own registration) on the fast, load-shedding
+# replica path, while a brand-new account's own very first read - the one
+# case guaranteed to race - still gets the right, definitely-not-yet-stale
+# answer instead of a 500.
+#
+# update_rating is never called through this - api_gateway never writes
+# ratings at all (see this module's own docstring) - so it's deliberately
+# not implemented here, rather than silently writing to a replica that
+# would reject it outright anyway.
+class _ReplicaWithPrimaryFallbackRatingStore:
+    def __init__(self, replica_store: PostgresRatingStore, primary_store: PostgresRatingStore):
+        self._replica_store = replica_store
+        self._primary_store = primary_store
+
+    def rating_for(self, username: str) -> int:
+        rating = self._replica_store.rating_for_or_none(username)
+        return rating if rating is not None else self._primary_store.rating_for(username)
+
+
+# DATABASE_URL_REPLICA unset (the default) keeps rating_store reading from
+# the same primary accounts_database everything else here uses - today's
+# behavior, unchanged. Set (see docker-compose.yml's own postgres-replica
+# service, a genuine streaming standby - Server_Design.md §5's own
+# "PostgreSQL/MySQL, primary + read replicas"), this service's own two
+# rating_for call sites (handle_login's display, handle_play's matchmaking
+# lookup - both read-only, both tolerant of a few hundred ms of replica
+# lag) read from the replica instead (with the primary fallback above),
+# leaving every write (and every other read this service does) on the
+# primary. Deliberately never wired into server/main.py's own shard-side
+# rating_store: GameSession.finalize_ratings_if_game_over reads a rating
+# and writes its own update in the same operation, which needs the
+# primary's strong consistency, not a possibly-stale replica read feeding a
+# wrong ELO calculation - see this function's own accounts_database, still
+# the only store passed to PostgresUserStore (login/register also needs
+# read-then-conditionally-write consistency, for the same reason).
+def _build_rating_store(accounts_database) -> PostgresRatingStore:
+    replica_url = os.environ.get("DATABASE_URL_REPLICA")
+    primary_rating_store = PostgresRatingStore(accounts_database)
+    if replica_url is None:
+        return primary_rating_store
+
+    # Not open_postgres_accounts_database - its own CREATE TABLE IF NOT
+    # EXISTS is a write, and a standby physically rejects every write
+    # (including DDL), even one that would be a no-op. The primary's own
+    # accounts_database (already opened above, in build_app) already
+    # created this table if needed - streaming replication carries schema
+    # changes the same as row changes, so there's nothing left for this
+    # connection to create.
+    import psycopg
+
+    replica_connection = psycopg.connect(replica_url, autocommit=False)
+    replica_rating_store = PostgresRatingStore(PostgresAccountsDatabase(connection=replica_connection))
+    return _ReplicaWithPrimaryFallbackRatingStore(replica_rating_store, primary_rating_store)
+
+
 def build_app() -> web.Application:
     database_url = os.environ["DATABASE_URL"]
     redis_url = os.environ["REDIS_URL"]
@@ -408,12 +513,14 @@ def build_app() -> web.Application:
     app["redis_url"] = redis_url
     app["database_url"] = database_url
     app["user_store"] = PostgresUserStore(accounts_database)
-    app["rating_store"] = PostgresRatingStore(accounts_database)
+    app["rating_store"] = _build_rating_store(accounts_database)
     app["matchmaking"] = RedisMatchmakingQueue(redis_url)
     app["busy_set"] = busy_set
     app["active_game_index"] = ActiveGameIndex(redis_url)
     app["rooms"] = RedisRoomRegistry(redis_url, busy_set=busy_set)
     app["room_shard_index"] = RoomShardIndex(redis_url)
+    app["leaderboard"] = Leaderboard(redis_url)
+    app["presence"] = Presence(redis_url)
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
     app.add_routes(routes)

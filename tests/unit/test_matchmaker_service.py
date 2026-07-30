@@ -36,7 +36,7 @@ def queue():
 
     from server.redis.matchmaking import RedisMatchmakingQueue
 
-    redis_lib.Redis.from_url(REDIS_URL).delete("kfchess:matchmaking:order", "kfchess:matchmaking:waiting")
+    redis_lib.Redis.from_url(REDIS_URL).delete("kfchess:matchmaking:by_rating", "kfchess:matchmaking:waiting")
     # Short knobs so the test doesn't take real minutes - this queue's
     # timeout/status-interval are its own construction args, unrelated to
     # the shared production defaults.
@@ -102,7 +102,7 @@ def test_on_matchmaking_requested_enqueues_into_the_real_queue():
 
     from server.redis.matchmaking import RedisMatchmakingQueue
 
-    redis_lib.Redis.from_url(REDIS_URL).delete("kfchess:matchmaking:order", "kfchess:matchmaking:waiting")
+    redis_lib.Redis.from_url(REDIS_URL).delete("kfchess:matchmaking:by_rating", "kfchess:matchmaking:waiting")
     test_queue = RedisMatchmakingQueue(REDIS_URL, timeout_ms=1500, status_interval_ms=500)
 
     msg = _FakeMsg(json.dumps({"username": "dana", "rating": 1300}).encode("utf-8"))

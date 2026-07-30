@@ -151,6 +151,54 @@ def _build_fairness_checkpoint():
     return FairnessCheckpoint(redis_url)
 
 
+# REDIS_URL unset (the default) keeps presence untracked entirely - fine for
+# a single bare-metal process with no other service that could ever ask "is
+# this username online." Set, this is Server_Design.md §5's own "presence /
+# session directory" (see server/redis/presence.py), marked online/offline
+# right alongside this same shard's own login/identify/disconnect handling.
+def _build_presence():
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url is None:
+        return None
+
+    from server.redis.presence import Presence
+
+    return Presence(redis_url)
+
+
+# REDIS_URL unset (the default) skips the §4 room-ownership lease entirely -
+# fine for a bare-metal run with no standalone Game Allocator to race
+# against in the first place. Set, this is the same RoomShardIndex a
+# standalone Game Allocator writes (see services/game_allocator/main.py) -
+# this shard only ever renews/releases it, never sets it (see
+# server/interfaces.py's RoomShardIndexProtocol, and
+# server/redis/room_shard_index.py's own docstring on why set() stays the
+# allocator's job).
+def _build_room_shard_index():
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url is None:
+        return None
+
+    from server.redis.room_shard_index import RoomShardIndex
+
+    return RoomShardIndex(redis_url)
+
+
+# Wraps rating_store so every update_rating call also keeps
+# Server_Design.md §5's own Redis leaderboard (server/redis/leaderboard.py)
+# in sync - see that module's own docstring for why GameSession.
+# finalize_ratings_if_game_over is the one call site this needs to cover.
+# REDIS_URL unset (the default) leaves rating_store untouched.
+def _wrap_rating_store_with_leaderboard(rating_store):
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url is None:
+        return rating_store
+
+    from server.redis.leaderboard import Leaderboard, LeaderboardRatingStore
+
+    return LeaderboardRatingStore(rating_store, Leaderboard(redis_url))
+
+
 # NATS_URL unset (the default) keeps today's behavior exactly as before -
 # GameLoop treats no lifecycle_publisher as a pure no-op (see its own
 # docstring). Set (see docker-compose.yml) switches to
@@ -207,7 +255,7 @@ async def _build_matchmaking_relay(server: GameServer) -> None:
 # set without REDIS_URL is a misconfiguration - logged and skipped, not
 # raised, matching every other opt-in feature's own "fail soft" convention
 # in this module.
-def _maybe_start_shard_heartbeat() -> None:
+def _maybe_start_shard_heartbeat(server: GameServer) -> None:
     shard_address = os.environ.get("SHARD_ADDRESS")
     if shard_address is None:
         return
@@ -219,14 +267,18 @@ def _maybe_start_shard_heartbeat() -> None:
 
     from server.redis.shard_registry import ShardRegistry
 
-    asyncio.create_task(_run_shard_heartbeat(ShardRegistry(redis_url), shard_address))
+    asyncio.create_task(_run_shard_heartbeat(ShardRegistry(redis_url), shard_address, server.active_game_count))
 
 
 # interval_s is well under ShardRegistry's own default 10s TTL, so one slow
-# tick never causes this shard to be seen as dead when it's not.
-async def _run_shard_heartbeat(registry, shard_address: str, interval_s: float = 3.0) -> None:
+# tick never causes this shard to be seen as dead when it's not. room_count_fn
+# is server.active_game_count - a callable, not a snapshotted int, so every
+# heartbeat reports this shard's *current* load (Server_Design.md §9's own
+# "bound the blast radius" - see server/redis/shard_registry.py's own
+# pick_shard docstring), not whatever it was when this loop started.
+async def _run_shard_heartbeat(registry, shard_address: str, room_count_fn, interval_s: float = 3.0) -> None:
     while True:
-        registry.register(shard_address)
+        registry.register(shard_address, room_count=room_count_fn())
         await asyncio.sleep(interval_s)
 
 
@@ -268,12 +320,15 @@ def _build_readiness_checks(redis_url, database_url, lifecycle_publisher) -> dic
 
 async def _main() -> None:
     user_store, rating_store, room_store = _build_stores()
+    rating_store = _wrap_rating_store_with_leaderboard(rating_store)
     matchmaking = _build_matchmaking()
     lifecycle_publisher = await _build_lifecycle_publisher()
     busy_set = _build_busy_set()
     active_game_index = _build_active_game_index()
     remote_rooms = _build_remote_rooms()
     fairness_checkpoint = _build_fairness_checkpoint()
+    presence = _build_presence()
+    room_shard_index = _build_room_shard_index()
     # Same env var _maybe_start_shard_heartbeat already reads below - handed
     # to GameServer/GameLoop too now, so every ActiveGameLocation this shard
     # writes carries its own real, reachable address (see
@@ -294,9 +349,11 @@ async def _main() -> None:
         shard_address=shard_address,
         remote_rooms=remote_rooms,
         fairness_checkpoint=fairness_checkpoint,
+        presence=presence,
+        room_shard_index=room_shard_index,
     )
     await _build_matchmaking_relay(server)
-    _maybe_start_shard_heartbeat()
+    _maybe_start_shard_heartbeat(server)
     readiness_checks = _build_readiness_checks(
         os.environ.get("REDIS_URL"), os.environ.get("DATABASE_URL"), lifecycle_publisher
     )

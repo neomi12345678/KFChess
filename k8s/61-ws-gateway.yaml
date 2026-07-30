@@ -1,0 +1,89 @@
+# Server_Design.md §3/§11's own "WS Gateway | stateless - socket
+# termination, no game logic, pub/sub bridge only" - the other public-IP
+# role. §10's own planning number: "~20,000 connections/Gateway" (not yet
+# measured - see that section's own caveat), which is what
+# kfchess_ws_gateway_connections (services/ws_gateway/main.py's own Gauge)
+# would drive a real HPA on once a Prometheus Adapter is in place (see
+# 00-namespace-and-config.yaml's own top comment) - CPU below is a
+# placeholder for that.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: ws-gateway
+  namespace: kfchess
+spec:
+  type: LoadBalancer
+  selector:
+    app: ws-gateway
+  ports:
+    - name: ws
+      port: 8767
+      targetPort: 8767
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ws-gateway
+  namespace: kfchess
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ws-gateway
+  template:
+    metadata:
+      labels:
+        app: ws-gateway
+    spec:
+      containers:
+        - name: ws-gateway
+          image: kfchess/ws-gateway:latest
+          envFrom:
+            - configMapRef:
+                name: kfchess-config
+          ports:
+            - containerPort: 8767
+            - name: health
+              containerPort: 9101
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9101
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9101
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ws-gateway
+  namespace: kfchess
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ws-gateway
+  minReplicas: 3
+  maxReplicas: 50
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

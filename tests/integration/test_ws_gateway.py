@@ -34,6 +34,7 @@ from protocol.lobby_messages import IdentifyMessage
 from protocol.registry import encode_json_message
 from server.interfaces import ActiveGameLocation
 from server.redis.active_game_index import ActiveGameIndex
+from server.redis.presence import Presence
 from server.redis.room_shard_index import RoomShardIndex
 from server.redis.rooms import RedisRoomRegistry
 from server.sqlite.accounts import UserStore
@@ -88,13 +89,16 @@ async def running_ws_gateway(shard_port: int):
     active_game_index = ActiveGameIndex(REDIS_URL)
     rooms = RedisRoomRegistry(REDIS_URL)
     room_shard_index = RoomShardIndex(REDIS_URL)
+    presence = Presence(REDIS_URL)
     waiters = _AllocationWaiters()
     status_relay = _StatusRelay()
     nats_connection = await nats.connect(NATS_URL)
     await _subscribe_matchmaking_events(nats_connection, waiters, status_relay)
 
     async def _handler(client_ws) -> None:
-        await _handle_client(active_game_index, rooms, room_shard_index, waiters, status_relay, shard_port, client_ws)
+        await _handle_client(
+            active_game_index, rooms, room_shard_index, waiters, status_relay, presence, shard_port, client_ws
+        )
 
     async with websockets.serve(_handler, "localhost", 0) as gw_server:
         port = gw_server.sockets[0].getsockname()[1]

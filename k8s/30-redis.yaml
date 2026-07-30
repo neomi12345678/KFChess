@@ -1,0 +1,63 @@
+# Single-instance Redis, matching docker-compose.yml's own redis service -
+# Server_Design.md §5's own presence/matchmaking-queue/leaderboard store
+# and §4's own room-ownership lease/shard registry, all in one place here.
+# Production should be Redis Cluster/Sentinel instead (§9's own table:
+# "replica per shard, automatic failover; sharded by region/rating so one
+# shard's outage doesn't affect the whole world") - a single Pod is a
+# single point of failure for every one of those, acceptable for a dev/demo
+# cluster the same way docker-compose.yml's own single redis: service is,
+# not for production.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: kfchess
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: kfchess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        # emptyDir, not a PVC - every key this project stores in Redis is
+        # either a lease/heartbeat with its own TTL or reconstructible from
+        # Postgres/live process state (see server/redis/*.py's own
+        # docstrings) - nothing here needs to survive a pod restart, unlike
+        # Postgres's own volumeClaimTemplates.
+        - name: data
+          emptyDir: {}

@@ -1,0 +1,76 @@
+# Server_Design.md §11's own role row: "Matchmaker | Shared state in Redis
+# | Consumes matchmaking requests off NATS... | Scales on: Queue depth."
+# Stateless (all queue state lives in Redis - server/redis/matchmaking.py),
+# no public IP - only reachable inside the cluster (see docker-compose.yml's
+# own matchmaker service, which likewise publishes no host port).
+#
+# replicas: 1, deliberately, and no HorizontalPodAutoscaler below - unlike
+# every other stateless role in this manifest set, this one is NOT actually
+# safe to run with more than one replica against today's code:
+# RedisMatchmakingQueue.advance_time mutates each waiting entry's own
+# waited_ms with no distributed lock (two replicas both ticking would
+# double-count it, expiring players early), and find_match is read-then-
+# later-remove with no atomic claim (two replicas could both read the same
+# pair before either removes it, and both publish match.found for it -
+# services/game_allocator/main.py mints a *fresh* game_id per match.found,
+# so the usual per-game_id lease never catches this particular
+# double-match). §11's own "Scales on: Queue depth" is the target, not
+# what this code does today - reaching it needs either a leader-election
+# lock around the tick loop or partitioning the queue by a hash range
+# across replicas, neither of which exists yet.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: matchmaker
+  namespace: kfchess
+spec:
+  selector:
+    app: matchmaker
+  ports:
+    - name: health
+      port: 9102
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: matchmaker
+  namespace: kfchess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: matchmaker
+  template:
+    metadata:
+      labels:
+        app: matchmaker
+    spec:
+      containers:
+        - name: matchmaker
+          image: kfchess/matchmaker:latest
+          envFrom:
+            - configMapRef:
+                name: kfchess-config
+          ports:
+            - containerPort: 9102
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9102
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9102
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

@@ -1,0 +1,95 @@
+# Server_Design.md §3/§11's own "API Gateway | stateless - login, rooms,
+# history, matchmaking requests" - one of the two roles with a public IP
+# (§3's own "edgetier" - DDoS insulation for everything behind it). A real
+# rollout likely fronts this Service with an Ingress + cert-manager rather
+# than a bare LoadBalancer - swapped for whatever this cluster's own
+# ingress controller expects.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: kfchess
+spec:
+  type: LoadBalancer
+  selector:
+    app: api-gateway
+  ports:
+    - port: 8080
+      targetPort: 8080
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: kfchess
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+        - name: api-gateway
+          image: kfchess/api-gateway:latest
+          envFrom:
+            - configMapRef:
+                name: kfchess-config
+            - secretRef:
+                name: kfchess-postgres-credentials
+          ports:
+            - containerPort: 8080
+          # /healthz//readyz live on the same aiohttp app/port as ordinary
+          # routes (see services/api_gateway/main.py's own docstring on why
+          # it gets ordinary routes instead of a second observability
+          # server) - no separate health port to reference, unlike every
+          # other role in this manifest set.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+
+---
+# Server_Design.md §11's own "Scales on: Request rate" - CPU is the
+# available proxy here (kfchess_api_requests_total, services/api_gateway/main.py's
+# own Counter, would need a Prometheus Adapter to drive an HPA directly on
+# request rate itself - see 00-namespace-and-config.yaml's own top comment).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway
+  namespace: kfchess
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  minReplicas: 3
+  maxReplicas: 50
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

@@ -12,15 +12,23 @@ use, %s placeholders instead of SQLite's "?". No SQLite counterpart exists
 Worker to write through, so there's nothing to mirror there.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import psycopg
+
+from server.postgres import create_table_tolerating_concurrent_creation
 
 
 class PostgresGameHistoryStore:
     def __init__(self, dsn: str):
         self._connection = psycopg.connect(dsn, autocommit=False)
-        self._connection.execute(
+        # Tolerates the concurrent-first-boot race (see
+        # server/postgres/__init__.py's own docstring) - less likely here
+        # (today's deployment only ever runs one Persistence Worker) but
+        # cheap insurance against the same class of bug if that ever
+        # changes, same reasoning as its sibling stores in this package.
+        create_table_tolerating_concurrent_creation(
+            self._connection,
             """
             CREATE TABLE IF NOT EXISTS game_history (
                 game_id TEXT PRIMARY KEY,
@@ -31,7 +39,7 @@ class PostgresGameHistoryStore:
                 black_rating INTEGER NOT NULL,
                 finished_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
-            """
+            """,
         )
         self._connection.commit()
 
@@ -62,11 +70,45 @@ class PostgresGameHistoryStore:
         )
         self._connection.commit()
 
+    # Server_Design.md §8's own "Persistence Workers consume it in batches" -
+    # one executemany + one commit for the whole batch, not one INSERT/commit
+    # round trip per game (see record_game above, still used directly by
+    # tests/callers that want a single insert). games is the same
+    # (game_id, room_id, white_username, black_username, white_rating,
+    # black_rating) tuple shape record_game takes as separate args, just
+    # batched - see services/persistence_worker/main.py's own
+    # _tuple_from_payload, which builds these from game.finished payloads.
+    def record_games_batch(
+        self, games: List[Tuple[str, Optional[str], str, str, int, int]]
+    ) -> None:
+        if not games:
+            return
+        with self._connection.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO game_history
+                    (game_id, room_id, white_username, black_username, white_rating, black_rating)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (game_id) DO NOTHING
+                """,
+                games,
+            )
+        self._connection.commit()
+
     def all_games(self) -> List[dict]:
         rows = self._connection.execute(
             "SELECT game_id, room_id, white_username, black_username, white_rating, black_rating "
             "FROM game_history ORDER BY finished_at"
-        )
+        ).fetchall()
+        # Same reasoning as server/postgres/rooms.py's own PostgresRoomStore.
+        # load_all - a read-only SELECT under autocommit=False would
+        # otherwise leave this connection idle in an open transaction
+        # indefinitely, holding a lock that can block an unrelated
+        # exclusive operation (e.g. a test fixture's own TRUNCATE)
+        # elsewhere. .fetchall() first, not lazily iterating the cursor in
+        # the list comprehension below - rollback() must run after every
+        # row has actually been read, not before.
+        self._connection.rollback()
         return [
             {
                 "game_id": row[0],

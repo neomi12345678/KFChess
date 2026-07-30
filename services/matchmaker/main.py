@@ -6,7 +6,7 @@ at once), pulled out into its own deployable so matchmaking pairing keeps
 running independently of any one game-server instance.
 
 Reuses server/redis/matchmaking.py's RedisMatchmakingQueue unchanged - the
-same two Redis keys (kfchess:matchmaking:order/kfchess:matchmaking:waiting)
+same two Redis keys (kfchess:matchmaking:by_rating/kfchess:matchmaking:waiting)
 this service manages are exactly what server/router.py's CommandRouter
 still writes to directly for the bare-metal websocket PLAY path (that path
 is intentionally untouched - see below). This process holds no websocket

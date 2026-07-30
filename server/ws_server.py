@@ -77,7 +77,9 @@ from server.interfaces import (
     FairnessCheckpointProtocol,
     LifecyclePublisher,
     MatchmakingQueueProtocol,
+    PresenceProtocol,
     RatingRepository,
+    RoomShardIndexProtocol,
     UserRepository,
 )
 from server.logging_config import username_ctx
@@ -153,6 +155,17 @@ class GameServer:
         # straight through to GameLoop, see its own docstring on this same
         # param.
         fairness_checkpoint: Optional[FairnessCheckpointProtocol] = None,
+        # Overridable so server/main.py can hand in a Redis-backed presence
+        # set (see server/redis/presence.py) - Server_Design.md §5's own
+        # "session directory," marked online the instant a username is
+        # known (login/identify) and offline in this class's own
+        # connection-lifecycle finally block. None (the default) is a
+        # no-op - every existing caller/test is unaffected.
+        presence: Optional[PresenceProtocol] = None,
+        # Overridable so server/main.py can hand in a Redis-backed lease
+        # (see server/redis/room_shard_index.py) - passed straight through
+        # to GameLoop, see its own docstring on this same param.
+        room_shard_index: Optional[RoomShardIndexProtocol] = None,
     ):
         self._user_store = user_store
         self._rating_store = rating_store
@@ -173,8 +186,10 @@ class GameServer:
             active_game_index=active_game_index,
             shard_address=shard_address,
             fairness_checkpoint=fairness_checkpoint,
+            room_shard_index=room_shard_index,
         )
         self._router = CommandRouter(self._rooms, self._loop, rating_store, self._connections, remote_rooms=remote_rooms)
+        self._presence = presence
         self._host = host
         self._port = port
         self._ping_interval_s = ping_interval_s
@@ -186,6 +201,10 @@ class GameServer:
     @property
     def bound_port(self) -> int:
         return self._ws_server.sockets[0].getsockname()[1]
+
+    # Passthrough to GameLoop's own method - see its docstring.
+    def active_game_count(self) -> int:
+        return self._loop.active_game_count()
 
     # Passthrough to GameLoop's own method - see its docstring. Called once
     # at startup, before run_forever, from server/main.py.
@@ -235,6 +254,8 @@ class GameServer:
             # username back in - see its own docstring.
             if username is not None and self._connections.discard_if_current(username, websocket):
                 self._router.decide_disconnect(username)
+                if self._presence is not None:
+                    self._presence.mark_offline(username)
 
     # Returns the connection's username going forward - unchanged from
     # whatever was passed in, unless this message was the LOGIN that just
@@ -331,6 +352,8 @@ class GameServer:
             close_task.add_done_callback(self._log_stale_close_failure)
 
         self._connections.set(username, websocket)
+        if self._presence is not None:
+            self._presence.mark_online(username)
 
         decision = self._router.decide_login(username, rating)
         await self._connections.send(websocket, decision.ack)
@@ -367,6 +390,8 @@ class GameServer:
             close_task.add_done_callback(self._log_stale_close_failure)
 
         self._connections.set(username, websocket)
+        if self._presence is not None:
+            self._presence.mark_online(username)
 
         decision = self._router.decide_identify(username)
         await self._connections.send(websocket, decision.ack)

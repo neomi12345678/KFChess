@@ -1,10 +1,17 @@
 services:
+  # Primary - the one writer. Server_Design.md §5's own "PostgreSQL/MySQL,
+  # primary + read replicas" - wal_level/max_wal_senders/hot_standby are
+  # what actually let postgres-replica (below) stream from this one;
+  # docker/postgres/enable-replication.sh (mounted into
+  # docker-entrypoint-initdb.d, runs once on first boot only) is what lets
+  # that replica's connection authenticate at all.
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: kfchess
       POSTGRES_USER: kfchess
       POSTGRES_PASSWORD: kfchess
+    command: ["postgres", "-c", "wal_level=replica", "-c", "max_wal_senders=10", "-c", "hot_standby=on"]
     ports:
       # Host-side 55432, not 5432 - this machine already has a standalone
       # Postgres bound to the real 5432 (unrelated to this project); the
@@ -13,11 +20,50 @@ services:
       - "55432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/enable-replication.sh:/docker-entrypoint-initdb.d/enable-replication.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kfchess -d kfchess"]
       interval: 2s
       timeout: 3s
       retries: 15
+
+  # Read replica - a genuine streaming standby (see
+  # docker/postgres/replica-entrypoint.sh's own pg_basebackup -R), not a
+  # second independent database. services/api_gateway/main.py's own
+  # DATABASE_URL_REPLICA points here, for the read-only, staleness-tolerant
+  # rating lookups behind POST /login and POST /play (see that module's own
+  # docstring on why *those* reads specifically, and not
+  # server/postgres/accounts.py's own PostgresRatingStore.update_rating -
+  # a standby physically rejects writes, so misrouting one here would fail
+  # loudly, not silently diverge). depends_on postgres being healthy first,
+  # not just started - pg_basebackup needs the primary actually accepting
+  # connections, not merely mid-initdb.
+  postgres-replica:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kfchess
+      POSTGRES_PASSWORD: kfchess
+      PGDATA: /var/lib/postgresql/data
+      PRIMARY_HOST: postgres
+      PRIMARY_PORT: "5432"
+    entrypoint: ["/scripts/replica-entrypoint.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "55434:5432"
+    volumes:
+      - postgres-replica-data:/var/lib/postgresql/data
+      - ./docker/postgres/replica-entrypoint.sh:/scripts/replica-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kfchess -d kfchess"]
+      interval: 2s
+      timeout: 3s
+      # More retries than the primary's own healthcheck - pg_basebackup
+      # cloning the primary's data directory on first boot takes real time
+      # (however small this demo dataset is), unlike the primary's own
+      # near-instant initdb.
+      retries: 60
 
   redis:
     image: redis:7-alpine
@@ -112,10 +158,17 @@ services:
       - "8080:8080"
     environment:
       DATABASE_URL: "postgresql://kfchess:kfchess@postgres:5432/kfchess"
+      # Server_Design.md §5's own read-replica routing - the standalone
+      # API Gateway's own rating_store reads through this instead (see
+      # services/api_gateway/main.py's own build_app), leaving DATABASE_URL
+      # above as the primary every write (and every other read) still uses.
+      DATABASE_URL_REPLICA: "postgresql://kfchess:kfchess@postgres-replica:5432/kfchess"
       REDIS_URL: "redis://redis:6379/0"
       NATS_URL: "nats://nats:4222"
     depends_on:
       postgres:
+        condition: service_healthy
+      postgres-replica:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -238,3 +291,4 @@ services:
 
 volumes:
   postgres-data:
+  postgres-replica-data:
