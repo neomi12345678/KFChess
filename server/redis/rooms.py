@@ -45,11 +45,10 @@ than a partial one:
   calls this instead, from its own game.finished subscription (the same
   event services/persistence_worker/main.py already consumes) - without it,
   every room ever played would leak its Redis keys forever. Best-effort
-  only, same as the rest of this pass: a game that crashes without ever
-  reaching game.finished (see server/game_loop.py's own _fail_game, which
-  doesn't publish that event) leaves this cleanup unrun - a pre-existing
-  gap in the crash path generally (persistence-worker misses the same
-  crashed game for the same reason), not something this pass tries to fix.
+  only, same as the rest of this pass: this also covers a game that crashes
+  mid-tick (see server/game_loop.py's own _fail_game), which publishes
+  game.finished with unchanged ratings for exactly this reason - there is
+  no separate "crashed" event for this class or persistence-worker to miss.
 
 Plain sync `redis` client, same reasoning as this package's other modules
 (server/redis/matchmaking.py, server/redis/busy_set.py,
