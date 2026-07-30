@@ -83,6 +83,13 @@ class RedisMatchmakingQueue:
     def is_waiting(self, username: str) -> bool:
         return bool(self._redis.hexists(_WAITING_KEY, username))
 
+    # Server_Design.md §9's own "queue depth per Matchmaker replica" metric
+    # (see services/matchmaker/main.py's own kfchess_matchmaker_queue_depth
+    # gauge) - HLEN is O(1), no need to pull every waiting entry just to
+    # count them.
+    def queue_depth(self) -> int:
+        return self._redis.hlen(_WAITING_KEY)
+
     # Same two-list contract as server/matchmaking.py's own advance_time -
     # see MatchmakingTick's own docstring (server/interfaces.py) - kept to
     # exactly one hset per surviving entry, same as before this method

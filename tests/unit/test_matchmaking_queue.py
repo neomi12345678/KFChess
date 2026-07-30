@@ -193,6 +193,25 @@ def test_advance_time_reports_only_timed_out_when_a_status_boundary_and_the_time
     assert tick.due_for_status == []
 
 
+# queue_depth (Server_Design.md §9's own "queue depth per Matchmaker
+# replica" metric) exists only on RedisMatchmakingQueue, not the shared
+# MatchmakingQueueProtocol surface every test above runs against both
+# implementations for - a Redis-only test, same REDIS_URL gating/helper as
+# the rest of this file, not parametrized across both.
+@pytest.mark.skipif(REDIS_URL is None, reason="set KFCHESS_TEST_REDIS_URL to a real Redis to run these")
+def test_queue_depth_reflects_currently_waiting_usernames():
+    redis_queue = _redis_queue()
+
+    assert redis_queue.queue_depth() == 0
+
+    redis_queue.enqueue("alice", 1200)
+    redis_queue.enqueue("bob", 1250)
+    assert redis_queue.queue_depth() == 2
+
+    redis_queue.remove("alice")
+    assert redis_queue.queue_depth() == 1
+
+
 def test_re_enqueue_resets_last_notified_ms(queue):
     queue.enqueue("alice", 1200)
     first = queue.advance_time(_STATUS_INTERVAL_MS).due_for_status  # first heartbeat fires, last_notified_ms -> 3000

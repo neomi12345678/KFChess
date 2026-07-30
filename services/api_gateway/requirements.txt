@@ -2,3 +2,4 @@ aiohttp
 redis
 psycopg[binary]
 nats-py
+prometheus_client

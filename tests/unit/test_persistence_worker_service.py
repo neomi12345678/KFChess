@@ -43,7 +43,9 @@ def store():
     game_history_store.close()
 
 
-def _fake_game_finished_msg(game_id="play-a1b2c3d4", room_id=None, white="alice", black="bob", ratings=None):
+def _fake_game_finished_msg(
+    game_id="play-a1b2c3d4", room_id=None, white="alice", black="bob", ratings=None, published_at=None
+):
     payload = {
         "game_id": game_id,
         "room_id": room_id,
@@ -51,6 +53,8 @@ def _fake_game_finished_msg(game_id="play-a1b2c3d4", room_id=None, white="alice"
         "black_username": black,
         "ratings": ratings or {"white": 1214, "black": 1186},
     }
+    if published_at is not None:
+        payload["published_at"] = published_at
     return _FakeMsg(json.dumps(payload).encode("utf-8"))
 
 
@@ -89,3 +93,30 @@ def test_on_game_finished_twice_for_the_same_game_id_is_a_no_op(store):
     asyncio.run(_on_game_finished(store, _fake_game_finished_msg(ratings={"white": 9999, "black": 9999})))
 
     assert len(store.all_games()) == 1
+
+
+# Server_Design.md §9's own "consumer lag per Persistence Worker" metric -
+# published_at is a newer field (see server/nats/lifecycle.py's own
+# NatsLifecyclePublisher.game_finished); read defensively so an older
+# payload without it still records the game, just without moving the gauge.
+def test_on_game_finished_with_published_at_updates_the_lag_gauge(store):
+    import asyncio
+    import time
+
+    from services.persistence_worker.main import _LAG_GAUGE, _on_game_finished
+
+    published_at = time.time() - 2.0  # published ~2s ago
+    asyncio.run(_on_game_finished(store, _fake_game_finished_msg(published_at=published_at)))
+
+    assert _LAG_GAUGE._value.get() >= 2.0
+
+
+def test_on_game_finished_without_published_at_does_not_crash(store):
+    import asyncio
+
+    from services.persistence_worker.main import _on_game_finished
+
+    asyncio.run(_on_game_finished(store, _fake_game_finished_msg(game_id="play-no-timestamp")))
+
+    [game] = store.all_games()
+    assert game["game_id"] == "play-no-timestamp"

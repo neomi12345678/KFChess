@@ -17,20 +17,34 @@ history) rather than replacing an existing one.
 Subscribes to:
     game.finished  {"game_id": str, "room_id": str|null,
                      "white_username": str, "black_username": str,
-                     "ratings": {"white": int, "black": int}}
+                     "ratings": {"white": int, "black": int},
+                     "published_at": float}
+
+published_at (a unix timestamp - see server/nats/lifecycle.py's own
+NatsLifecyclePublisher.game_finished) is what lets this service report
+Server_Design.md §9's own "consumer lag per Persistence Worker" metric -
+read defensively (payload.get, not payload[]) since it's a newer field
+older publishers/tests may not send; the gauge simply isn't updated for
+those, rather than this handler failing to record a real game over a
+metric.
 """
 
 import asyncio
 import json
 import logging
 import os
+import time
 
 import nats
+from prometheus_client import Gauge
 
 from server.logging_config import configure_logging, room_id_ctx
+from server.observability_server import start_observability_server
 from server.postgres.game_history import PostgresGameHistoryStore
 
 _logger = logging.getLogger(__name__)
+
+_LAG_GAUGE = Gauge("kfchess_persistence_worker_lag_seconds", "Time between a game.finished publish and its processing")
 
 
 def _record_from_payload(store: PostgresGameHistoryStore, payload: dict) -> None:
@@ -49,6 +63,11 @@ async def _on_game_finished(store: PostgresGameHistoryStore, msg) -> None:
     payload = json.loads(msg.data)
     room_id_ctx.set(payload["room_id"] if payload["room_id"] is not None else payload["game_id"])
     _record_from_payload(store, payload)
+
+    published_at = payload.get("published_at")
+    if published_at is not None:
+        _LAG_GAUGE.set(time.time() - published_at)
+
     _logger.info(
         "recorded game %s ('%s' vs '%s')", payload["game_id"], payload["white_username"], payload["black_username"]
     )
@@ -65,6 +84,18 @@ async def _main() -> None:
         await _on_game_finished(store, msg)
 
     await nats_connection.subscribe("game.finished", cb=_on_message)
+
+    def _check_postgres() -> bool:
+        import psycopg
+
+        with psycopg.connect(database_url, connect_timeout=2) as connection:
+            connection.execute("SELECT 1")
+        return True
+
+    health_port = int(os.environ.get("HEALTH_PORT", 9104))
+    start_observability_server(
+        health_port, {"postgres": _check_postgres, "nats": lambda: nats_connection.is_connected}
+    )
 
     _logger.info("persistence-worker running (database=%s nats=%s)", database_url, nats_url)
     await asyncio.Event().wait()  # driven entirely by the subscription callback above

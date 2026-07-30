@@ -85,8 +85,10 @@ from typing import Optional
 
 import nats
 import redis
+from prometheus_client import Counter
 
 from server.logging_config import configure_logging, room_id_ctx
+from server.observability_server import start_observability_server
 from server.redis.active_game_index import ActiveGameIndex
 from server.redis.busy_set import BusySet
 from server.redis.fairness_checkpoint import FairnessCheckpoint
@@ -96,6 +98,11 @@ from server.redis.shard_registry import ShardRegistry
 from server.server_config import SHARD_RECOVERY_SWEEP_INTERVAL_MS
 
 _logger = logging.getLogger(__name__)
+
+# §11's own role table: "Game Allocator | ... | Scales on: Allocation
+# rate" - not named in §9's own metrics bullet directly, but the same
+# per-role-metric convention.
+_ALLOCATIONS_COUNTER = Counter("kfchess_game_allocator_allocations_total", "Total games/rooms allocated to a shard")
 
 
 def _acquire_lease(redis_client, game_id: str, shard_address: str, ttl_ms: int = 5000) -> bool:
@@ -127,6 +134,8 @@ async def _allocate(
     if not _acquire_lease(redis_client, game_id, shard_address):
         _logger.error("failed to acquire lease for game_id %s - not allocating", game_id)
         return
+
+    _ALLOCATIONS_COUNTER.inc()
 
     # The Server_Design.md §4 room_id -> worker mapping itself - room_id is
     # None for a PLAY match (nothing for a spectator to ever look up), set
@@ -252,7 +261,16 @@ async def _run_recovery_sweep(
 ) -> None:
     while True:
         await asyncio.sleep(interval_s)
-        await _sweep_for_dead_shards(registry, room_shard_index, rooms, active_game_index, fairness_checkpoint)
+        # A transient Redis blip must not silently kill this background
+        # task forever (asyncio.create_task's own caller - see _main()
+        # below - never awaits or restarts it) - same "isolate one bad
+        # tick, keep the loop alive" fix applied to
+        # services/matchmaker/main.py's own _run_forever after a real
+        # docker-compose Redis outage crashed that service outright.
+        try:
+            await _sweep_for_dead_shards(registry, room_shard_index, rooms, active_game_index, fairness_checkpoint)
+        except Exception:
+            _logger.exception("recovery sweep failed - skipping this pass")
 
 
 async def _main() -> None:
@@ -288,6 +306,16 @@ async def _main() -> None:
             fairness_checkpoint,
             interval_s=SHARD_RECOVERY_SWEEP_INTERVAL_MS / 1000,
         )
+    )
+
+    # Explicit, short timeouts - redis-py's own default is *no* timeout at
+    # all, which would hang this check instead of failing it fast.
+    health_redis_client = redis.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+
+    health_port = int(os.environ.get("HEALTH_PORT", 9103))
+    start_observability_server(
+        health_port,
+        {"redis": lambda: bool(health_redis_client.ping()), "nats": lambda: nats_connection.is_connected},
     )
 
     _logger.info("game-allocator running (redis=%s nats=%s)", redis_url, nats_url)

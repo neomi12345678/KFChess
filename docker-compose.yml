@@ -56,6 +56,17 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+    # Server_Design.md §9's own health/readiness probes - /healthz on this
+    # service's own observability server (server/observability_server.py),
+    # default port per services/matchmaker/main.py's own HEALTH_PORT.
+    # python, not curl/wget - python:3.11-slim (every image in this
+    # project's own build) doesn't ship either of those, but always has
+    # python itself.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:9102/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   game-allocator:
     build:
@@ -69,6 +80,11 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:9103/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   persistence-worker:
     build:
@@ -82,6 +98,11 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:9104/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   api-gateway:
     build:
@@ -100,6 +121,15 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+    # This one's /healthz lives on the same aiohttp app/port as everything
+    # else (see services/api_gateway/main.py's own docstring on why it
+    # gets ordinary routes instead of a second server) - no separate
+    # observability port to reference.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8080/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   # The public entry point for the live game itself (moves/snapshots) -
   # see services/ws_gateway/main.py's own docstring. Needs no Postgres (no
@@ -120,6 +150,11 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:9101/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   # No public "ports:" mapping - Server_Design.md §3's "Game Server Shards
   # carry no public IP at all" - only ws-gateway (below) ever opens a
@@ -159,6 +194,11 @@ services:
         condition: service_started
       game-allocator:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:9105/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   # A second, independent shard - same image, same everything as
   # game-server above except its own SHARD_ADDRESS/port, so
@@ -188,6 +228,13 @@ services:
         condition: service_started
       game-allocator:
         condition: service_started
+    # Same internal port as game-server's own healthcheck - a separate
+    # container, own network namespace, no collision.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:9105/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
 volumes:
   postgres-data:
