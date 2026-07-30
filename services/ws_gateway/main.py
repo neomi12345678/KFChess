@@ -57,7 +57,6 @@ never reaches this wait at all - nothing to be "still searching" for.
 
 import asyncio
 import contextlib
-import json
 import logging
 import os
 from typing import Dict, Optional
@@ -76,12 +75,14 @@ from protocol.registry import decode_json_message, encode_json_message
 from protocol.types import PORT as SHARD_PORT
 from protocol.types import WS_GATEWAY_PORT
 from server.logging_config import configure_logging, username_ctx
+from server.nats.events import GameAllocated, MatchmakingStatus, MatchmakingTimeout
 from server.observability_server import start_observability_server
 from server.redis.active_game_index import ActiveGameIndex
 from server.redis.presence import Presence
 from server.redis.room_shard_index import RoomShardIndex
 from server.redis.rooms import RedisRoomRegistry
 from server.server_config import MATCHMAKING_TIMEOUT_MS
+from tls_config import get_server_ssl_context
 
 _logger = logging.getLogger(__name__)
 
@@ -140,26 +141,26 @@ async def _subscribe_matchmaking_events(
     nats_connection, waiters: _AllocationWaiters, status_relay: _StatusRelay
 ) -> None:
     async def _on_allocated(msg) -> None:
-        payload = json.loads(msg.data)
-        for username in (payload["white_username"], payload["black_username"]):
-            waiters.resolve(username, payload["shard_address"])
+        event = GameAllocated.decode(msg.data)
+        for username in (event.white_username, event.black_username):
+            waiters.resolve(username, event.shard_address)
 
     async def _on_timeout(msg) -> None:
-        payload = json.loads(msg.data)
-        waiters.resolve(payload["username"], None)
+        event = MatchmakingTimeout.decode(msg.data)
+        waiters.resolve(event.username, None)
 
     async def _on_status(msg) -> None:
-        payload = json.loads(msg.data)
-        client_ws = status_relay.get(payload["username"])
+        event = MatchmakingStatus.decode(msg.data)
+        client_ws = status_relay.get(event.username)
         if client_ws is None:
             return
-        message = encode_json_message(MatchmakingStatusMessage(seconds_remaining=payload["seconds_remaining"]))
+        message = encode_json_message(MatchmakingStatusMessage(seconds_remaining=event.seconds_remaining))
         with contextlib.suppress(websockets.exceptions.ConnectionClosed):
             await client_ws.send(message)
 
-    await nats_connection.subscribe("game.allocated", cb=_on_allocated)
-    await nats_connection.subscribe("matchmaking.timeout", cb=_on_timeout)
-    await nats_connection.subscribe("matchmaking.status", cb=_on_status)
+    await nats_connection.subscribe(GameAllocated.SUBJECT, cb=_on_allocated)
+    await nats_connection.subscribe(MatchmakingTimeout.SUBJECT, cb=_on_timeout)
+    await nats_connection.subscribe(MatchmakingStatus.SUBJECT, cb=_on_status)
 
 
 # None means "give up" - the caller sends MatchmakingTimeoutMessage and
@@ -369,10 +370,18 @@ async def _main() -> None:
             active_game_index, rooms, room_shard_index, waiters, status_relay, presence, shard_port, client_ws
         )
 
-    async with websockets.serve(_handler, "0.0.0.0", port):
+    # SSL_CERT_FILE/SSL_KEY_FILE both unset (the default) keeps today's
+    # plaintext ws:// behavior - see tls_config.py's own docstring. This is
+    # the one listener in the whole deployment public clients actually
+    # speak WebSocket to directly (Server_Design.md §3's own edge tier), so
+    # it's the one that matters most for TLS.
+    ssl_context = get_server_ssl_context(os.environ.get("SSL_CERT_FILE"), os.environ.get("SSL_KEY_FILE"))
+    scheme = "wss" if ssl_context is not None else "ws"
+
+    async with websockets.serve(_handler, "0.0.0.0", port, ssl=ssl_context):
         _logger.info(
-            "ws-gateway listening on ws://0.0.0.0:%s (shard_port=%s redis=%s nats=%s)",
-            port, shard_port, redis_url, nats_url,
+            "ws-gateway listening on %s://0.0.0.0:%s (shard_port=%s redis=%s nats=%s)",
+            scheme, port, shard_port, redis_url, nats_url,
         )
         await asyncio.Event().wait()
 

@@ -264,6 +264,17 @@ This also gives the **DDoS-insulation** property worth keeping from one of
 the earlier proposals: Game Server Shards carry no public IP at all —
 every external packet terminates at a Gateway (API or WS) first.
 
+Those two Gateways are also the only processes that need to speak TLS at
+all — `tls_config.py`'s `get_server_ssl_context` (wired into both
+`services/api_gateway/main.py` and `services/ws_gateway/main.py` via
+`SSL_CERT_FILE`/`SSL_KEY_FILE`) terminates it right there, matching a real
+rollout's likely choice of an Ingress/L4 LoadBalancer doing the same job
+at the cluster edge instead (see `k8s/60-api-gateway.yaml`'s own comment).
+Either way, every hop behind that edge — Gateway→Shard, Gateway→NATS/Redis,
+service→Postgres — stays inside the private compose/cluster network the
+DDoS-insulation argument above already relies on, so there's no second TLS
+hop to terminate deeper in the system.
+
 ## 4. Room ownership: the gap every registry-only design has
 
 A `room_id → worker` mapping (Redis) — maintained by the **Game

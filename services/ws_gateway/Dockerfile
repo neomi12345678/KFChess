@@ -38,6 +38,14 @@ COPY server/logging_config.py server/logging_config.py
 COPY server/observability_server.py server/observability_server.py
 COPY server/rooms.py server/rooms.py
 COPY server/redis/ server/redis/
+# server/nats/events.py's typed GameAllocated/MatchmakingStatus/
+# MatchmakingTimeout - this service's own main.py builds/decodes NATS
+# payloads through these instead of a raw dict now (see that module's own
+# docstring).
+COPY server/nats/ server/nats/
+# get_server_ssl_context - only the stdlib ssl module at this import path,
+# see tls_config.py's own docstring on why cryptography isn't needed here.
+COPY tls_config.py .
 COPY services/ws_gateway/ services/ws_gateway/
 
 CMD ["python", "-m", "services.ws_gateway.main"]

@@ -23,6 +23,14 @@ COPY server/accounts.py server/accounts.py
 COPY server/rooms.py server/rooms.py
 COPY server/redis/ server/redis/
 COPY server/postgres/ server/postgres/
+# server/nats/events.py's typed MatchmakingRequested/RoomOpponentJoined/
+# GameFinished - this service's own main.py builds/decodes NATS payloads
+# through these instead of a raw dict now (see that module's own
+# docstring).
+COPY server/nats/ server/nats/
+# get_server_ssl_context - only the stdlib ssl module at this import path,
+# see tls_config.py's own docstring on why cryptography isn't needed here.
+COPY tls_config.py .
 COPY services/api_gateway/ services/api_gateway/
 
 EXPOSE 8080

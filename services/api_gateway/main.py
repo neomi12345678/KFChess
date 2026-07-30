@@ -62,7 +62,6 @@ gap (a crashed game's cleanup is skipped, same as its history).
 """
 
 import asyncio
-import json
 import logging
 import os
 from typing import Dict, Optional
@@ -73,6 +72,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
 from protocol.types import Reason, Role
 from server.accounts import InvalidCredentialsError
 from server.logging_config import configure_logging, room_id_ctx, username_ctx
+from server.nats.events import GameFinished, MatchmakingRequested, RoomOpponentJoined
 from server.postgres.accounts import (
     PostgresAccountsDatabase,
     PostgresRatingStore,
@@ -87,6 +87,7 @@ from server.redis.presence import Presence
 from server.redis.room_shard_index import RoomShardIndex
 from server.redis.rooms import RedisRoomRegistry
 from server.rooms import RoomError
+from tls_config import get_server_ssl_context
 
 _logger = logging.getLogger(__name__)
 
@@ -285,8 +286,8 @@ async def handle_play(request: web.Request) -> web.Response:
 
     rating = rating_store.rating_for(username)
     nats_connection = request.app["nats_connection"]
-    payload = {"username": username, "rating": rating}
-    await nats_connection.publish("matchmaking.requested", json.dumps(payload).encode("utf-8"))
+    event = MatchmakingRequested(username=username, rating=rating)
+    await nats_connection.publish(MatchmakingRequested.SUBJECT, event.encode())
     _logger.info("'%s' requested a match (rating %d)", username, rating)
     return web.json_response({"accepted": True, "reason": Reason.QUEUED.value})
 
@@ -349,8 +350,8 @@ async def handle_join_room(request: web.Request) -> web.Response:
     role = Role.OPPONENT if room.opponent == username else Role.SPECTATOR
     if role == Role.OPPONENT:
         nats_connection = request.app["nats_connection"]
-        payload = {"room_id": room_id, "creator": room.creator, "opponent": room.opponent}
-        await nats_connection.publish("room.opponent_joined", json.dumps(payload).encode("utf-8"))
+        event = RoomOpponentJoined(room_id=room_id, creator=room.creator, opponent=room.opponent)
+        await nats_connection.publish(RoomOpponentJoined.SUBJECT, event.encode())
         _logger.info("'%s' joined room %s as opponent - allocating a shard", username, room_id)
 
     return web.json_response({"accepted": True, "room_id": room_id, "role": role.value})
@@ -410,12 +411,11 @@ async def handle_presence(request: web.Request) -> web.Response:
 # in-process, on the very same object). room_id is None for a PLAY match's
 # game.finished - nothing to clean up here in that case.
 async def _on_game_finished(rooms: RedisRoomRegistry, room_shard_index: RoomShardIndex, msg) -> None:
-    payload = json.loads(msg.data)
-    room_id = payload.get("room_id")
-    if room_id is not None:
-        room_id_ctx.set(room_id)
-        rooms.close(room_id)
-        room_shard_index.remove(room_id)
+    event = GameFinished.decode(msg.data)
+    if event.room_id is not None:
+        room_id_ctx.set(event.room_id)
+        rooms.close(event.room_id)
+        room_shard_index.remove(event.room_id)
 
 
 async def _on_startup(app: web.Application) -> None:
@@ -431,7 +431,7 @@ async def _on_startup(app: web.Application) -> None:
     async def _on_message(msg) -> None:
         await _on_game_finished(rooms, room_shard_index, msg)
 
-    app["game_finished_sub"] = await nats_connection.subscribe("game.finished", cb=_on_message)
+    app["game_finished_sub"] = await nats_connection.subscribe(GameFinished.SUBJECT, cb=_on_message)
 
 
 async def _on_cleanup(app: web.Application) -> None:
@@ -530,7 +530,12 @@ def build_app() -> web.Application:
 def main() -> None:  # pragma: no cover
     configure_logging()
     port = int(os.environ.get("API_GATEWAY_PORT", 8080))
-    web.run_app(build_app(), host="0.0.0.0", port=port)
+    # SSL_CERT_FILE/SSL_KEY_FILE both unset (the default) keeps today's
+    # plaintext http:// behavior - see tls_config.py's own docstring. This
+    # is the other public-facing listener (Server_Design.md §3's edge
+    # tier, alongside ws-gateway) real clients speak REST to directly.
+    ssl_context = get_server_ssl_context(os.environ.get("SSL_CERT_FILE"), os.environ.get("SSL_KEY_FILE"))
+    web.run_app(build_app(), host="0.0.0.0", port=port, ssl_context=ssl_context)
 
 
 if __name__ == "__main__":  # pragma: no cover
