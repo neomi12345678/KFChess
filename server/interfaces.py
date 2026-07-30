@@ -127,6 +127,37 @@ class BusySetProtocol(Protocol):
     def contains(self, username: str) -> bool: ...
 
 
+# What server/ws_server.py's GameServer and services/ws_gateway/main.py both
+# call on the "who's currently connected" set they're given - satisfied by
+# server/redis/presence.py's Presence. Deliberately separate from
+# BusySetProtocol above: presence is "has an open socket at all," busy is
+# "committed to a queue/room/game" - a username can be one without the
+# other (idle in the lobby: present, not busy). Optional everywhere it's
+# threaded through, same None-is-a-no-op convention as every other
+# cross-process dependency here.
+class PresenceProtocol(Protocol):
+    def mark_online(self, username: str) -> None: ...
+
+    def mark_offline(self, username: str) -> None: ...
+
+    def is_online(self, username: str) -> bool: ...
+
+
+# What server/game_loop.py's GameLoop actually calls on the room-shard
+# lease it's given (self._room_shard_index) - satisfied by
+# server/redis/room_shard_index.py's RoomShardIndex. Only renew/remove are
+# used here (set is services/game_allocator/main.py's own job, the
+# acquiring side of the lease - see that module's own docstring); GameLoop
+# is the *holding* side, per Server_Design.md §4's "renewed by heartbeat
+# while the worker holds the room." Optional everywhere it's threaded
+# through, same None-is-a-no-op convention as every other cross-process
+# dependency here.
+class RoomShardIndexProtocol(Protocol):
+    def renew(self, room_id: str, shard_address: str, ttl_ms: int) -> bool: ...
+
+    def remove(self, room_id: str) -> None: ...
+
+
 # Where a username's live game currently sits, for a standalone API
 # Gateway's own POST /login to answer "is this a reconnect, and to which
 # color" without reaching into any GameLoop's in-memory self._games, and
@@ -159,6 +190,8 @@ class ActiveGameIndexProtocol(Protocol):
     def remove(self, username: str) -> None: ...
 
     def get(self, username: str) -> Optional[ActiveGameLocation]: ...
+
+    def all_locations(self) -> List[Tuple[str, ActiveGameLocation]]: ...
 
 
 # Server_Design.md §9's own "lightweight fairness checkpoint" - persist

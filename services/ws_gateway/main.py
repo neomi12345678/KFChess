@@ -78,6 +78,7 @@ from protocol.types import WS_GATEWAY_PORT
 from server.logging_config import configure_logging, username_ctx
 from server.observability_server import start_observability_server
 from server.redis.active_game_index import ActiveGameIndex
+from server.redis.presence import Presence
 from server.redis.room_shard_index import RoomShardIndex
 from server.redis.rooms import RedisRoomRegistry
 from server.server_config import MATCHMAKING_TIMEOUT_MS
@@ -199,6 +200,19 @@ async def _pump(source, destination) -> None:
         await destination.send(message)
 
 
+# Server_Design.md §9's own "affected clients get an error" - the ws_gateway
+# side of the same story server/game_loop.py's own _fail_game already
+# covers for a crash *inside* a still-running shard process (see its own
+# ErrorMessage(message="internal_error") send). This covers the other half:
+# the shard process itself disappearing (killed pod, network partition)
+# out from under an in-progress relay - services/game_allocator/main.py's
+# own recovery sweep notices this too, eventually (polling
+# server/redis/shard_registry.py's heartbeat TTL), but this notices the
+# instant the actual TCP connection to the shard drops, which is always at
+# least as fast and doesn't depend on sweep timing. asyncio.wait with
+# FIRST_EXCEPTION (not asyncio.gather) is what makes this distinguishable:
+# gather would raise the first exception but leave the other pump running
+# in the background rather than telling us which direction actually failed.
 async def _relay(client_ws, shard_address: str, shard_port: int, username: str) -> None:
     uri = f"ws://{shard_address}:{shard_port}"
     async with websockets.connect(uri) as internal_ws:
@@ -221,7 +235,24 @@ async def _relay(client_ws, shard_address: str, shard_port: int, username: str) 
             if isinstance(decode_json_message(raw), IdentifyAckMessage):
                 break
 
-        await asyncio.gather(_pump(client_ws, internal_ws), _pump(internal_ws, client_ws))
+        client_to_shard = asyncio.ensure_future(_pump(client_ws, internal_ws))
+        shard_to_client = asyncio.ensure_future(_pump(internal_ws, client_ws))
+        done, pending = await asyncio.wait({client_to_shard, shard_to_client}, return_when=asyncio.FIRST_EXCEPTION)
+        for task in pending:
+            task.cancel()
+
+        # shard_to_client reads from internal_ws (the shard) and writes to
+        # client_ws - it's the one that fails when the *shard* connection
+        # drops, as opposed to client_to_shard failing because the client
+        # itself left. Only the former is a surprise worth explaining.
+        if shard_to_client in done and shard_to_client.exception() is not None:
+            with contextlib.suppress(websockets.exceptions.ConnectionClosed):
+                await client_ws.send(encode_json_message(ErrorMessage(message="shard_unavailable")))
+
+        for task in done:
+            error = task.exception()
+            if error is not None:
+                raise error
 
 
 async def _handle_client(
@@ -230,6 +261,7 @@ async def _handle_client(
     room_shard_index: RoomShardIndex,
     waiters: _AllocationWaiters,
     status_relay: _StatusRelay,
+    presence: Presence,
     shard_port: int,
     client_ws,
 ) -> None:
@@ -238,7 +270,9 @@ async def _handle_client(
     # still-resolving (waiting on allocation) client too.
     _CONNECTIONS_GAUGE.inc()
     try:
-        await _handle_client_inner(active_game_index, rooms, room_shard_index, waiters, status_relay, shard_port, client_ws)
+        await _handle_client_inner(
+            active_game_index, rooms, room_shard_index, waiters, status_relay, presence, shard_port, client_ws
+        )
     finally:
         _CONNECTIONS_GAUGE.dec()
 
@@ -249,6 +283,7 @@ async def _handle_client_inner(
     room_shard_index: RoomShardIndex,
     waiters: _AllocationWaiters,
     status_relay: _StatusRelay,
+    presence: Presence,
     shard_port: int,
     client_ws,
 ) -> None:
@@ -264,24 +299,33 @@ async def _handle_client_inner(
 
     username = decoded.username
     username_ctx.set(username)
-    # Registered for the duration of the wait only - once _resolve_shard
-    # returns (either a real shard or a give-up), status_relay has nothing
-    # left to push to for this username: a relay has started (or the
-    # client's about to be told to give up), and either way there's no more
-    # "still searching" to report.
-    status_relay.register(username, client_ws)
+    # Server_Design.md §5's own presence/session directory - this service is
+    # the one that actually terminates the client's socket in the
+    # Dockerized deployment (see this module's own docstring), so it's the
+    # natural place to mark a username online/offline, mirroring
+    # _CONNECTIONS_GAUGE's own whole-lifetime scope just above.
+    presence.mark_online(username)
     try:
-        shard_address = await _resolve_shard(username, active_game_index, rooms, room_shard_index, waiters)
-    finally:
-        status_relay.unregister(username)
-    if shard_address is None:
-        await client_ws.send(encode_json_message(MatchmakingTimeoutMessage()))
-        return
+        # Registered for the duration of the wait only - once _resolve_shard
+        # returns (either a real shard or a give-up), status_relay has
+        # nothing left to push to for this username: a relay has started
+        # (or the client's about to be told to give up), and either way
+        # there's no more "still searching" to report.
+        status_relay.register(username, client_ws)
+        try:
+            shard_address = await _resolve_shard(username, active_game_index, rooms, room_shard_index, waiters)
+        finally:
+            status_relay.unregister(username)
+        if shard_address is None:
+            await client_ws.send(encode_json_message(MatchmakingTimeoutMessage()))
+            return
 
-    try:
-        await _relay(client_ws, shard_address, shard_port, username)
-    except (websockets.exceptions.ConnectionClosed, OSError) as error:
-        _logger.warning("relay for '%s' (shard=%s) ended: %s", username, shard_address, error)
+        try:
+            await _relay(client_ws, shard_address, shard_port, username)
+        except (websockets.exceptions.ConnectionClosed, OSError) as error:
+            _logger.warning("relay for '%s' (shard=%s) ended: %s", username, shard_address, error)
+    finally:
+        presence.mark_offline(username)
 
 
 async def _main() -> None:
@@ -300,6 +344,7 @@ async def _main() -> None:
     active_game_index = ActiveGameIndex(redis_url)
     rooms = RedisRoomRegistry(redis_url)
     room_shard_index = RoomShardIndex(redis_url)
+    presence = Presence(redis_url)
     waiters = _AllocationWaiters()
     status_relay = _StatusRelay()
     nats_connection = await nats.connect(nats_url)
@@ -320,7 +365,9 @@ async def _main() -> None:
     )
 
     async def _handler(client_ws) -> None:
-        await _handle_client(active_game_index, rooms, room_shard_index, waiters, status_relay, shard_port, client_ws)
+        await _handle_client(
+            active_game_index, rooms, room_shard_index, waiters, status_relay, presence, shard_port, client_ws
+        )
 
     async with websockets.serve(_handler, "0.0.0.0", port):
         _logger.info(

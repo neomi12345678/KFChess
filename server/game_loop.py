@@ -35,6 +35,7 @@ from server.interfaces import (
     MatchmakingQueueProtocol,
     MessageSender,
     RatingRepository,
+    RoomShardIndexProtocol,
 )
 from server.logging_config import room_id_ctx
 from server.matchmaking import MatchmakingQueue
@@ -44,6 +45,8 @@ from server.server_config import (
     DEFAULT_TICK_INTERVAL_S,
     FAIRNESS_CHECKPOINT_INTERVAL_MS,
     MATCHMAKING_STATUS_INTERVAL_MS,
+    ROOM_LEASE_RENEW_INTERVAL_MS,
+    ROOM_LEASE_TTL_MS,
 )
 from server.session import OTHER_SEAT, GameSession
 
@@ -108,6 +111,12 @@ class ActiveGame:
     # independent FAIRNESS_CHECKPOINT_INTERVAL_MS timer, not a shared one.
     elapsed_ms: int = 0
     _ms_since_checkpoint: int = 0
+    # Server_Design.md §4's own room-lease heartbeat cadence - independent
+    # of _ms_since_checkpoint above, same "each game runs its own timer"
+    # reasoning (see _advance_game). Meaningless for a PLAY match (room_id
+    # is None - server/redis/room_shard_index.py's RoomShardIndex only ever
+    # maps rooms), never advanced or read for one.
+    _ms_since_lease_renew: int = 0
 
 
 class GameLoop:
@@ -161,6 +170,15 @@ class GameLoop:
         # _advance_game). None (the default) is a no-op - every existing
         # caller/test is unaffected.
         fairness_checkpoint: Optional[FairnessCheckpointProtocol] = None,
+        # Overridable so server/main.py can hand in a Redis-backed lease
+        # (see server/redis/room_shard_index.py, gated behind REDIS_URL) -
+        # Server_Design.md §4's own room-ownership lease, renewed
+        # periodically for every room this GameLoop is actively ticking
+        # (see _advance_game) and released once its game ends (see
+        # _advance_game's game-over path and _fail_game). None (the
+        # default) is a no-op - every existing caller/test is unaffected,
+        # and a PLAY match (room_id is None) never touches this either way.
+        room_shard_index: Optional[RoomShardIndexProtocol] = None,
     ):
         self._board_factory = board_factory
         self._rating_store = rating_store
@@ -176,6 +194,7 @@ class GameLoop:
         self._active_game_index = active_game_index
         self._shard_address = shard_address
         self._fairness_checkpoint = fairness_checkpoint
+        self._room_shard_index = room_shard_index
         self._games: Dict[str, ActiveGame] = {}
         self._next_play_game_id = 0
         # Flipped by start_matchmaking_relay - see its own docstring for why
@@ -186,6 +205,15 @@ class GameLoop:
 
     def get(self, game_id: str) -> Optional[ActiveGame]:
         return self._games.get(game_id)
+
+    # Server_Design.md §9's own "bound the blast radius" (see
+    # server/server_config.py's MAX_ROOMS_PER_SHARD) - self-reported into
+    # server/redis/shard_registry.py's ShardRegistry on every heartbeat
+    # (see server/main.py's _run_shard_heartbeat), which is what lets
+    # services/game_allocator/main.py's own pick_shard skip a shard already
+    # at capacity.
+    def active_game_count(self) -> int:
+        return len(self._games)
 
     def active_game_for(self, username: str) -> Optional[ActiveGame]:
         for game in self._games.values():
@@ -425,6 +453,22 @@ class GameLoop:
                     ),
                 )
 
+        # Server_Design.md §4's own room-lease heartbeat - only meaningful
+        # for a room (room_id is not None); a PLAY match has no
+        # RoomShardIndex entry to renew (see that class's own docstring).
+        # A False return (the lease already expired and/or was reassigned)
+        # is logged, not raised - the room's own game keeps running either
+        # way; see server/redis/room_shard_index.py's renew() docstring for
+        # why that's not fatal here.
+        if self._room_shard_index is not None and game.room_id is not None:
+            game._ms_since_lease_renew += whole_ms
+            if game._ms_since_lease_renew >= ROOM_LEASE_RENEW_INTERVAL_MS:
+                game._ms_since_lease_renew = 0
+                if self._shard_address is not None and not self._room_shard_index.renew(
+                    game.room_id, self._shard_address, ROOM_LEASE_TTL_MS
+                ):
+                    _logger.warning("failed to renew room-shard lease for room %s", game.room_id)
+
         # Sent before the game-over check below, not after - a king-capture
         # ArrivalEvent (and thus its "capture" wire event) is published by
         # the very same tick() call that also ends the game, and a game that
@@ -433,7 +477,20 @@ class GameLoop:
         for wire_event in game.publisher.drain():
             await self._broadcast_to_game(game, wire_event)
 
-        rating_update = session.finalize_ratings_if_game_over()
+        # Off the event loop entirely, via the default thread-pool executor -
+        # Server_Design.md §9's own table claims "Game-Authority never
+        # blocks on it (fire-and-forget to the control-plane broker)" for
+        # the rating/persistence DB row, which only held for the
+        # game.finished publish below, not this: finalize_ratings_if_game_over
+        # makes real, blocking DB calls (RatingRepository.rating_for/
+        # update_rating - server/sqlite/rating_store.py's RatingStore or
+        # server/postgres/accounts.py's PostgresRatingStore, either a
+        # synchronous sqlite3/psycopg round trip), and calling it directly
+        # on this coroutine would stall every other game's own tick on this
+        # shard for as long as that DB call takes - the same reasoning
+        # server/ws_server.py's own _handle_login already applies to
+        # UserStore.login's PBKDF2 hash.
+        rating_update = await asyncio.get_event_loop().run_in_executor(None, session.finalize_ratings_if_game_over)
         if rating_update is not None:
             await self._broadcast_to_game(game, GameOverMessage(ratings=rating_update))
             if self._lifecycle_publisher is not None:
@@ -451,6 +508,14 @@ class GameLoop:
             del self._games[game_id]
             if game.room_id is not None:
                 self._rooms.close(game.room_id)
+                # Releases the §4 lease the instant this shard is done with
+                # the room, rather than waiting for it to merely expire -
+                # redundant-safe with services/api_gateway/main.py's own
+                # game.finished-triggered removal (DEL is a no-op on an
+                # already-gone key), belt-and-suspenders the same way
+                # busy_set/active_game_index cleanup above already is.
+                if self._room_shard_index is not None:
+                    self._room_shard_index.remove(game.room_id)
             return
 
         for seat in (WHITE, BLACK):
@@ -493,6 +558,8 @@ class GameLoop:
             self._fairness_checkpoint.remove(game_id)
         if game.room_id is not None:
             self._rooms.close(game.room_id)
+            if self._room_shard_index is not None:
+                self._room_shard_index.remove(game.room_id)
 
         # Publishes game.finished the same as an ordinary game-over
         # (unchanged ratings, since no winner was ever decided) so the

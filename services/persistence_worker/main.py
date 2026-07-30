@@ -20,13 +20,24 @@ Subscribes to:
                      "ratings": {"white": int, "black": int},
                      "published_at": float}
 
+Consumes in batches - Server_Design.md §8's own explicit requirement
+("Persistence Workers consume it in batches, decoupled from whether the DB
+is momentarily slow"): the NATS callback (_on_message) does no I/O at all,
+just decodes and pushes onto an in-process asyncio.Queue; a separate
+_run_batch_flusher task drains it into groups of up to PERSISTENCE_BATCH_SIZE
+(server/server_config.py), flushed via one PostgresGameHistoryStore.
+record_games_batch call (one executemany + one commit) rather than one
+INSERT/commit round trip per game. A quiet period still flushes within
+PERSISTENCE_BATCH_FLUSH_INTERVAL_MS of the oldest queued item, rather than
+a small batch waiting indefinitely for more games to arrive and fill it.
+
 published_at (a unix timestamp - see server/nats/lifecycle.py's own
 NatsLifecyclePublisher.game_finished) is what lets this service report
 Server_Design.md §9's own "consumer lag per Persistence Worker" metric -
 read defensively (payload.get, not payload[]) since it's a newer field
-older publishers/tests may not send; the gauge simply isn't updated for
-those, rather than this handler failing to record a real game over a
-metric.
+older publishers/tests may not send; the gauge reflects the *oldest*
+unflushed item in a batch (the longest anything waited), the worst-case
+lag a caller would actually experience, not just the latest one.
 """
 
 import asyncio
@@ -34,6 +45,7 @@ import json
 import logging
 import os
 import time
+from typing import List, Optional, Tuple
 
 import nats
 from prometheus_client import Gauge
@@ -41,15 +53,17 @@ from prometheus_client import Gauge
 from server.logging_config import configure_logging, room_id_ctx
 from server.observability_server import start_observability_server
 from server.postgres.game_history import PostgresGameHistoryStore
+from server.server_config import PERSISTENCE_BATCH_FLUSH_INTERVAL_MS, PERSISTENCE_BATCH_SIZE
 
 _logger = logging.getLogger(__name__)
 
 _LAG_GAUGE = Gauge("kfchess_persistence_worker_lag_seconds", "Time between a game.finished publish and its processing")
+_BATCH_SIZE_GAUGE = Gauge("kfchess_persistence_worker_last_batch_size", "Number of games written in the most recent flush")
 
 
-def _record_from_payload(store: PostgresGameHistoryStore, payload: dict) -> None:
+def _tuple_from_payload(payload: dict) -> Tuple[str, Optional[str], str, str, int, int]:
     ratings = payload["ratings"]
-    store.record_game(
+    return (
         payload["game_id"],
         payload["room_id"],
         payload["white_username"],
@@ -59,31 +73,75 @@ def _record_from_payload(store: PostgresGameHistoryStore, payload: dict) -> None
     )
 
 
-async def _on_game_finished(store: PostgresGameHistoryStore, msg) -> None:
-    payload = json.loads(msg.data)
-    room_id_ctx.set(payload["room_id"] if payload["room_id"] is not None else payload["game_id"])
-    _record_from_payload(store, payload)
+def _flush_batch(store: PostgresGameHistoryStore, batch: List[dict]) -> None:
+    store.record_games_batch([_tuple_from_payload(payload) for payload in batch])
+    _BATCH_SIZE_GAUGE.set(len(batch))
 
-    published_at = payload.get("published_at")
-    if published_at is not None:
-        _LAG_GAUGE.set(time.time() - published_at)
+    published_ats = [payload["published_at"] for payload in batch if payload.get("published_at") is not None]
+    if published_ats:
+        _LAG_GAUGE.set(time.time() - min(published_ats))
 
-    _logger.info(
-        "recorded game %s ('%s' vs '%s')", payload["game_id"], payload["white_username"], payload["black_username"]
-    )
+    for payload in batch:
+        room_id_ctx.set(payload["room_id"] if payload["room_id"] is not None else payload["game_id"])
+        _logger.info(
+            "recorded game %s ('%s' vs '%s')", payload["game_id"], payload["white_username"], payload["black_username"]
+        )
+
+
+# Pulls one item (blocking - nothing to flush until something arrives),
+# then keeps pulling more, non-blocking past a deadline, until either
+# batch_size items have accumulated or flush_interval_s has elapsed since
+# the first one - whichever comes first. A batch is flushed even if it
+# never reaches batch_size, so a quiet period doesn't leave games waiting
+# indefinitely.
+async def _collect_batch(queue: "asyncio.Queue[dict]", batch_size: int, flush_interval_s: float) -> List[dict]:
+    batch = [await queue.get()]
+    deadline = asyncio.get_event_loop().time() + flush_interval_s
+    while len(batch) < batch_size:
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            break
+        try:
+            batch.append(await asyncio.wait_for(queue.get(), timeout=remaining))
+        except asyncio.TimeoutError:
+            break
+    return batch
+
+
+async def _run_batch_flusher(
+    queue: "asyncio.Queue[dict]", store: PostgresGameHistoryStore, batch_size: int, flush_interval_s: float
+) -> None:
+    while True:
+        batch = await _collect_batch(queue, batch_size, flush_interval_s)
+        try:
+            _flush_batch(store, batch)
+        except Exception:
+            # A batch a real Postgres outage can't absorb is lost rather
+            # than retried forever and blocking every game *after* it too -
+            # the same "never let a slow/broken DB stall this consumer"
+            # principle this whole service exists for (see its own
+            # docstring), just applied to a batch instead of one game.
+            _logger.exception("failed to flush a batch of %d game(s) - they are lost", len(batch))
 
 
 async def _main() -> None:
     database_url = os.environ["DATABASE_URL"]
     nats_url = os.environ["NATS_URL"]
+    batch_size = int(os.environ.get("PERSISTENCE_BATCH_SIZE", PERSISTENCE_BATCH_SIZE))
+    batch_flush_interval_s = float(os.environ.get("PERSISTENCE_BATCH_FLUSH_INTERVAL_MS", PERSISTENCE_BATCH_FLUSH_INTERVAL_MS)) / 1000
 
     store = PostgresGameHistoryStore(database_url)
+    queue: "asyncio.Queue[dict]" = asyncio.Queue()
     nats_connection = await nats.connect(nats_url)
 
+    # Deliberately no I/O here - just decode and enqueue, so a slow flush
+    # never backs up NATS message delivery for this subscription (see this
+    # module's own docstring on why batching lives in a separate task).
     async def _on_message(msg) -> None:
-        await _on_game_finished(store, msg)
+        await queue.put(json.loads(msg.data))
 
     await nats_connection.subscribe("game.finished", cb=_on_message)
+    asyncio.create_task(_run_batch_flusher(queue, store, batch_size, batch_flush_interval_s))
 
     def _check_postgres() -> bool:
         import psycopg
@@ -97,8 +155,11 @@ async def _main() -> None:
         health_port, {"postgres": _check_postgres, "nats": lambda: nats_connection.is_connected}
     )
 
-    _logger.info("persistence-worker running (database=%s nats=%s)", database_url, nats_url)
-    await asyncio.Event().wait()  # driven entirely by the subscription callback above
+    _logger.info(
+        "persistence-worker running (database=%s nats=%s batch_size=%d flush_interval_s=%.1f)",
+        database_url, nats_url, batch_size, batch_flush_interval_s,
+    )
+    await asyncio.Event().wait()  # driven entirely by _run_batch_flusher above
 
 
 def main() -> None:  # pragma: no cover

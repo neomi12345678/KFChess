@@ -177,3 +177,33 @@ def test_recording_the_same_game_id_twice_is_a_no_op(game_history_store):
     [game] = game_history_store.all_games()
     assert game["white_rating"] == 1214
     assert game["black_rating"] == 1186
+
+
+# Server_Design.md §8's own "Persistence Workers consume it in batches" -
+# services/persistence_worker/main.py's own record_games_batch call, one
+# executemany + one commit for the whole batch.
+def test_record_games_batch_records_every_game(game_history_store):
+    game_history_store.record_games_batch(
+        [
+            ("batch-1", "room-1", "alice", "bob", 1214, 1186),
+            ("batch-2", None, "carol", "dave", 1300, 1250),
+        ]
+    )
+
+    game_ids = {game["game_id"] for game in game_history_store.all_games()}
+    assert game_ids == {"batch-1", "batch-2"}
+
+
+def test_record_games_batch_with_an_empty_list_is_a_no_op(game_history_store):
+    game_history_store.record_games_batch([])
+
+    assert game_history_store.all_games() == []
+
+
+def test_record_games_batch_skips_an_already_recorded_game_id(game_history_store):
+    game_history_store.record_game("batch-dup", "room-1", "alice", "bob", 1214, 1186)
+
+    game_history_store.record_games_batch([("batch-dup", "room-1", "alice", "bob", 9999, 9999)])
+
+    [game] = game_history_store.all_games()
+    assert game["white_rating"] == 1214

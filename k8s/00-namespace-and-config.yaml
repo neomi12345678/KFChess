@@ -1,0 +1,80 @@
+# Server_Design.md §2's own scaling substrate, translated into real
+# manifests - one Deployment/Service/HorizontalPodAutoscaler per stateless
+# role, one StatefulSet for the one stateful role (Game Server Shard), a
+# Namespace to keep it isolated from anything else on the cluster. Mirrors
+# docker-compose.yml's own service list role-for-role (same images, same
+# env vars) - docker-compose answers "can this run at all, on one machine";
+# these manifests answer §2's other question, "can this run 10,000
+# replicas," on real Kubernetes/K3s (§2's own distinction).
+#
+# Not yet `kubectl apply`-tested against a live cluster (none exists in
+# this project's own dev/CI environment) - written and reviewed against
+# the same roles/env vars/ports docker-compose.yml already runs and proves
+# work together, not invented from scratch. Before a real rollout:
+#   1. Build+push every services/*/Dockerfile and the root Dockerfile to a
+#      registry the cluster can pull from, and point each Deployment/
+#      StatefulSet's own `image:` at that registry instead of the
+#      `kfchess/*:latest` placeholders below.
+#   2. Swap 20-postgres.yaml for a managed Postgres (RDS/Cloud SQL) or an
+#      operator (Patroni, per Server_Design.md §9's own table) - the
+#      StatefulSet there is a dev/demo-parity translation of
+#      docker-compose.yml's own primary+replica pair, not a production HA
+#      setup (see that file's own comments).
+#   3. Same for 30-redis.yaml (Redis Cluster/Sentinel, §9) and
+#      40-nats.yaml (a real NATS cluster, §12's own "broker capacity" open
+#      question) once this needs to survive a single broker/cache node
+#      dying.
+#   4. Replace the CPU-only HorizontalPodAutoscalers below with ones
+#      driven by the real per-role metrics Server_Design.md §9 names
+#      (kfchess_matchmaker_queue_depth, kfchess_shard_active_rooms, ...) -
+#      that needs a Prometheus Adapter (or KEDA) translating those into
+#      Kubernetes custom-metrics, not yet part of this manifest set. CPU
+#      utilization is a reasonable placeholder, not the real signal.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kfchess
+
+---
+# Every non-secret env var every role reads (see docker-compose.yml's own
+# per-service environment: blocks) - one shared source instead of
+# repeating the same REDIS_URL/NATS_URL literal in ten places. Split from
+# the Secret below (kfchess-postgres-credentials) so this can be committed/
+# reviewed/diffed in plain text - none of it is sensitive on its own.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kfchess-config
+  namespace: kfchess
+data:
+  REDIS_URL: "redis://redis:6379/0"
+  NATS_URL: "nats://nats:4222"
+  SHARD_PORT: "8765"
+  WS_GATEWAY_PORT: "8767"
+
+---
+# DATABASE_URL/DATABASE_URL_REPLICA live here, not the plain ConfigMap
+# above - a ConfigMap's own data: values are static text with no `$(VAR)`
+# interpolation (that syntax only works inside a container's own env:/
+# command: list), so the password has to be spelled out directly in the
+# connection string itself rather than composed from a separate field.
+# Same dev-only "kfchess"/"kfchess" docker-compose.yml already hardcodes
+# directly into its own DATABASE_URL, not a production credential - a real
+# rollout replaces this whole Secret (`kubectl create secret generic
+# kfchess-postgres-credentials --from-literal=... -n kfchess`) rather than
+# committing a real password here. postgres/postgres-replica are the
+# Kubernetes Service DNS names the other manifests here define - the same
+# role docker-compose's own network gives the container names it uses.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kfchess-postgres-credentials
+  namespace: kfchess
+type: Opaque
+stringData:
+  POSTGRES_USER: "kfchess"
+  POSTGRES_PASSWORD: "kfchess"
+  POSTGRES_DB: "kfchess"
+  DATABASE_URL: "postgresql://kfchess:kfchess@postgres:5432/kfchess"
+  DATABASE_URL_REPLICA: "postgresql://kfchess:kfchess@postgres-replica:5432/kfchess"

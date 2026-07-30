@@ -59,7 +59,7 @@ def running_app(monkeypatch):
 
     redis_client = redis_lib.Redis.from_url(REDIS_URL, decode_responses=True)
     redis_client.delete("kfchess:busy_usernames")
-    redis_client.delete("kfchess:matchmaking:order", "kfchess:matchmaking:waiting")
+    redis_client.delete("kfchess:matchmaking:by_rating", "kfchess:matchmaking:waiting")
     # Active-game entries are dynamic (kfchess:active_game:{username}) -
     # wiped by prefix scan rather than by name, same approach
     # tests/unit/test_active_game_index.py's own fixture uses.

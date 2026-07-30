@@ -1,0 +1,97 @@
+# Server_Design.md §11's own role row: "Game Allocator | Stateless
+# (registry-backed) | Holds Room Registry leases (§4, Redis)... | Scales
+# on: Allocation rate." Stateless, no public IP (see docker-compose.yml's
+# own game-allocator service). Safe to run with multiple replicas, unlike
+# 50-matchmaker.yaml's own singleton constraint: every replica plainly
+# subscribes to the same match.found/room.opponent_joined subjects (core
+# NATS fans a publish out to *every* subscriber, not just one), so every
+# replica independently tries to allocate the same event - but
+# services/game_allocator/main.py's own _acquire_lease (Redis SET NX) lets
+# exactly one of them win per game_id, and every other replica just logs
+# "failed to acquire lease... not allocating" and drops it harmlessly (see
+# that module's own docstring on this exact scenario). The recovery sweep
+# is similarly redundant-safe across replicas - every mutation it makes
+# (RedisRoomRegistry.close, ActiveGameIndex.remove, RoomShardIndex.remove)
+# is idempotent.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: game-allocator
+  namespace: kfchess
+spec:
+  selector:
+    app: game-allocator
+  ports:
+    - name: health
+      port: 9103
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: game-allocator
+  namespace: kfchess
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: game-allocator
+  template:
+    metadata:
+      labels:
+        app: game-allocator
+    spec:
+      containers:
+        - name: game-allocator
+          image: kfchess/game-allocator:latest
+          envFrom:
+            - configMapRef:
+                name: kfchess-config
+          ports:
+            - containerPort: 9103
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9103
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9103
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+---
+# CPU-based - a placeholder for the real signal (§11's own "Scales on:
+# Allocation rate" - services/game_allocator/main.py's own
+# kfchess_game_allocator_allocations_total counter), which needs a
+# Prometheus Adapter to drive an HPA directly (see
+# 00-namespace-and-config.yaml's own top comment).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: game-allocator
+  namespace: kfchess
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: game-allocator
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

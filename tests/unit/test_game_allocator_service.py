@@ -254,7 +254,12 @@ def test_recovery_sweep_voids_a_room_whose_shard_is_no_longer_live():
 
     asyncio.run(
         _sweep_for_dead_shards(
-            deps["registry"], deps["room_shard_index"], deps["rooms"], deps["active_game_index"], deps["fairness_checkpoint"]
+            deps["registry"],
+            deps["room_shard_index"],
+            deps["rooms"],
+            deps["active_game_index"],
+            deps["fairness_checkpoint"],
+            deps["busy_set"],
         )
     )
 
@@ -277,9 +282,84 @@ def test_recovery_sweep_leaves_a_room_whose_shard_is_still_live():
 
     asyncio.run(
         _sweep_for_dead_shards(
-            deps["registry"], deps["room_shard_index"], deps["rooms"], deps["active_game_index"], deps["fairness_checkpoint"]
+            deps["registry"],
+            deps["room_shard_index"],
+            deps["rooms"],
+            deps["active_game_index"],
+            deps["fairness_checkpoint"],
+            deps["busy_set"],
         )
     )
 
     assert deps["rooms"].room_for_id(room.room_id) is not None
     assert deps["room_shard_index"].get(room.room_id) == "alive-shard"
+
+
+# A PLAY match has no RoomShardIndex entry at all (room_id is None - see
+# that class's own docstring), so it's only discoverable through
+# ActiveGameIndex - this proves the sweep's second pass actually covers it,
+# not just the room-based path every other test above exercises.
+def test_recovery_sweep_voids_a_play_match_whose_shard_is_no_longer_live():
+    from model.piece import BLACK, WHITE
+    from server.interfaces import ActiveGameLocation
+    from services.game_allocator.main import _sweep_for_dead_shards
+
+    deps = _sweep_dependencies()
+    deps["busy_set"].add("gwa_sweep_play_white")
+    deps["busy_set"].add("gwa_sweep_play_black")
+    deps["active_game_index"].set(
+        "gwa_sweep_play_white",
+        ActiveGameLocation(game_id="play-dead", room_id=None, seat=WHITE, shard_address="dead-shard"),
+    )
+    deps["active_game_index"].set(
+        "gwa_sweep_play_black",
+        ActiveGameLocation(game_id="play-dead", room_id=None, seat=BLACK, shard_address="dead-shard"),
+    )
+    # No ShardRegistry.register("dead-shard") at all - it's simply not live.
+
+    asyncio.run(
+        _sweep_for_dead_shards(
+            deps["registry"],
+            deps["room_shard_index"],
+            deps["rooms"],
+            deps["active_game_index"],
+            deps["fairness_checkpoint"],
+            deps["busy_set"],
+        )
+    )
+
+    assert deps["active_game_index"].get("gwa_sweep_play_white") is None
+    assert deps["active_game_index"].get("gwa_sweep_play_black") is None
+    assert not deps["busy_set"].contains("gwa_sweep_play_white")
+    assert not deps["busy_set"].contains("gwa_sweep_play_black")
+
+
+def test_recovery_sweep_leaves_a_play_match_whose_shard_is_still_live():
+    from model.piece import BLACK, WHITE
+    from server.interfaces import ActiveGameLocation
+    from services.game_allocator.main import _sweep_for_dead_shards
+
+    deps = _sweep_dependencies()
+    deps["registry"].register("alive-shard-play")
+    deps["active_game_index"].set(
+        "gwa_sweep_play_alive_white",
+        ActiveGameLocation(game_id="play-alive", room_id=None, seat=WHITE, shard_address="alive-shard-play"),
+    )
+    deps["active_game_index"].set(
+        "gwa_sweep_play_alive_black",
+        ActiveGameLocation(game_id="play-alive", room_id=None, seat=BLACK, shard_address="alive-shard-play"),
+    )
+
+    asyncio.run(
+        _sweep_for_dead_shards(
+            deps["registry"],
+            deps["room_shard_index"],
+            deps["rooms"],
+            deps["active_game_index"],
+            deps["fairness_checkpoint"],
+            deps["busy_set"],
+        )
+    )
+
+    assert deps["active_game_index"].get("gwa_sweep_play_alive_white") is not None
+    assert deps["active_game_index"].get("gwa_sweep_play_alive_black") is not None

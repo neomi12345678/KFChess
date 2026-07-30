@@ -42,7 +42,7 @@ importing itself.
 """
 
 import json
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import redis
 
@@ -71,6 +71,25 @@ class ActiveGameIndex:
         raw = self._redis.get(f"{_KEY_PREFIX}{username}")
         if raw is None:
             return None
+        return self._decode(raw)
+
+    # Every (username, location) entry this index currently holds - what
+    # services/game_allocator/main.py's own recovery sweep needs to find a
+    # *PLAY* match's crashed shard (room_id is None - there's no
+    # server/redis/room_shard_index.py entry for one of those to scan
+    # instead, see that class's own docstring). scan_iter (cursor-based
+    # SCAN), not KEYS - same reasoning as server/redis/shard_registry.py's
+    # own list_live_shards.
+    def all_locations(self) -> List[Tuple[str, ActiveGameLocation]]:
+        results = []
+        for key in self._redis.scan_iter(match=f"{_KEY_PREFIX}*"):
+            raw = self._redis.get(key)
+            if raw is None:
+                continue  # deleted between the scan and this get - skip, not fatal
+            results.append((key[len(_KEY_PREFIX):], self._decode(raw)))
+        return results
+
+    def _decode(self, raw: str) -> ActiveGameLocation:
         payload = json.loads(raw)
         return ActiveGameLocation(
             game_id=payload["game_id"],

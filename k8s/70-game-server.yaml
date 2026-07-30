@@ -1,0 +1,145 @@
+# Server_Design.md §3/§11's own "Game Server Shard (formerly
+# 'Game-Authority') | Stateful (in-memory GameEngine) | ... | Scales on:
+# Active-room count / CPU" - the one stateful role. StatefulSet, not
+# Deployment (stable per-pod network identity is what lets each pod
+# register its own real, individually-reachable SHARD_ADDRESS - see below),
+# and no public-facing Service at all - §3's own "Game Server Shards carry
+# no public IP at all... every external packet terminates at a Gateway
+# first" (60-api-gateway.yaml/61-ws-gateway.yaml). Only ws-gateway ever
+# opens a connection to one of these, and only ever the internal, headless
+# one below.
+#
+# Known gap, flagged rather than silently assumed solved: §8's own "a
+# Game-Authority pod being retired stops accepting new rooms, drains its
+# existing ones (bounded ≤90s wait), then exits" describes a SIGTERM
+# handler this codebase's own server/main.py doesn't implement yet - today
+# a pod terminated mid-game just has its games end the same way any other
+# crash does (server/redis/room_shard_index.py's lease expiring,
+# services/game_allocator/main.py's own recovery sweep voiding them - see
+# that module's own docstring), not a graceful drain first.
+# terminationGracePeriodSeconds below is set generously (comfortably above
+# §8's own 90s bound) so a real drain handler, once written, has room to
+# actually finish before Kubernetes SIGKILLs the pod - it doesn't by itself
+# make today's abrupt shutdown graceful.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: game-server-headless
+  namespace: kfchess
+spec:
+  clusterIP: None  # headless - gives each pod its own stable DNS name, not a load-balanced VIP
+  selector:
+    app: game-server
+  ports:
+    - name: game
+      port: 8765
+    - name: health
+      port: 9105
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: game-server
+  namespace: kfchess
+spec:
+  serviceName: game-server-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: game-server
+  template:
+    metadata:
+      labels:
+        app: game-server
+    spec:
+      terminationGracePeriodSeconds: 100
+      containers:
+        - name: game-server
+          image: kfchess/game-server:latest  # built from the root Dockerfile, not services/*/Dockerfile
+          envFrom:
+            - configMapRef:
+                name: kfchess-config
+            - secretRef:
+                name: kfchess-postgres-credentials
+          env:
+            - name: KFCHESS_HOST
+              value: "0.0.0.0"
+            - name: KFCHESS_PORT
+              value: "8765"
+            # See services/game_allocator/main.py's own docstring on why
+            # a real, reachable address matters here - every other shard
+            # discovers this one only through what it heartbeats into
+            # server/redis/shard_registry.py's ShardRegistry, never a
+            # hardcoded value.
+            - name: EXTERNAL_MATCHMAKER
+              value: "1"
+            # POD_NAME + the headless Service's own DNS suffix - the
+            # Kubernetes "dependent environment variables" feature
+            # ($(POD_NAME) resolves against the env entry defined just
+            # above it in this same list) is what makes this a real,
+            # per-pod-distinct, cluster-reachable address instead of one
+            # shared value every replica would otherwise collide on -
+            # docker-compose.yml's own SHARD_ADDRESS is simpler (one fixed
+            # value per named service, game-server vs game-server-2)
+            # precisely because it has no equivalent of a StatefulSet's
+            # own stable per-pod identity to build this from.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SHARD_ADDRESS
+              value: "$(POD_NAME).game-server-headless.kfchess.svc.cluster.local"
+          ports:
+            - containerPort: 8765
+            - name: health
+              containerPort: 9105
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9105
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9105
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+
+---
+# CPU-based - a placeholder for the real signal (§11's own "Scales on:
+# Active-room count / CPU" - server/game_loop.py's own
+# kfchess_shard_active_rooms Gauge, the same fact each pod already
+# heartbeats into ShardRegistry for server/server_config.py's own
+# MAX_ROOMS_PER_SHARD cap), which needs a Prometheus Adapter to drive an
+# HPA directly on it (see 00-namespace-and-config.yaml's own top comment).
+# HorizontalPodAutoscaler does support a StatefulSet as its scaleTargetRef,
+# same as a Deployment.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: game-server
+  namespace: kfchess
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: game-server
+  minReplicas: 3
+  maxReplicas: 100
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

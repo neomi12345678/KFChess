@@ -66,3 +66,37 @@ FAIRNESS_CHECKPOINT_INTERVAL_MS = 5_000
 # get caught within one sweep of the lease actually expiring, without
 # polling Redis needlessly often.
 SHARD_RECOVERY_SWEEP_INTERVAL_MS = 5_000
+
+# server/redis/room_shard_index.py - Server_Design.md §4's own room
+# ownership lease ("SET room:450:owner worker-B NX PX 5000, renewed by
+# heartbeat while the worker holds the room"). ROOM_LEASE_TTL_MS is that
+# PX; ROOM_LEASE_RENEW_INTERVAL_MS (server/game_loop.py's own
+# _advance_game, same cadence convention as FAIRNESS_CHECKPOINT_INTERVAL_MS
+# above) is well under it - the same 3x-or-more TTL/renewal-interval ratio
+# server/redis/shard_registry.py's own 3s-heartbeat/10s-TTL already uses,
+# so a handful of missed renewals (a slow tick, a brief Redis blip) never
+# expire a still-live room's own lease.
+ROOM_LEASE_TTL_MS = 15_000
+ROOM_LEASE_RENEW_INTERVAL_MS = 5_000
+
+# services/game_allocator/main.py - Server_Design.md §9's own "bound the
+# blast radius: cap each Game-Authority pod's concurrent room count... so
+# one crash affects a small, known slice of the total games, not
+# everyone." §10's own planning number (~500 concurrent rooms/shard,
+# "a planning assumption pending real benchmarking," not yet a measured
+# one) - kept as that same document's own number rather than invented here,
+# see server/redis/shard_registry.py's own pick_shard docstring for how
+# this is actually enforced (each shard reports its own live room count on
+# every heartbeat; the allocator filters out anything at or over this before
+# picking).
+MAX_ROOMS_PER_SHARD = 500
+
+# services/persistence_worker/main.py - Server_Design.md §8's own
+# "Persistence Workers consume it in batches" - a flush happens once
+# PERSISTENCE_BATCH_SIZE game.finished events have queued up, or once
+# PERSISTENCE_BATCH_FLUSH_INTERVAL_MS has passed since the oldest
+# unflushed one arrived, whichever comes first (see that module's own
+# _run_batch_flusher) - so a quiet period still flushes promptly instead
+# of leaving a small batch waiting indefinitely for it to fill.
+PERSISTENCE_BATCH_SIZE = 50
+PERSISTENCE_BATCH_FLUSH_INTERVAL_MS = 2_000

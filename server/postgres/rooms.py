@@ -12,29 +12,37 @@ from typing import Dict, List
 
 import psycopg
 
+from server.postgres import create_table_tolerating_concurrent_creation
 from server.rooms import Room
 
 
 class PostgresRoomStore:
     def __init__(self, dsn: str):
         self._connection = psycopg.connect(dsn, autocommit=False)
-        self._connection.execute(
+        # Tolerates the concurrent-first-boot race (see
+        # server/postgres/__init__.py's own docstring) - real with two Game
+        # Server Shards (docker-compose.yml's game-server/game-server-2)
+        # both constructing this store against a freshly initialized,
+        # still-empty database at once.
+        create_table_tolerating_concurrent_creation(
+            self._connection,
             """
             CREATE TABLE IF NOT EXISTS rooms (
                 room_id TEXT PRIMARY KEY,
                 creator TEXT NOT NULL,
                 opponent TEXT
             )
-            """
+            """,
         )
-        self._connection.execute(
+        create_table_tolerating_concurrent_creation(
+            self._connection,
             """
             CREATE TABLE IF NOT EXISTS room_spectators (
                 room_id TEXT NOT NULL REFERENCES rooms(room_id),
                 username TEXT NOT NULL,
                 PRIMARY KEY (room_id, username)
             )
-            """
+            """,
         )
         self._connection.commit()
 
@@ -70,4 +78,16 @@ class PostgresRoomStore:
         }
         for room_id, username in self._connection.execute("SELECT room_id, username FROM room_spectators"):
             rooms[room_id]["spectators"].add(username)
+        # Same reasoning as server/postgres/accounts.py's own
+        # PostgresUserStore.login/PostgresRatingStore.rating_for: two
+        # read-only SELECTs under autocommit=False would otherwise leave
+        # this connection idle in an open transaction indefinitely - this
+        # is called exactly once, at startup (server/main.py's own
+        # _build_stores), so without this rollback every Game Server Shard
+        # process leaks one permanently-idle-in-transaction connection for
+        # its entire lifetime, each holding a lock that eventually blocks
+        # an unrelated exclusive operation elsewhere (e.g. a test
+        # fixture's own TRUNCATE) indefinitely - a real hang this project's
+        # own docker-compose verification hit, not a theoretical one.
+        self._connection.rollback()
         return list(rooms.values())

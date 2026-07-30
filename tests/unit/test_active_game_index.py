@@ -64,3 +64,32 @@ def test_remove_clears_the_entry(index):
 
 def test_remove_on_an_absent_username_is_a_no_op(index):
     index.remove("nobody")  # must not raise
+
+
+def test_all_locations_on_a_fresh_index_is_empty(index):
+    assert index.all_locations() == []
+
+
+# services/game_allocator/main.py's own recovery sweep uses this to find a
+# PLAY match's crashed shard - room_id is None there, so there's no
+# server/redis/room_shard_index.py entry to discover it through instead
+# (see that class's own docstring).
+def test_all_locations_returns_every_entry(index):
+    white = ActiveGameLocation(game_id="play-1", room_id=None, seat="white", shard_address="game-server")
+    black = ActiveGameLocation(game_id="play-1", room_id=None, seat="black", shard_address="game-server")
+    index.set("alice", white)
+    index.set("bob", black)
+
+    entries = dict(index.all_locations())
+
+    assert entries == {"alice": white, "bob": black}
+
+
+def test_all_locations_excludes_removed_entries(index):
+    index.set("alice", ActiveGameLocation(game_id="play-1", room_id=None, seat="white", shard_address="game-server"))
+    index.set("bob", ActiveGameLocation(game_id="play-1", room_id=None, seat="black", shard_address="game-server"))
+
+    index.remove("alice")
+
+    usernames = {username for username, _location in index.all_locations()}
+    assert usernames == {"bob"}

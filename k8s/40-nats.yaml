@@ -1,0 +1,64 @@
+# Single-instance NATS, matching docker-compose.yml's own nats service -
+# Server_Design.md §3's own control-plane broker (matchmaking requests,
+# game-created/-finished, presence - never the gameplay data-plane stream,
+# which bypasses this entirely, see services/ws_gateway/main.py's own
+# _relay). Production should be a real NATS cluster (§9's own table: "a
+# broker node fails... clustered with replication") and §12's own open
+# question ("Broker capacity... worth a real load test") - a single Pod is
+# a single point of failure, acceptable for a dev/demo cluster the same way
+# docker-compose.yml's own single nats: service is, not for production.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  namespace: kfchess
+spec:
+  selector:
+    app: nats
+  ports:
+    - name: client
+      port: 4222
+    - name: monitor
+      port: 8222
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+  namespace: kfchess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nats
+  template:
+    metadata:
+      labels:
+        app: nats
+    spec:
+      containers:
+        - name: nats
+          image: nats:2-alpine
+          # -m 8222 turns on the HTTP monitoring endpoint the probes below
+          # poll - core NATS pub/sub only (no -js/JetStream), same as
+          # docker-compose.yml's own nats service: the lifecycle events
+          # this project publishes are fire-and-forget, nothing needs a
+          # durable/replayable subscription.
+          args: ["-m", "8222"]
+          ports:
+            - containerPort: 4222
+            - containerPort: 8222
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+            initialDelaySeconds: 10
+            periodSeconds: 10

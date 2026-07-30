@@ -4,6 +4,14 @@ mirroring this project's own existing pattern of proving an interface by
 running one test suite against two implementations (see
 tests/unit/test_board_representation.py, called out in README.md).
 
+Every test below holds for both implementations - none of them depend on
+*which* in-range pair find_match prefers when more than one candidate
+exists, since neither implementation's own docstring promises that for the
+scenarios used here (see server/redis/matchmaking.py's own docstring: it
+deliberately prefers the nearest-rating pair, not the earliest-queued one,
+unlike the in-memory MatchmakingQueue - test_find_match_prefers_the_nearest_rating_pair
+below is the Redis-only test that actually exercises that divergence).
+
 The Redis case is real Redis, no mocks (this project's own convention) -
 skipped unless KFCHESS_TEST_REDIS_URL points at a reachable Redis:
 
@@ -35,11 +43,11 @@ def _in_memory_queue():
 def _redis_queue():
     import redis as redis_lib
 
-    from server.redis.matchmaking import RedisMatchmakingQueue, _ORDER_KEY, _WAITING_KEY
+    from server.redis.matchmaking import RedisMatchmakingQueue, _RATING_INDEX_KEY, _WAITING_KEY
 
     # A fresh queue per test - this project's own SQLite fixtures get that
     # for free from ":memory:"; Redis needs an explicit clear instead.
-    redis_lib.Redis.from_url(REDIS_URL).delete(_ORDER_KEY, _WAITING_KEY)
+    redis_lib.Redis.from_url(REDIS_URL).delete(_RATING_INDEX_KEY, _WAITING_KEY)
     return RedisMatchmakingQueue(REDIS_URL, timeout_ms=_TIMEOUT_MS, status_interval_ms=_STATUS_INTERVAL_MS)
 
 
@@ -94,12 +102,37 @@ def test_find_match_skips_a_pair_outside_rating_range(queue):
     assert queue.find_match() is None
 
 
+# carol is out of RATING_RANGE of both alice and bob, so alice+bob is the
+# only valid candidate pair regardless of which selection rule a given
+# implementation uses - this holds for the in-memory queue's own
+# earliest-queued-pair rule *and* RedisMatchmakingQueue's own
+# nearest-rating rule alike. See test_find_match_prefers_the_nearest_rating_pair
+# below for a scenario that actually distinguishes the two.
 def test_find_match_prefers_the_earliest_queued_pair(queue):
     queue.enqueue("alice", 1200)
     queue.enqueue("carol", 1400)  # too far from alice to match
     queue.enqueue("bob", 1250)  # matches alice; carol never matches anyone
 
     assert queue.find_match() == ("alice", "bob")
+
+
+# Redis-only: server/redis/matchmaking.py's own docstring on why
+# RedisMatchmakingQueue deliberately diverges from the in-memory queue
+# here. Enqueued in an order where "first pair found scanning insertion
+# order" (bob would be alice's first-seen in-range partner) and "smallest
+# rating gap in the whole queue" (carol is closer to alice, and to bob)
+# disagree - proving this class actually picks the latter.
+@pytest.mark.skipif(REDIS_URL is None, reason="set KFCHESS_TEST_REDIS_URL to a real Redis to run these")
+def test_find_match_prefers_the_nearest_rating_pair():
+    redis_queue = _redis_queue()
+    redis_queue.enqueue("alice", 1200)
+    redis_queue.enqueue("bob", 1300)  # within RATING_RANGE (100) of alice, but not the closest
+    redis_queue.enqueue("carol", 1250)  # gap 50 to both alice and bob - a tie, unlike alice-bob's gap of 100
+
+    # Sorted by rating: alice(1200), carol(1250), bob(1300) - both adjacent
+    # pairs (alice,carol) and (carol,bob) tie at gap 50, so the first one
+    # found scanning in ascending-rating order wins the tie.
+    assert redis_queue.find_match() == ("alice", "carol")
 
 
 def test_find_match_does_not_remove_either_side_of_the_match(queue):
