@@ -208,6 +208,28 @@ swapped out without touching the others:
   for `events/observers.py`'s `MoveLogObserver`/`ScoreObserver` (which only
   ever run server-side/locally, never having crossed the network themselves).
 
+- **Internal event contracts.** `server/nats/events.py` is the deliberate
+  counterpart to `protocol/` above, not a duplicate of it — kept as two
+  separate modules on purpose, matching the two genuinely different
+  problems each one solves. `protocol/` is the client↔server *wire*
+  vocabulary: many message types share one long-lived connection, so
+  `protocol/registry.py` dispatches each incoming message at runtime by its
+  own `MessageType` tag. The NATS control-plane events between `services/*`
+  (`matchmaking.requested`, `match.found`, `room.opponent_joined`,
+  `game.allocated`, `game.created`, `game.finished`, ...) don't share that
+  problem — a NATS subject is subscribed to individually, so the subject
+  string itself already disambiguates payload shape, and a second runtime
+  dispatch layer on top would be pure overhead. `server/nats/events.py` is
+  one plain `@dataclass` per subject instead, each carrying its own
+  `SUBJECT` plus `encode()`/`decode()`. Every publisher
+  (`services/api_gateway/main.py`, `services/matchmaker/main.py`,
+  `services/game_allocator/main.py`, `services/ws_gateway/main.py`,
+  `server/game_loop.py`, `server/nats/lifecycle.py`) and the one batching
+  consumer (`services/persistence_worker/main.py`) builds/reads these
+  instead of a raw dict keyed by convention — a typo in a field name is now
+  a `NameError`/`AttributeError` at the call site, not a silent `KeyError`
+  three services away.
+
 - **Server.** `server/` hosts the authoritative game. `server/session.py`'s
   `GameSession` wraps one `engine.GameEngine` (built the same way local play
   builds one, via `engine/game_builder.py`) plus the one check `GameEngine`
