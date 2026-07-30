@@ -34,7 +34,7 @@ installed library on sys.path, not to this package (server.redis)
 importing itself.
 """
 
-from typing import Optional
+from typing import List, Optional
 
 import redis
 
@@ -53,3 +53,11 @@ class RoomShardIndex:
 
     def get(self, room_id: str) -> Optional[str]:
         return self._redis.get(f"{_KEY_PREFIX}{room_id}")
+
+    # Every room this index currently maps to a shard - what
+    # services/game_allocator/main.py's own recovery sweep iterates to find
+    # rooms whose shard has gone quiet (see that module's own docstring).
+    # scan_iter (cursor-based SCAN), not KEYS - same reasoning as
+    # server/redis/shard_registry.py's own list_live_shards.
+    def all_room_ids(self) -> List[str]:
+        return [key[len(_KEY_PREFIX):] for key in self._redis.scan_iter(match=f"{_KEY_PREFIX}*")]

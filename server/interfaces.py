@@ -159,3 +159,35 @@ class ActiveGameIndexProtocol(Protocol):
     def remove(self, username: str) -> None: ...
 
     def get(self, username: str) -> Optional[ActiveGameLocation]: ...
+
+
+# Server_Design.md §9's own "lightweight fairness checkpoint" - persist
+# just enough to Redis every few seconds (score, elapsed time, remaining
+# pieces) so a crash gives the system something to fairly void by, rather
+# than a full physics-accurate resume (§9 already considered and rejected
+# that - see server/redis/fairness_checkpoint.py's own docstring). Not
+# per-seat/per-color keys - white/black are always the two colors a
+# GameSession seats, same as every other white_/black_-prefixed pair
+# already threaded through this project's own lifecycle events (see
+# LifecyclePublisher.game_finished's own ratings dict above).
+@dataclass(frozen=True)
+class FairnessSnapshot:
+    white_score: int
+    black_score: int
+    elapsed_ms: int
+    white_pieces_remaining: int
+    black_pieces_remaining: int
+
+
+# What server/game_loop.py's GameLoop actually calls on the fairness
+# checkpoint it's given (self._fairness_checkpoint) - satisfied by
+# server/redis/fairness_checkpoint.py's FairnessCheckpoint. Optional
+# everywhere it's threaded through (None is a no-op, see GameLoop's own
+# constructor), the same pattern as every other optional cross-process
+# dependency above.
+class FairnessCheckpointProtocol(Protocol):
+    def set(self, game_id: str, snapshot: FairnessSnapshot) -> None: ...
+
+    def remove(self, game_id: str) -> None: ...
+
+    def get(self, game_id: str) -> Optional[FairnessSnapshot]: ...
