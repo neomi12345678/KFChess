@@ -325,17 +325,26 @@ def test_a_user_who_created_a_room_cannot_also_play(running_app):
 # game.finished event (the same one services/persistence_worker/main.py
 # consumes) must clean up this service's own Redis room state, since
 # GameLoop itself only ever closes its own separate, in-process
-# RoomRegistry - never this one.
+# RoomRegistry - never this one. Also covers the §4 room_id -> shard_address
+# mapping (server/redis/room_shard_index.py's RoomShardIndex) - normally
+# written by services/game_allocator/main.py's own _allocate, which isn't
+# running in this test, so it's seeded directly here to prove _on_game_finished
+# itself removes it.
 def test_publishing_game_finished_cleans_up_the_rooms_redis_state(running_app):
     import json
 
     import nats
+
+    from server.redis.room_shard_index import RoomShardIndex
 
     port, redis_client = running_app
 
     created = _post_json(port, "/rooms", {"username": "gw_test_room_finish_creator"})
     room_id = created["room_id"]
     _post_json(port, f"/rooms/{room_id}/join", {"username": "gw_test_room_finish_opponent"})
+
+    room_shard_index = RoomShardIndex(REDIS_URL)
+    room_shard_index.set(room_id, "shard-under-test")
 
     async def publish_game_finished():
         nats_connection = await nats.connect(NATS_URL)
@@ -356,3 +365,4 @@ def test_publishing_game_finished_cleans_up_the_rooms_redis_state(running_app):
     assert _wait_until(lambda: redis_client.get("kfchess:room_owner:gw_test_room_finish_creator") is None)
     assert not redis_client.sismember("kfchess:busy_usernames", "gw_test_room_finish_creator")
     assert not redis_client.sismember("kfchess:busy_usernames", "gw_test_room_finish_opponent")
+    assert _wait_until(lambda: room_shard_index.get(room_id) is None)

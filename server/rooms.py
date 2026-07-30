@@ -61,6 +61,21 @@ class RoomStoreProtocol(Protocol):
     def close(self) -> None: ...
 
 
+# What server/router.py's CommandRouter.decide_identify calls on a
+# cross-process room registry (server/redis/rooms.py's RedisRoomRegistry) -
+# read-only, and just this one method: a Game Server Shard has no business
+# creating/joining/cancelling rooms through the standalone API Gateway's own
+# registry, only checking whether an IDENTIFY-ing username is already a
+# known spectator of some room (its own in-process RoomRegistry, self._rooms,
+# already answers everything else - see decide_identify's own docstring).
+# Named here, next to RoomStoreProtocol, for the same reason that one isn't
+# in server/interfaces.py: a Protocol returning Room would make importing it
+# from there circular (server/rooms.py already imports BusySetProtocol from
+# there).
+class RoomLookupProtocol(Protocol):
+    def room_for_username(self, username: str) -> Optional["Room"]: ...
+
+
 class RoomRegistry:
     # store defaults to an isolated, disposable ":memory:" RoomStore -
     # every existing pure-in-memory call site (RoomRegistry()) keeps

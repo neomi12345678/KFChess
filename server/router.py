@@ -40,7 +40,7 @@ from server.game_loop import GameLoop, full_broadcast_payload
 from server.interfaces import MessageSender, RatingRepository
 from server.participant import ParticipantState, participant_state
 from server.command_translation import command_from_message
-from server.rooms import Room, RoomError, RoomRegistry
+from server.rooms import Room, RoomError, RoomLookupProtocol, RoomRegistry
 
 _logger = logging.getLogger(__name__)
 
@@ -93,11 +93,23 @@ class CommandRouter:
         game_loop: GameLoop,
         rating_store: RatingRepository,
         connections: MessageSender,
+        # Overridable so server/main.py can hand in a Redis-backed,
+        # read-only reference to the standalone API Gateway's own room
+        # registry (see server/redis/rooms.py's RedisRoomRegistry) - only
+        # ever used by decide_identify, to recognize a spectator whose
+        # room-membership already exists in that cross-process registry but
+        # whose GameLoop.spectator_usernames entry (this shard's own,
+        # self._rooms above never sees it) doesn't yet. None (the default)
+        # is a no-op - every existing caller/test that omits it keeps
+        # today's behavior unchanged (self._rooms already covers the
+        # bare-metal, single-process case fully on its own).
+        remote_rooms: Optional[RoomLookupProtocol] = None,
     ):
         self._rooms = rooms
         self._loop = game_loop
         self._rating_store = rating_store
         self._connections = connections
+        self._remote_rooms = remote_rooms
 
     # Called once server/ws_server.py's _handle_login has already verified
     # the password and registered the websocket under this username - the
@@ -163,14 +175,41 @@ class CommandRouter:
     # resend to an already-synced client (the same "just tell it again"
     # doesn't hurt, see JoinRoomDecision's own spectator_snapshot for the
     # same idea).
+    #
+    # Also the spectator-flow counterpart to server/ws_server.py's own
+    # bare-metal _handle_join_room (which adds a spectator to
+    # spectator_usernames the instant they join, in-process, synchronously):
+    # a spectator who joined via the standalone REST API Gateway
+    # (services/api_gateway/main.py's handle_join_room) never sends any
+    # message to this shard *at all* until this IDENTIFY - their room
+    # membership already lives durably in the cross-process
+    # RedisRoomRegistry (self._remote_rooms below), not in this shard's own
+    # spectator_usernames yet. No race to close here the way the SeatMessage
+    # one above needed two fixes for: there is no push event a spectator's
+    # own IDENTIFY could race against (see services/api_gateway/main.py's
+    # handle_join_room, deliberately publishing nothing for a spectator
+    # join) - this single synchronous read, performed exactly once, exactly
+    # when needed, is the only mechanism.
     def decide_identify(self, username: str) -> IdentifyDecision:
         game = self._loop.active_game_for(username)
+        if game is None and self._remote_rooms is not None:
+            room = self._remote_rooms.room_for_username(username)
+            if room is not None and username in room.spectators:
+                candidate = self._loop.get(room.room_id)
+                if candidate is not None:
+                    candidate.spectator_usernames.add(username)
+                    game = candidate
+
         if game is None:
             return IdentifyDecision(ack=IdentifyAckMessage(accepted=True))
 
         seat = game.session.seat_for_username(username)
         if seat is None:
-            return IdentifyDecision(ack=IdentifyAckMessage(accepted=True))
+            # No seat - a spectator (already tracked, or just self-healed
+            # above). Still worth a snapshot, same "don't make them wait for
+            # the next tick" reasoning JoinRoomDecision's own
+            # spectator_snapshot already has for the bare-metal join path.
+            return IdentifyDecision(ack=IdentifyAckMessage(accepted=True), snapshot=full_broadcast_payload(game.session))
 
         if game.session.is_disconnected(seat):
             game.session.mark_reconnected(seat)

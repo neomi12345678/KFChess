@@ -79,6 +79,7 @@ from server.postgres.accounts import (
 from server.redis.active_game_index import ActiveGameIndex
 from server.redis.busy_set import BusySet
 from server.redis.matchmaking import RedisMatchmakingQueue
+from server.redis.room_shard_index import RoomShardIndex
 from server.redis.rooms import RedisRoomRegistry
 from server.rooms import RoomError
 
@@ -196,6 +197,13 @@ async def handle_create_room(request: web.Request) -> web.Response:
 # own docstring on why "room.opponent_joined" plays the exact same role
 # here that "match.found" plays for /play, published the instant the
 # second seat fills (role == Role.OPPONENT), never for a spectator join.
+# A spectator join needs no event and no shard lookup at all: rooms.join()
+# above already recorded them in RedisRoomRegistry's own spectators set,
+# and the room's game (if it exists yet) already has a shard - see
+# server/router.py's decide_identify and services/ws_gateway/main.py's
+# _resolve_shard, which both read that same durable state directly,
+# exactly when they need it, instead of this route pushing a redundant
+# copy of the same fact through NATS.
 @routes.post("/rooms/{room_id}/join")
 async def handle_join_room(request: web.Request) -> web.Response:
     room_id = request.match_info["room_id"]
@@ -245,17 +253,20 @@ async def handle_cancel_room(request: web.Request) -> web.Response:
     return web.json_response({"accepted": True})
 
 
-# Cleans up RedisRoomRegistry's own Redis keys once a room's game actually
-# ends - see that module's own docstring on why this class needs an
-# explicit game.finished subscription (unlike server/rooms.py's
-# RoomRegistry, which GameLoop already closes directly, in-process, on the
-# very same object). room_id is None for a PLAY match's game.finished -
-# nothing to clean up here in that case.
-async def _on_game_finished(rooms: RedisRoomRegistry, msg) -> None:
+# Cleans up RedisRoomRegistry's own Redis keys, and the §4 room_id ->
+# shard_address mapping (server/redis/room_shard_index.py's RoomShardIndex,
+# written by services/game_allocator/main.py's own _allocate) once a room's
+# game actually ends - see RedisRoomRegistry's own docstring on why this
+# class needs an explicit game.finished subscription (unlike
+# server/rooms.py's RoomRegistry, which GameLoop already closes directly,
+# in-process, on the very same object). room_id is None for a PLAY match's
+# game.finished - nothing to clean up here in that case.
+async def _on_game_finished(rooms: RedisRoomRegistry, room_shard_index: RoomShardIndex, msg) -> None:
     payload = json.loads(msg.data)
     room_id = payload.get("room_id")
     if room_id is not None:
         rooms.close(room_id)
+        room_shard_index.remove(room_id)
 
 
 async def _on_startup(app: web.Application) -> None:
@@ -266,9 +277,10 @@ async def _on_startup(app: web.Application) -> None:
     app["nats_connection"] = nats_connection
 
     rooms: RedisRoomRegistry = app["rooms"]
+    room_shard_index: RoomShardIndex = app["room_shard_index"]
 
     async def _on_message(msg) -> None:
-        await _on_game_finished(rooms, msg)
+        await _on_game_finished(rooms, room_shard_index, msg)
 
     app["game_finished_sub"] = await nats_connection.subscribe("game.finished", cb=_on_message)
 
@@ -292,6 +304,7 @@ def build_app() -> web.Application:
     app["busy_set"] = busy_set
     app["active_game_index"] = ActiveGameIndex(redis_url)
     app["rooms"] = RedisRoomRegistry(redis_url, busy_set=busy_set)
+    app["room_shard_index"] = RoomShardIndex(redis_url)
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
     app.add_routes(routes)

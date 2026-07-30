@@ -27,19 +27,29 @@ identity already uniquely names its game - see _handle_room_opponent_joined
 below), and creator/opponent map onto white_username/black_username exactly
 the way GameLoop.start_room_game's existing in-process path already does.
 
-game-server subscribes to this and calls GameLoop.start_matched_game (see
-server/game_loop.py's start_game_allocation_relay - it only reads game_id/
-room_id/white_username/black_username, so shard_address is a no-op for
-today's merged WS-Gateway+Shard deployment; it exists to match
-Server_Design.md §6.3/§11's own stated payload, {room_id, shard_address},
-for whenever WS Gateway is ever actually split out as its own component and
-needs to learn which shard to open a data-plane stream to. Deliberately
+Every Game Server Shard subscribes to this (see server/game_loop.py's
+start_game_allocation_relay) and filters on shard_address itself - only the
+addressed shard actually starts the game; every other shard ignores the
+event. game.allocated is also this service's own real-time signal for
+services/ws_gateway/main.py's _AllocationWaiters (a client waiting on a
+still-pending PLAY/room-opponent allocation), and shard_address is what
+lets it open its own internal relay connection once resolved. Deliberately
 kept as "game.allocated", not renamed to the document's literal
 "game-created" - server/nats/lifecycle.py already publishes a real,
 different game.created event, fired by the shard itself once it starts
 hosting a room, carrying no shard address; colliding the two names would be
 a worse mismatch than keeping today's distinct name and just enriching its
-payload.)
+payload.
+
+Also maintains the Server_Design.md §4 `room_id -> worker` mapping itself
+(server/redis/room_shard_index.py's RoomShardIndex, see its own docstring)
+- written the instant a room's lease is acquired, for a room-based
+allocation only (never a PLAY match, which has no room_id for anyone to
+look up). This is what lets a spectator joining a room later (see
+services/api_gateway/main.py's handle_join_room and
+services/ws_gateway/main.py's _resolve_shard) learn which shard to relay
+to without ever needing its own allocation event - the room's game already
+exists by the time a spectator joins, so there is nothing to wait for.
 """
 
 import asyncio
@@ -52,6 +62,7 @@ from typing import Optional
 import nats
 import redis
 
+from server.redis.room_shard_index import RoomShardIndex
 from server.redis.shard_registry import ShardRegistry
 
 _logger = logging.getLogger(__name__)
@@ -71,6 +82,7 @@ def _acquire_lease(redis_client, game_id: str, shard_address: str, ttl_ms: int =
 async def _allocate(
     redis_client,
     nats_connection,
+    room_shard_index: RoomShardIndex,
     shard_address: str,
     game_id: str,
     room_id: Optional[str],
@@ -80,6 +92,16 @@ async def _allocate(
     if not _acquire_lease(redis_client, game_id, shard_address):
         _logger.error("failed to acquire lease for game_id %s - not allocating", game_id)
         return
+
+    # The Server_Design.md §4 room_id -> worker mapping itself - room_id is
+    # None for a PLAY match (nothing for a spectator to ever look up), set
+    # for a room (game_id *is* the room_id here - see this module's own
+    # docstring). Written here, the instant the lease is acquired, rather
+    # than by the shard once it actually starts the game: a spectator
+    # joining a room only ever needs to know *which shard*, never anything
+    # the shard itself would have to compute.
+    if room_id is not None:
+        room_shard_index.set(room_id, shard_address)
 
     out_payload = {
         "game_id": game_id,
@@ -92,7 +114,9 @@ async def _allocate(
     _logger.info("allocated game %s ('%s' vs '%s') to %s", game_id, white_username, black_username, shard_address)
 
 
-async def _handle_match_found(redis_client, nats_connection, shard_address: Optional[str], msg) -> None:
+async def _handle_match_found(
+    redis_client, nats_connection, room_shard_index: RoomShardIndex, shard_address: Optional[str], msg
+) -> None:
     if shard_address is None:
         _logger.error("no live Game Server Shard registered - dropping match.found (%s)", msg.data)
         return
@@ -103,7 +127,14 @@ async def _handle_match_found(redis_client, nats_connection, shard_address: Opti
     # cross-process id scheme (nothing here coordinates a shared counter).
     game_id = f"play-{uuid.uuid4().hex[:8]}"
     await _allocate(
-        redis_client, nats_connection, shard_address, game_id, None, payload["white_username"], payload["black_username"]
+        redis_client,
+        nats_connection,
+        room_shard_index,
+        shard_address,
+        game_id,
+        None,
+        payload["white_username"],
+        payload["black_username"],
     )
 
 
@@ -114,14 +145,25 @@ async def _handle_match_found(redis_client, nats_connection, shard_address: Opti
 # one, since the room already has a unique, wire-visible identity of its
 # own. creator/opponent map onto white/black exactly the way
 # GameLoop.start_room_game's existing in-process path already does.
-async def _handle_room_opponent_joined(redis_client, nats_connection, shard_address: Optional[str], msg) -> None:
+async def _handle_room_opponent_joined(
+    redis_client, nats_connection, room_shard_index: RoomShardIndex, shard_address: Optional[str], msg
+) -> None:
     if shard_address is None:
         _logger.error("no live Game Server Shard registered - dropping room.opponent_joined (%s)", msg.data)
         return
 
     payload = json.loads(msg.data)
     room_id = payload["room_id"]
-    await _allocate(redis_client, nats_connection, shard_address, room_id, room_id, payload["creator"], payload["opponent"])
+    await _allocate(
+        redis_client,
+        nats_connection,
+        room_shard_index,
+        shard_address,
+        room_id,
+        room_id,
+        payload["creator"],
+        payload["opponent"],
+    )
 
 
 async def _main() -> None:
@@ -130,15 +172,16 @@ async def _main() -> None:
 
     redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
     registry = ShardRegistry(redis_url)
+    room_shard_index = RoomShardIndex(redis_url)
     nats_connection = await nats.connect(nats_url)
 
     async def _on_match_found(msg) -> None:
         shard_address = registry.pick_shard()
-        await _handle_match_found(redis_client, nats_connection, shard_address, msg)
+        await _handle_match_found(redis_client, nats_connection, room_shard_index, shard_address, msg)
 
     async def _on_room_opponent_joined(msg) -> None:
         shard_address = registry.pick_shard()
-        await _handle_room_opponent_joined(redis_client, nats_connection, shard_address, msg)
+        await _handle_room_opponent_joined(redis_client, nats_connection, room_shard_index, shard_address, msg)
 
     await nats_connection.subscribe("match.found", cb=_on_match_found)
     await nats_connection.subscribe("room.opponent_joined", cb=_on_room_opponent_joined)
