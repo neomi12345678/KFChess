@@ -58,9 +58,19 @@ async def login(websocket, username: str, password: str = "secret123") -> dict:
     return await recv_of_type(websocket, "login_ack")
 
 
-async def identify(websocket, username: str) -> dict:
-    await websocket.send(encode_json_message(IdentifyMessage(username=username)))
+async def identify(websocket, username: str, token: str) -> dict:
+    await websocket.send(encode_json_message(IdentifyMessage(username=username, token=token)))
     return await recv_of_type(websocket, "identify_ack")
+
+
+# A successful login_ack now carries a real, unpredictable session token
+# (see server/accounts.py's issue_session_token) - stripped out here so
+# tests asserting the rest of the ack's exact shape don't have to hardcode
+# a value that changes every run. Callers that need the token itself (to
+# pass to identify() above) read ack["token"] directly off the un-stripped
+# dict login()/recv_of_type already returned.
+def _strip_token(ack: dict) -> dict:
+    return {key: value for key, value in ack.items() if key != "token"}
 
 
 async def play(websocket) -> dict:
@@ -160,7 +170,8 @@ def test_login_alone_does_not_start_a_game():
             uri = f"ws://localhost:{server.bound_port}"
             async with websockets.connect(uri) as ws:
                 ack = await login(ws, "alice")
-                assert ack == {"type": "login_ack", "accepted": True, "username": "alice", "rating": 1200}
+                assert _strip_token(ack) == {"type": "login_ack", "accepted": True, "username": "alice", "rating": 1200}
+                assert isinstance(ack["token"], str) and ack["token"]
 
                 with pytest.raises(asyncio.TimeoutError):
                     await asyncio.wait_for(ws.recv(), timeout=0.2)
@@ -562,7 +573,7 @@ def test_disconnected_player_can_reconnect_within_the_grace_window_and_resume():
                 async with websockets.connect(uri) as b2:
                     reconnect_ack = await login(b2, "bob")
 
-                    assert reconnect_ack == {
+                    assert _strip_token(reconnect_ack) == {
                         "type": "login_ack",
                         "accepted": True,
                         "username": "bob",
@@ -596,7 +607,7 @@ def test_identify_reconnects_a_disconnected_seat_within_the_grace_window():
             async with websockets.connect(uri) as a:
                 b = await websockets.connect(uri)
                 await login(a, "alice")
-                await login(b, "bob")
+                bob_login = await login(b, "bob")
                 await play(a)
                 await play(b)
                 await recv_of_type(a, "seat")  # alice = white
@@ -606,7 +617,7 @@ def test_identify_reconnects_a_disconnected_seat_within_the_grace_window():
                 await asyncio.sleep(0.1)  # well within the 10s grace window
 
                 async with websockets.connect(uri) as b2:
-                    identify_ack = await identify(b2, "bob")
+                    identify_ack = await identify(b2, "bob", bob_login["token"])
                     assert identify_ack == {"type": "identify_ack", "accepted": True}
 
                     # The game actually continues - bob's connection is
@@ -635,10 +646,10 @@ def test_identify_for_a_username_with_no_active_game_just_registers_the_connecti
             # it, so the IDENTIFY-only connection below is the *only* one
             # this username's socket has ever used.
             async with websockets.connect(uri) as bootstrap:
-                await login(bootstrap, "carol")
+                carol_login = await login(bootstrap, "carol")
 
             async with websockets.connect(uri) as ws:
-                identify_ack = await identify(ws, "carol")
+                identify_ack = await identify(ws, "carol", carol_login["token"])
                 assert identify_ack == {"type": "identify_ack", "accepted": True}
 
                 # Registered like any other connection - PLAY now works.
@@ -914,7 +925,7 @@ def test_room_survives_a_server_restart_and_resumes_with_a_fresh_game():
                     # alice is first back - nothing to resume yet, just told
                     # which room she's waiting on.
                     ack_a = await login(a, "alice")
-                    assert ack_a == {
+                    assert _strip_token(ack_a) == {
                         "type": "login_ack",
                         "accepted": True,
                         "username": "alice",
@@ -925,7 +936,7 @@ def test_room_survives_a_server_restart_and_resumes_with_a_fresh_game():
                     # bob logs back in second - alice is already online, so
                     # this starts the fresh game immediately.
                     ack_b = await login(b, "bob")
-                    assert ack_b == {
+                    assert _strip_token(ack_b) == {
                         "type": "login_ack",
                         "accepted": True,
                         "username": "bob",
@@ -958,7 +969,7 @@ def test_a_still_pending_room_survives_a_server_restart_and_stays_joinable():
                 uri = f"ws://localhost:{server.bound_port}"
                 async with websockets.connect(uri) as a, websockets.connect(uri) as b:
                     ack_a = await login(a, "alice")
-                    assert ack_a == {
+                    assert _strip_token(ack_a) == {
                         "type": "login_ack",
                         "accepted": True,
                         "username": "alice",

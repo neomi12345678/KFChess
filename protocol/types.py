@@ -113,6 +113,19 @@ class Reason(str, Enum):
     NOT_IN_A_ROOM = "not_in_a_room"
     NOT_THE_CREATOR = "not_the_creator"
     ALREADY_STARTED = "already_started"
+    # A missing, expired, or tampered session token on an IdentifyMessage or
+    # an api_gateway request body (server/accounts.py's verify_session_token)
+    # - one value for all three, since the client's remedy is the same in
+    # every case: log in again.
+    INVALID_SESSION = "invalid_session"
+    # A MoveMessage/JumpMessage whose source/destination dict is missing
+    # "row"/"col" or isn't a dict at all - well-formed enough to pass
+    # protocol/registry.py's own top-level dataclass construction (source/
+    # destination are typed as a plain dict there), but not enough for
+    # server/command_translation.py's position_from_json to build a real
+    # Position from (see server/router.py's decide_game_command, the one
+    # place that catches this rather than letting it raise mid-routing).
+    MALFORMED_COMMAND = "malformed_command"
 
     def __str__(self) -> str:
         return self.value

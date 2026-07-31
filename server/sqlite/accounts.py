@@ -39,19 +39,24 @@ class UserStore:
                 (username,),
             ).fetchone()
 
-            if row is None:
-                return self._register(username, password)
+        # Released above, before the deliberately-slow PBKDF2 hash below -
+        # holding this lock across it would serialize every concurrent
+        # RatingStore call (same connection, same lock) behind however long
+        # PASSWORD_HASH_ITERATIONS takes, for a comparison that doesn't
+        # touch the connection at all once row is in hand.
+        if row is None:
+            return self._register(username, password)
 
-            stored_hash, salt = row
-            if _hash_password(password, salt) != stored_hash:
-                raise InvalidCredentialsError(f"wrong password for '{username}'")
+        stored_hash, salt = row
+        if _hash_password(password, salt) != stored_hash:
+            raise InvalidCredentialsError(f"wrong password for '{username}'")
 
-            return Account(username=username)
+        return Account(username=username)
 
     def _register(self, username: str, password: str) -> Account:
+        salt = os.urandom(16)
+        password_hash = _hash_password(password, salt)
         with self._database.lock:
-            salt = os.urandom(16)
-            password_hash = _hash_password(password, salt)
             self._database.connection.execute(
                 "INSERT INTO accounts (username, password_hash, password_salt, rating) VALUES (?, ?, ?, ?)",
                 (username, password_hash, salt, STARTING_RATING),

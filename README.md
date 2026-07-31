@@ -1,6 +1,13 @@
 # KFChess
 ⚡ KFChess | Mastering real-time chess, one move at a time.
 
+**Who this is for:** a chess player who wants the tension of live play —
+reflexes and timing decide a close call, not just who happened to move
+first — without giving up chess's own piece rules for something unrelated.
+The payoff over ordinary turn-based chess: no waiting through an
+opponent's turn, and every piece on the board is a live threat at once,
+not just the ones it's currently "your turn" to worry about.
+
 A chess variant where pieces move in continuous, real time instead of
 turns: several pieces can be mid-flight at once, and the engine has to
 resolve who gets where and when — including races between friendly pieces,
@@ -255,9 +262,12 @@ swapped out without touching the others:
 - **Client.** `client/` is the networked counterpart to `input/`/`view/`, and
   is just as strictly isolated: **it never imports `server/`**, only
   `protocol/` (the same wire vocabulary the server speaks), `events/` (its
-  own local `Bus`, for sound/animation cues), and `model/` (`GameSnapshot`,
+  own local `Bus`, for sound/animation cues), `model/` (`GameSnapshot`,
   rebuilt from the wire by `protocol/snapshot_codec.py`, never read off a
-  live `Board`). `client/network_client.py`'s `NetworkGameClient` runs the
+  live `Board`), and a couple of leaf utility modules with no server/view
+  dependencies of their own (`boardio/algebraic_notation.py` for
+  `client/client_cli.py`'s typed move input, `tls_config.py` for opt-in
+  TLS). `client/network_client.py`'s `NetworkGameClient` runs the
   actual asyncio/websocket connection on a background thread, so
   `view/canvas/window.py`'s blocking, synchronous frame loop never has to be
   async itself. `client/network_message_adapter.py` and

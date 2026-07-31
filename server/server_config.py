@@ -45,6 +45,16 @@ STARTING_RATING = 1200
 PASSWORD_HASH_NAME = "sha256"
 PASSWORD_HASH_ITERATIONS = 200_000
 
+# server/accounts.py's issue_session_token/verify_session_token - how long a
+# session token stays valid after LOGIN/POST-login issues it. Sized for
+# realistic lobby dwell time (a human sitting at client/setup_dialogs.py's
+# setup screen between logging in and actually starting a game), not for the
+# IDENTIFY handshake itself (sub-second) or DISCONNECT_GRACE_MS below (both
+# far shorter than the real constraint). No logout/revocation exists
+# anywhere in this codebase today, so this TTL is the only expiry a stolen
+# token ever gets - a deliberate, documented trade-off, not an oversight.
+SESSION_TOKEN_TTL_S = 3600 * 6
+
 # server/session.py - how long a disconnected seat gets before it's ruled a
 # resignation (the Home-screen slide's own "auto-resign after 20 sec").
 DISCONNECT_GRACE_MS = 20_000
@@ -90,6 +100,29 @@ ROOM_LEASE_RENEW_INTERVAL_MS = 5_000
 # every heartbeat; the allocator filters out anything at or over this before
 # picking).
 MAX_ROOMS_PER_SHARD = 500
+
+# server/main.py - Server_Design.md §8's own "a Game-Authority pod being
+# retired stops accepting new rooms, drains its existing ones (bounded
+# <=90s wait), then exits." The upper bound on how long a SIGTERM'd shard
+# waits for its own currently-active games to finish naturally before
+# giving up and exiting anyway (see server/main.py's own _main, which
+# stops this shard from being picked for anything *new* the instant the
+# signal arrives - see MAX_ROOMS_PER_SHARD above and
+# server/redis/shard_registry.py's own pick_shard).
+SHARD_DRAIN_TIMEOUT_MS = 90_000
+
+# server/redis/matchmaker_leader.py - only the standalone Matchmaker
+# replica holding this lease actually ticks the shared RedisMatchmakingQueue
+# (see that module's own docstring on why concurrent tickers would
+# double-count waited_ms and double-claim a match) - renewed every tick
+# (services/matchmaker/main.py's own MATCHMAKER_TICK_INTERVAL_S, 50ms by
+# default), so this TTL only bounds how long a crashed leader's own lease
+# lingers before a live replica notices and takes over - the same
+# well-under-the-renew-cadence margin ROOM_LEASE_TTL_MS/
+# ROOM_LEASE_RENEW_INTERVAL_MS above already uses, just shorter throughout
+# since a missed matchmaking tick is far cheaper to fail over quickly than
+# a live room's own lease.
+MATCHMAKER_LEADER_TTL_MS = 2_000
 
 # services/persistence_worker/main.py - Server_Design.md §8's own
 # "Persistence Workers consume it in batches" - a flush happens once

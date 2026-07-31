@@ -11,6 +11,7 @@ to keep running on, deadlocking the reply it's waiting for.
 
 import asyncio
 import contextlib
+import dataclasses
 
 import pytest
 
@@ -65,7 +66,14 @@ def test_login_play_and_get_seated_over_a_real_connection():
             try:
                 login_a = await _in_thread(client_a.login, "alice", "secret123")
                 login_b = await _in_thread(client_b.login, "bob", "hunter2")
-                assert login_a == LoginAckMessage(accepted=True, username="alice", rating=1200)
+                # login_a.token is a real, unpredictable session token (see
+                # server/accounts.py's issue_session_token) - checked
+                # separately, then stripped so the rest of the ack's shape
+                # can still be compared by value.
+                assert isinstance(login_a.token, str) and login_a.token
+                assert dataclasses.replace(login_a, token=None) == LoginAckMessage(
+                    accepted=True, username="alice", rating=1200
+                )
                 assert login_b.accepted is True
 
                 play_a = await _in_thread(client_a.play)

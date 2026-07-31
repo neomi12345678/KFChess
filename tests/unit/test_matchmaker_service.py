@@ -71,7 +71,10 @@ def test_a_compatible_pair_publishes_match_found(queue):
 
     async def scenario():
         nats_connection = await nats.connect(NATS_URL)
-        task = asyncio.create_task(_run_forever(queue, nats_connection, tick_interval_s=0.05))
+        from server.redis.matchmaker_leader import MatchmakerLeaderElection
+
+        leader = MatchmakerLeaderElection(REDIS_URL)
+        task = asyncio.create_task(_run_forever(queue, nats_connection, tick_interval_s=0.05, leader=leader))
         try:
             events = await _collect("match.found", nats_connection, count=1)
         finally:
@@ -120,7 +123,10 @@ def test_a_lone_waiter_gets_a_status_heartbeat_then_times_out(queue):
 
     async def scenario():
         nats_connection = await nats.connect(NATS_URL)
-        task = asyncio.create_task(_run_forever(queue, nats_connection, tick_interval_s=0.05))
+        from server.redis.matchmaker_leader import MatchmakerLeaderElection
+
+        leader = MatchmakerLeaderElection(REDIS_URL)
+        task = asyncio.create_task(_run_forever(queue, nats_connection, tick_interval_s=0.05, leader=leader))
         try:
             status_events = await _collect("matchmaking.status", nats_connection, count=1)
             timeout_events = await _collect("matchmaking.timeout", nats_connection, count=1, timeout=2.0)

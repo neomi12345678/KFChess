@@ -11,6 +11,7 @@ assignment's four scaling questions with numbers grounded in this codebase
 
 **Contents**
 
+- Assumptions — every educated guess this document rests on, in one place
 - §0 The model the current server already follows
 - §1 Why one process is not enough
 - §2 Docker / Kubernetes / K3s — the scaling substrate
@@ -24,6 +25,30 @@ assignment's four scaling questions with numbers grounded in this codebase
 - §10 Does the capacity actually add up?
 - §11 Role summary
 - §12 Open questions
+
+## Assumptions
+
+Every number below that isn't handed to us directly by the assignment
+(100M registered / 10M concurrent / a move every ~2s / 30–90s games) is an
+*educated* guess, not an invented one — collected here in one visible
+table, per the standard's own "an undocumented assumption is a landmine,
+a documented one is a design decision someone else can correct." Several
+of these were already flagged inline, scattered across §8/§9/§10/§12; this
+table doesn't add new numbers, it puts every existing one somewhere a
+reader can find and argue with it in one place, and adds the two rows this
+document was missing entirely (session-token TTL, drain timeout) once
+this pass actually implemented them.
+
+| Assumption | Basis (why educated) | What breaks if wrong | How we'd find out |
+|---|---|---|---|
+| Avg. game lasts ~60s (§8's Little's Law input) | Midpoint of the assignment's own stated 30–90s range | The 83,000 games/sec churn estimate, and everything downstream of it (shard count, container-role reasoning) | Measure real game duration once live. Direction of risk is safe either way it's wrong: real games running longer than 60s means this design is *over*-provisioned on churn, not under — see the standard's own "which failure mode is safer" framing |
+| ~500 concurrent rooms per Game Server Shard (§10, `MAX_ROOMS_PER_SHARD`) | Target payload size + "one Python process ≈ one core's worth of tick computation" reasoning — explicitly flagged already as a planning number, not a measurement | §10's own ~10,000-shard estimate, and the HPA thresholds in `k8s/70-game-server.yaml` | §9's own "Load testing" paragraph: synthetic clients driving real ticks through a real shard, watched through the metrics pipeline |
+| ~20,000 connections per Gateway pod (§10) | Same planning-number status as the row above | §10's own ~500-Gateway-pod estimate, and `k8s/60-api-gateway.yaml`/`61-ws-gateway.yaml`'s HPA thresholds | Same load test as above, against a real WS Gateway |
+| Session token TTL = 6 hours (`SESSION_TOKEN_TTL_S`, `server/server_config.py`) | Sized for realistic lobby dwell time (login → REST `/login` → a human at the setup screen → `/play`), not measured against real usage | Too short: legitimate users get spuriously logged out mid-setup. Too long: a stolen token stays valid longer — the only expiry it gets, since no logout/revocation exists in this codebase | Instrument real login→play elapsed time in production; tighten once observed. Direction of risk is the same "safe to over-provision" shape as the game-duration row above — too-long merely widens a theft window, it never breaks a legitimate session |
+| Matchmaker leader-lease TTL = 2s (`MATCHMAKER_LEADER_TTL_MS`, `server/redis/matchmaker_leader.py`) | Renewed every tick (~50ms) — chosen as a wide safety margin, not a measured one | Too short: the lease could flap under a slow tick, briefly letting two replicas both believe they're leader. Too long: a crashed leader's replacement takes longer to notice | Load-test the standalone Matchmaker under realistic tick jitter, not just the happy path |
+| Shard drain timeout = 90s (`SHARD_DRAIN_TIMEOUT_MS`) | Copied directly from this document's own §8 "bounded ≤90s wait" language, which is itself stated, not derived from a measured game-duration p99 | A pod retiring mid-rollout could still exit with a real game active, if 90s doesn't cover the actual tail of the duration distribution | Track real drain outcomes (games still active at the timeout) once deployed — `services/game_allocator/main.py`'s own recovery sweep is the safety net if this number turns out too short |
+| Cross-region pairing has no explicit bias (§12) | Not yet decided — an open question, not a made one | Cross-region-matched players could see meaningfully worse latency than same-region ones, silently | Real latency measurements once a multi-region deployment exists |
+| Reconnect routing is correct under real failover timing (§12) | Believed correct "by construction" (the presence/room mapping is already globally reachable) but never verified against an actual failover | A reconnect landing during a live failover window could fail to find the right shard | A real failover drill — killing a shard mid-game and reconnecting through it — not just integration tests against an already-stable topology |
 
 ## 0. The model the current server already follows
 
@@ -294,6 +319,30 @@ just overwriting a live entry. This is what makes the failure story in §9
 sound: Kubernetes restarting a crashed pod is necessary but not sufficient
 — the *lease expiry* is what actually authorizes a new owner.
 
+*(That `SET ... NX PX` line is the mechanism, illustrated once — the actual
+code splits it into two leases with different keys/TTLs, not one command
+run verbatim: `services/game_allocator/main.py`'s own `_acquire_lease`
+writes a short-lived, one-shot `kfchess:game:{game_id}:owner` guard
+against double-allocation during the handoff itself, while
+`server/redis/room_shard_index.py`'s `RoomShardIndex` is the lease that
+actually lasts the room's whole lifetime — `ROOM_LEASE_TTL_MS`/PX 15000,
+renewed every `ROOM_LEASE_RENEW_INTERVAL_MS`/5000ms by `server/game_loop.py`.
+Same NX+PX+heartbeat mechanism this section describes, just as two
+purpose-built leases rather than the one generic example above.)*
+
+The same **lease** shape, applied to a different question, is also what
+makes the standalone **Matchmaker** (§6, §11) safe to run as more than one
+replica: `server/redis/matchmaker_leader.py`'s `MatchmakerLeaderElection`
+is an NX+PX+heartbeat lease over *which replica currently ticks the shared
+queue*, not over a room. Every Matchmaker replica still consumes its own
+share of `matchmaking.requested` (enqueue has no shared mutable counter to
+race on), but only whichever replica currently holds that lease calls
+`RedisMatchmakingQueue.advance_time`/`find_match` on a given tick — without
+it, two replicas independently aging the same waiting entry's `waited_ms`
+would double-count elapsed time (expiring players early), and two replicas
+both reading the same still-present candidate pair before either removed
+it could publish `match.found` for it twice.
+
 ## 5. Question 1 — a database for 100 million registered users
 
 **SQLite doesn't fit.** Not primarily because of data volume (a 100M-row
@@ -319,6 +368,32 @@ absorbed by a normal RDBMS). The real reasons:
 | Presence / session directory | Redis | Low latency, doesn't need durability beyond a TTL; naturally lives alongside the room-ownership registry (§4). |
 | Matchmaking queue | Redis Sorted Set (`ZADD` by rating) | O(log n) proximity lookup, globally shared so players on any gateway can be matched. |
 | Leaderboard | Redis Sorted Set | Not a live `ORDER BY` over 100M rows — incremental updates instead. |
+
+**Read/write ratio per entity** — the number that actually decides whether
+"primary + read replicas" above does anything for a given row, per the
+design-process standard's own emphasis that this has to be checked per
+entity, not once for the whole system:
+
+- **Player profile / rating**: read on every login, every leaderboard
+  view, every match-up lookup; written once per game finishing. Heavily
+  read-dominant (order of 100:1 or more) — replicas and caching both work
+  well here, and a rating that's a couple seconds stale off a replica
+  costs nothing real (see `services/api_gateway/main.py`'s own
+  replica-with-primary-fallback `PostgresRatingStore`, already built on
+  this assumption).
+- **Live board state**: never reaches this table at all (see §0/§1) —
+  read and written by both participants at roughly **1:1**, up to 5M
+  times/sec in aggregate (§7), and worthless 60 seconds later. No cache
+  and no replica helps a ~1:1 workload (see the design-process standard's
+  own reasoning: a replica only pays off on the read side, and this has
+  almost no read side separate from the write). That asymmetry with
+  rating above — not "boards are more important" — is the actual reason
+  it lives in each shard's own RAM instead of Postgres/Redis.
+- **`game_history` rows** (`server/postgres/game_history.py`): write-once
+  on game-finish, read rarely (a post-game replay, a rating dispute) — the
+  opposite skew from rating, but the same conclusion follows: a read
+  replica is close to free capacity here too, since almost nothing ever
+  re-reads a given row after it's written.
 
 *(A nice aside: K3s itself defaults to SQLite for its own cluster
 datastore, and needs etcd/Postgres only once multi-node HA is required —
@@ -382,6 +457,24 @@ between the ~9.6–19 Tbps rows and the ~20–45 Gbps target — the latter is
 large but ordinary at hyperscale, and shards naturally per room (a single
 Gateway pod at ~20,000 connections carries only ~1–2 MB/s).
 
+**Bytes aren't the only thing that scales here, and it isn't even the
+harder one.** The table above answers "how many bits/sec," but a second,
+independent resource is *how many individual sends/sec* — the current,
+unmodified code is 5M games × 20Hz × 2 seats ≈ **200M message-sends/sec**
+across the fleet; the target design is still ~10–15M/sec after fan-out
+(~5M events/s × 2–3 recipients). Neither number shows up in a Gbps figure
+at all — a message rate and a byte rate are different bottlenecks that
+fail differently (one exhausts NIC/switch capacity, the other exhausts
+per-connection send-queue/syscall overhead and, for a broker-routed
+design, the broker's own throughput), and it's the reason §3 insists the
+data-plane stream is a **direct** per-connection pipe from WS Gateway to
+shard rather than anything broker-relayed: routing 200M (or even 10–15M)
+sends/sec through one shared hop would make the broker itself the
+bottleneck long before the byte rate did. Spreading that message rate
+across ~500 Gateway pods (§10) is what keeps any *one* process's share of
+it — a few hundred thousand sends/sec — inside what a single event loop
+and its OS socket layer can actually sustain.
+
 ## 8. Question 4 — 30–90 second games: what that means for container roles
 
 By Little's Law: 10M players ÷ 2 = 5M concurrent games; ~60s average
@@ -417,7 +510,18 @@ Three consequences, all reachable directly from this one number:
 This also makes **scale-down and rolling deploys cheap**: a Game-Authority
 pod being retired stops accepting new rooms, drains its existing ones
 (bounded ≤90s wait), then exits — no live-migration machinery needed,
-unlike a service with hours-long sessions.
+unlike a service with hours-long sessions. Implemented as a real SIGTERM
+handler (`server/main.py`'s `_run_until_drained`/`_wait_then_drain`, backing
+`k8s/70-game-server.yaml`'s own `terminationGracePeriodSeconds`): the signal
+flips a draining flag the shard's own heartbeat starts reporting into
+`server/redis/shard_registry.py` as `MAX_ROOMS_PER_SHARD` rooms (never a
+real, lower count) rather than deregistering outright — enough to exclude
+it from `pick_shard`'s existing capacity filter for every *new* allocation,
+while staying "alive" to the recovery sweep so it doesn't mistake a
+draining-but-still-ticking shard for a dead one and void the games this
+drain is trying to let finish naturally. The process then waits for
+`active_game_count()` to reach zero or the bound to elapse, whichever comes
+first, before actually exiting.
 
 ## 9. What happens when a server falls — per component
 
@@ -496,6 +600,25 @@ computation — a planning assumption pending real benchmarking):
   room is an in-memory allocation with no I/O in the hot path.
 - Gateway tier, independently: 10M connections ÷ ~20,000/pod ≈ **~500
   Gateway pods**.
+- **RAM per shard** (Step 05's own checklist item this document hadn't
+  filled in): ~500 rooms × ~50–100KB/room — not the ~150–250B *wire*
+  payload from §7, but the Python object overhead sitting behind it
+  (dataclass instances, a dict-backed `Board`, one `Motion` object per
+  piece currently in flight, a growing move log over the game's 30–90s)
+  — ≈ **~25–50MB per shard**. Trivial against any real node's RAM
+  allocation, which confirms §2's own claim from the other direction: CPU
+  (one core's worth of tick computation, GIL-bound), not memory, is what
+  actually caps how many rooms one shard process can hold.
+- **Persistence write volume**: 83,000 games finishing/sec ÷
+  `PERSISTENCE_BATCH_SIZE` (50, `server/server_config.py`) ≈ **~1,660
+  batch-writes/sec needed in aggregate** across every Persistence Worker
+  replica — each one a single `executemany`+commit round trip
+  (`PostgresGameHistoryStore.record_games_batch`), not 83,000 individual
+  `INSERT`s/sec landing on Postgres directly. A single replica sustaining
+  on the order of a few hundred flushes/sec puts this at roughly
+  **~10–30 replicas** — an order-of-magnitude estimate, not a measured
+  one (see the Assumptions table above), since real IOPS-per-replica needs
+  the same load test §9 already calls for the shard/Gateway numbers.
 
 Ten thousand shards sounds large in isolation, but it's the direct,
 expected consequence of the scale being asked for — no single component

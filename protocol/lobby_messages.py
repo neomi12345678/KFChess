@@ -37,10 +37,18 @@ class LoginMessage:
 # piece of LoginMessage's three branches this narrower message replicates;
 # it does not replicate the room-survived-a-restart branch (see that
 # method's own docstring).
+#
+# token is the session token LoginAckMessage handed back on the LOGIN/POST
+# /login that preceded this - proof this username was actually
+# authenticated a moment ago, not just asserted (see server/accounts.py's
+# issue_session_token/verify_session_token). Optional only so a client that
+# omits it decodes cleanly into an explicit INVALID_SESSION rejection in
+# _handle_identify, rather than a raw TypeError at the wire gatekeeper.
 @register(MessageType.IDENTIFY)
 @dataclass(frozen=True)
 class IdentifyMessage:
     username: str
+    token: Optional[str] = None
     type: str = MessageType.IDENTIFY
 
 
@@ -88,15 +96,25 @@ class LoginAckMessage:
     reconnected: Optional[bool] = None
     color: Optional[str] = None
     resuming_room_id: Optional[str] = None
+    # Set (via server/accounts.py's issue_session_token) whenever
+    # accepted=True - the credential a client attaches to every later
+    # IdentifyMessage to prove it, rather than just assert, which username
+    # it is. None whenever accepted=False, since no session exists to prove.
+    token: Optional[str] = None
     type: str = MessageType.LOGIN_ACK
 
 
-# Always accepted=True - decide_identify's own docstring explains why this
-# is registration, not a business decision that could be rejected.
+# decide_identify's own docstring explains why *its own* decision is always
+# accepted - that's a separate fact from whether this message ever carries
+# accepted=False: _handle_identify (server/ws_server.py) now rejects an
+# IdentifyMessage with a missing/invalid/expired token before decide_identify
+# is ever reached, via this same message with accepted=False and a reason
+# (see protocol/types.py's Reason.INVALID_SESSION).
 @register(MessageType.IDENTIFY_ACK)
 @dataclass(frozen=True)
 class IdentifyAckMessage:
     accepted: bool
+    reason: Optional[str] = None
     type: str = MessageType.IDENTIFY_ACK
 
 

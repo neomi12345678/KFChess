@@ -31,6 +31,8 @@ import time
 
 import pytest
 
+from server.accounts import issue_session_token
+
 DATABASE_URL = os.environ.get("KFCHESS_TEST_DATABASE_URL")
 REDIS_URL = os.environ.get("KFCHESS_TEST_REDIS_URL")
 NATS_URL = os.environ.get("KFCHESS_TEST_NATS_URL")
@@ -38,6 +40,25 @@ pytestmark = pytest.mark.skipif(
     DATABASE_URL is None or REDIS_URL is None or NATS_URL is None,
     reason="set KFCHESS_TEST_DATABASE_URL, KFCHESS_TEST_REDIS_URL, and KFCHESS_TEST_NATS_URL to run these",
 )
+
+# Fixed rather than random - running_app's own monkeypatch.setenv makes this
+# the real secret build_app() reads, so any test can sign a token for a
+# username it never actually POSTed /login for (most of these seed Redis/
+# Postgres state directly rather than going through a real login - see
+# individual fixtures below).
+_TEST_SESSION_SECRET = b"test-only-session-token-secret"
+
+
+def _token_for(username: str) -> str:
+    return issue_session_token(username, _TEST_SESSION_SECRET, ttl_s=3600)
+
+
+# A successful /login response now carries a real session token (see
+# server/accounts.py's issue_session_token) - stripped here so tests
+# asserting the rest of the response's exact shape don't have to hardcode
+# an unpredictable value.
+def _strip_token(body: dict) -> dict:
+    return {key: value for key, value in body.items() if key != "token"}
 
 
 def _wait_until(predicate, timeout: float = 2.0, interval: float = 0.02) -> bool:
@@ -56,6 +77,7 @@ def running_app(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
     monkeypatch.setenv("REDIS_URL", REDIS_URL)
     monkeypatch.setenv("NATS_URL", NATS_URL)
+    monkeypatch.setenv("SESSION_TOKEN_SECRET", _TEST_SESSION_SECRET.decode("utf-8"))
 
     redis_client = redis_lib.Redis.from_url(REDIS_URL, decode_responses=True)
     redis_client.delete("kfchess:busy_usernames")
@@ -164,7 +186,7 @@ def _post_login(port: int, username: str, password: str) -> dict:
 
 
 def _post_play(port: int, username: str) -> dict:
-    return _post_json(port, "/play", {"username": username})
+    return _post_json(port, "/play", {"username": username, "token": _token_for(username)})
 
 
 # Real aiohttp Response construction via a genuinely running server (this
@@ -249,6 +271,37 @@ def test_a_returning_username_with_the_wrong_password_is_rejected(running_app):
     assert body == {"accepted": False, "reason": "wrong_password"}
 
 
+# GET /presence/{username} answers "is this username online" for anyone
+# who asks - but only a currently-logged-in caller, proven by their own
+# session token, not an unauthenticated probe of an arbitrary username
+# (see services/api_gateway/main.py's own handle_presence docstring on why
+# the token is checked against ?requester=, never against the username in
+# the path itself).
+def test_presence_without_a_valid_token_is_rejected(running_app):
+    import urllib.error
+
+    port, _redis_client = running_app
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        _get(port, "/presence/gw_test_alice")
+
+    assert exc_info.value.code == 401
+
+
+def test_presence_with_a_valid_token_reports_online_status(running_app):
+    import json as json_module
+
+    port, _redis_client = running_app
+
+    login_body = _post_login(port, "gw_test_alice", "pw12345")
+    token = login_body["token"]
+
+    status, _content_type, body = _get(port, f"/presence/gw_test_alice?requester=gw_test_alice&token={token}")
+
+    assert status == 200
+    assert json_module.loads(body) == {"username": "gw_test_alice", "online": False}
+
+
 def test_a_username_with_an_active_game_is_reported_as_reconnected(running_app):
     from server.interfaces import ActiveGameLocation
     from server.postgres.accounts import PostgresRatingStore, open_postgres_accounts_database
@@ -267,7 +320,7 @@ def test_a_username_with_an_active_game_is_reported_as_reconnected(running_app):
 
     body = _post_login(port, "gw_test_alice", "pw12345")
 
-    assert body == {
+    assert _strip_token(body) == {
         "accepted": True,
         "username": "gw_test_alice",
         "rating": rating,
@@ -279,7 +332,7 @@ def test_a_username_with_an_active_game_is_reported_as_reconnected(running_app):
 def test_creating_a_room_returns_a_room_id(running_app):
     port, redis_client = running_app
 
-    body = _post_json(port, "/rooms", {"username": "gw_test_room_creator"})
+    body = _post_json(port, "/rooms", {"username": "gw_test_room_creator", "token": _token_for("gw_test_room_creator")})
 
     assert body["accepted"] is True
     assert body["room_id"]
@@ -291,7 +344,7 @@ def test_joining_a_room_seats_the_opponent_and_publishes_room_opponent_joined(ru
 
     port, _redis_client = running_app
 
-    created = _post_json(port, "/rooms", {"username": "gw_test_room_alice"})
+    created = _post_json(port, "/rooms", {"username": "gw_test_room_alice", "token": _token_for("gw_test_room_alice")})
     room_id = created["room_id"]
 
     async def scenario():
@@ -308,7 +361,11 @@ def test_joining_a_room_seats_the_opponent_and_publishes_room_opponent_joined(ru
 
         loop = asyncio.get_event_loop()
         join_body = await loop.run_in_executor(
-            None, _post_json, port, f"/rooms/{room_id}/join", {"username": "gw_test_room_bob"}
+            None,
+            _post_json,
+            port,
+            f"/rooms/{room_id}/join",
+            {"username": "gw_test_room_bob", "token": _token_for("gw_test_room_bob")},
         )
         await asyncio.sleep(0.3)
 
@@ -326,11 +383,21 @@ def test_joining_a_room_seats_the_opponent_and_publishes_room_opponent_joined(ru
 def test_joining_a_room_that_already_has_an_opponent_makes_a_spectator(running_app):
     port, _redis_client = running_app
 
-    created = _post_json(port, "/rooms", {"username": "gw_test_room_spec_creator"})
+    created = _post_json(
+        port, "/rooms", {"username": "gw_test_room_spec_creator", "token": _token_for("gw_test_room_spec_creator")}
+    )
     room_id = created["room_id"]
-    _post_json(port, f"/rooms/{room_id}/join", {"username": "gw_test_room_spec_opponent"})
+    _post_json(
+        port,
+        f"/rooms/{room_id}/join",
+        {"username": "gw_test_room_spec_opponent", "token": _token_for("gw_test_room_spec_opponent")},
+    )
 
-    body = _post_json(port, f"/rooms/{room_id}/join", {"username": "gw_test_room_spec_watcher"})
+    body = _post_json(
+        port,
+        f"/rooms/{room_id}/join",
+        {"username": "gw_test_room_spec_watcher", "token": _token_for("gw_test_room_spec_watcher")},
+    )
 
     assert body == {"accepted": True, "room_id": room_id, "role": "spectator"}
 
@@ -338,9 +405,13 @@ def test_joining_a_room_that_already_has_an_opponent_makes_a_spectator(running_a
 def test_cancelling_a_pending_room(running_app):
     port, redis_client = running_app
 
-    created = _post_json(port, "/rooms", {"username": "gw_test_room_to_cancel"})
+    created = _post_json(
+        port, "/rooms", {"username": "gw_test_room_to_cancel", "token": _token_for("gw_test_room_to_cancel")}
+    )
 
-    body = _post_json(port, "/rooms/cancel", {"username": "gw_test_room_to_cancel"})
+    body = _post_json(
+        port, "/rooms/cancel", {"username": "gw_test_room_to_cancel", "token": _token_for("gw_test_room_to_cancel")}
+    )
 
     assert body == {"accepted": True}
     assert redis_client.get("kfchess:room_owner:gw_test_room_to_cancel") is None
@@ -353,7 +424,7 @@ def test_cancelling_a_pending_room(running_app):
 def test_a_user_who_created_a_room_cannot_also_play(running_app):
     port, _redis_client = running_app
 
-    _post_json(port, "/rooms", {"username": "gw_test_room_then_play"})
+    _post_json(port, "/rooms", {"username": "gw_test_room_then_play", "token": _token_for("gw_test_room_then_play")})
 
     body = _post_play(port, "gw_test_room_then_play")
 
@@ -378,9 +449,15 @@ def test_publishing_game_finished_cleans_up_the_rooms_redis_state(running_app):
 
     port, redis_client = running_app
 
-    created = _post_json(port, "/rooms", {"username": "gw_test_room_finish_creator"})
+    created = _post_json(
+        port, "/rooms", {"username": "gw_test_room_finish_creator", "token": _token_for("gw_test_room_finish_creator")}
+    )
     room_id = created["room_id"]
-    _post_json(port, f"/rooms/{room_id}/join", {"username": "gw_test_room_finish_opponent"})
+    _post_json(
+        port,
+        f"/rooms/{room_id}/join",
+        {"username": "gw_test_room_finish_opponent", "token": _token_for("gw_test_room_finish_opponent")},
+    )
 
     room_shard_index = RoomShardIndex(REDIS_URL)
     room_shard_index.set(room_id, "shard-under-test")

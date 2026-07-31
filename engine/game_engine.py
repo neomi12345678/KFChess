@@ -4,12 +4,15 @@ from model.board import BoardQuery
 from model.game_state import ArrivalEvent, GameObserver, GameSnapshot, JumpResult, MoveLoggedEvent, MoveResult, PieceSnapshot
 from model.piece import (
     ActionResultReason,
+    Color,
+    MotionPhase,
     PHASE_IDLE,
     PHASE_JUMP,
     PHASE_LONG_REST,
     PHASE_MOVE,
     PHASE_SHORT_REST,
     MOVING,
+    PieceKind,
     is_selectable,
     jump_availability,
     move_availability,
@@ -205,8 +208,8 @@ class GameEngine:
         self,
         *,
         piece_id: str,
-        color: str,
-        kind: str,
+        color: Color,
+        kind: PieceKind,
         source: Position,
         destination: Position,
         is_capture: bool,
@@ -279,7 +282,7 @@ class GameEngine:
     # like is_airborne()/MOVING do, so it's as much a real report as those
     # (see model/piece.py's PHASE_* comment). Which sprite a renderer shows
     # for any of these is still view/animation_states.py's business.
-    def _motion_phase(self, piece) -> str:
+    def _motion_phase(self, piece) -> MotionPhase:
         if self._real_time_arbiter.is_airborne(piece):
             return PHASE_JUMP
         if piece.state == MOVING:

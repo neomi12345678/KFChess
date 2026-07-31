@@ -32,12 +32,34 @@ class Color(str, Enum):
 WHITE = Color.WHITE
 BLACK = Color.BLACK
 
-KING = "king"
-QUEEN = "queen"
-ROOK = "rook"
-BISHOP = "bishop"
-KNIGHT = "knight"
-PAWN = "pawn"
+
+# Which piece a Piece.kind actually is - a str subclass, same reasoning and
+# same __str__ override as Color above (Python 3.11+'s Enum.__format__
+# would otherwise render f"{piece.kind}" as "PieceKind.KING" instead of
+# "king", silently breaking every f-string/dict-key/json.dumps call site
+# that already treats this as plain text - view/renderer.py's own sprite
+# lookup key (f"{piece.id}:{piece.color}:{piece.kind}:{piece.motion_phase}",
+# later split back apart in view/canvas/img_canvas.py) is the one that
+# would break loudest, not just cosmetically).
+class PieceKind(str, Enum):
+    KING = "king"
+    QUEEN = "queen"
+    ROOK = "rook"
+    BISHOP = "bishop"
+    KNIGHT = "knight"
+    PAWN = "pawn"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+KING = PieceKind.KING
+QUEEN = PieceKind.QUEEN
+ROOK = PieceKind.ROOK
+BISHOP = PieceKind.BISHOP
+KNIGHT = PieceKind.KNIGHT
+PAWN = PieceKind.PAWN
+
 
 # A piece's real-time lifecycle state, independent of its board position.
 # Deliberately just these three: whether a piece is currently airborne
@@ -46,12 +68,23 @@ PAWN = "pawn"
 # out-of-band bookkeeping (is_airborne()/is_in_short_rest()/
 # is_in_long_rest()), tracked per-piece-id independently of this field, so
 # a captured/resurrected identity mixup can never leave a piece stuck
-# mid-air or mid-rest by mistake. See PHASE_* below for the real-time
+# mid-air or mid-rest by mistake. See MotionPhase below for the real-time
 # vocabulary GameEngine.snapshot() reports instead, built from that same
-# out-of-band bookkeeping.
-IDLE = "idle"
-MOVING = "moving"
-CAPTURED = "captured"
+# out-of-band bookkeeping. Same str-Enum/__str__ reasoning as PieceKind
+# above - see its own comment.
+class PieceState(str, Enum):
+    IDLE = "idle"
+    MOVING = "moving"
+    CAPTURED = "captured"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+IDLE = PieceState.IDLE
+MOVING = PieceState.MOVING
+CAPTURED = PieceState.CAPTURED
+
 
 # What real-time phase GameEngine.snapshot() reports a piece is currently
 # in (see RealTimeArbiter.is_airborne()/is_in_short_rest()/
@@ -64,12 +97,28 @@ CAPTURED = "captured"
 # invention. Short vs. long only matters because a landed jump and a landed
 # move earn different cooldown durations (see logic_config.py) - which
 # *sprite* a renderer shows for either is still entirely view/
-# animation_states.py's business, layered on top of this report.
-PHASE_IDLE = "idle"
-PHASE_MOVE = "move"
-PHASE_JUMP = "jump"
-PHASE_SHORT_REST = "short_rest"
-PHASE_LONG_REST = "long_rest"
+# animation_states.py's business, layered on top of this report. Same
+# str-Enum/__str__ reasoning as PieceKind above - see its own comment. A
+# separate class from PieceState above despite PHASE_IDLE/IDLE sharing the
+# string "idle" - two different vocabularies that happen to overlap on one
+# value, not the same concept (a piece's own state never takes a
+# MotionPhase value, and vice versa - see each class's own comment).
+class MotionPhase(str, Enum):
+    IDLE = "idle"
+    MOVE = "move"
+    JUMP = "jump"
+    SHORT_REST = "short_rest"
+    LONG_REST = "long_rest"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+PHASE_IDLE = MotionPhase.IDLE
+PHASE_MOVE = MotionPhase.MOVE
+PHASE_JUMP = MotionPhase.JUMP
+PHASE_SHORT_REST = MotionPhase.SHORT_REST
+PHASE_LONG_REST = MotionPhase.LONG_REST
 
 
 class PieceRepresentation(Protocol):
@@ -84,18 +133,18 @@ class PieceRepresentation(Protocol):
 
     id: str
     color: Color
-    kind: str
+    kind: PieceKind
     cell: Position
-    state: str
+    state: PieceState
 
 
 @dataclass
 class Piece:
     id: str
     color: Color
-    kind: str
+    kind: PieceKind
     cell: Position
-    state: str = IDLE
+    state: PieceState = IDLE
 
 
 # Every reason a move/jump request can be rejected for, across
@@ -149,11 +198,11 @@ _JUMP_AVAILABILITY = {
 }
 
 
-def move_availability(state: str) -> ActionAvailability:
+def move_availability(state: PieceState) -> ActionAvailability:
     return _MOVE_AVAILABILITY[state]
 
 
-def jump_availability(state: str) -> ActionAvailability:
+def jump_availability(state: PieceState) -> ActionAvailability:
     return _JUMP_AVAILABILITY[state]
 
 
@@ -165,7 +214,7 @@ def jump_availability(state: str) -> ActionAvailability:
 # board is always IDLE or MOVING (see _MOVE_AVAILABILITY's own comment on
 # why CAPTURED never reaches here), so this stays correct even if some
 # future caller passes CAPTURED in directly instead of through the board.
-def is_selectable(state: str) -> bool:
+def is_selectable(state: PieceState) -> bool:
     return state == IDLE
 
 

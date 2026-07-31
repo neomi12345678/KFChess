@@ -165,6 +165,15 @@ services:
       DATABASE_URL_REPLICA: "postgresql://kfchess:kfchess@postgres-replica:5432/kfchess"
       REDIS_URL: "redis://redis:6379/0"
       NATS_URL: "nats://nats:4222"
+      # server/accounts.py's issue_session_token/verify_session_token -
+      # must be this exact value on every one of api-gateway/game-server/
+      # game-server-2 below, since this service issues tokens (POST
+      # /login) that a Game Server Shard verifies (IDENTIFY) in a
+      # different process - see services/api_gateway/main.py's own
+      # build_app, which hard-fails at startup if this is unset. A real
+      # deployment should source this from a secrets manager, not a
+      # committed compose file - this is a dev-only placeholder.
+      SESSION_TOKEN_SECRET: "dev-only-change-me-session-token-secret"
       # Both unset (the default) keeps this listening on plain http:// -
       # see tls_config.py's own docstring. To try TLS locally: generate a
       # throwaway dev cert once (from the host, into a directory mounted
@@ -239,6 +248,9 @@ services:
       DATABASE_URL: "postgresql://kfchess:kfchess@postgres:5432/kfchess"
       REDIS_URL: "redis://redis:6379/0"
       NATS_URL: "nats://nats:4222"
+      # Must match api-gateway's own value above exactly - see that
+      # service's own comment on this same variable.
+      SESSION_TOKEN_SECRET: "dev-only-change-me-session-token-secret"
       # The standalone matchmaker/game-allocator services above are doing
       # the matchmaking tick/pairing/allocation now - see
       # GameLoop.start_matchmaking_relay's own docstring for why this must
@@ -285,6 +297,9 @@ services:
       DATABASE_URL: "postgresql://kfchess:kfchess@postgres:5432/kfchess"
       REDIS_URL: "redis://redis:6379/0"
       NATS_URL: "nats://nats:4222"
+      # Must match api-gateway's own value above exactly - see that
+      # service's own comment on this same variable.
+      SESSION_TOKEN_SECRET: "dev-only-change-me-session-token-secret"
       EXTERNAL_MATCHMAKER: "1"
       SHARD_ADDRESS: "game-server-2"
     depends_on:

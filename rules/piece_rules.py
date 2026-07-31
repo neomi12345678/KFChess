@@ -13,10 +13,10 @@ class PieceRule(Protocol):
         ...
 
 
-# Shared by rook/bishop/queen: walk outward from the piece in each
-# direction, stopping at the board edge, a friendly piece (excluded), or
-# an enemy piece (included as a capture, then stop).
 def _slide(board: BoardQuery, piece: PieceRepresentation, directions: Iterable[Tuple[int, int]]) -> Set[Position]:
+    """Shared by rook/bishop/queen: walk outward from the piece in each
+    direction, stopping at the board edge, a friendly piece (excluded), or
+    an enemy piece (included as a capture, then stop)."""
     destinations = set()
 
     for dr, dc in directions:
@@ -40,9 +40,9 @@ def _slide(board: BoardQuery, piece: PieceRepresentation, directions: Iterable[T
     return destinations
 
 
-# Shared by knight/king: a fixed set of destination offsets, no path
-# blocking in between (a knight jumps over anything).
 def _single_step(board: BoardQuery, piece: PieceRepresentation, offsets: Iterable[Tuple[int, int]]) -> Set[Position]:
+    """Shared by knight/king: a fixed set of destination offsets, no path
+    blocking in between (a knight jumps over anything)."""
     destinations = set()
 
     for dr, dc in offsets:

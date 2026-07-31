@@ -12,6 +12,8 @@ purely to size the board on screen, and stops at CELL_SIZE; nothing past
 this file ever sees a meter.
 """
 
+from typing import Callable, Optional, Tuple
+
 # How many on-screen pixels stand for one real-world meter, and how many
 # meters wide a board square is drawn as - the two are only ever
 # multiplied together into CELL_SIZE below, never read separately or
@@ -50,7 +52,7 @@ _MIN_CELL_SIZE_PX = 20
 # compute_cell_size below falls back to the fixed CELL_SIZE instead of
 # crashing. Not unit-tested itself (a real OS call, no fake to inject into
 # it) - see compute_cell_size for the injectable seam tests use instead.
-def screen_resolution_px():  # pragma: no cover
+def screen_resolution_px() -> Tuple[Optional[int], Optional[int]]:  # pragma: no cover
     import sys
 
     if sys.platform != "win32":
@@ -74,7 +76,11 @@ def screen_resolution_px():  # pragma: no cover
 # clock/randomness seam in this codebase (e.g. view/canvas/sprite_frames.py's
 # SpriteAnimator), so tests can supply a fixed fake resolution instead of
 # depending on the real display.
-def compute_cell_size(board_width: int, board_height: int, screen_size=screen_resolution_px) -> int:
+def compute_cell_size(
+    board_width: int,
+    board_height: int,
+    screen_size: Callable[[], Tuple[Optional[int], Optional[int]]] = screen_resolution_px,
+) -> int:
     screen_width, screen_height = screen_size()
     if screen_width is None or screen_height is None:
         return CELL_SIZE

@@ -47,8 +47,10 @@ connection is always detected well inside DISCONNECT_GRACE_MS, not after it.
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
+import secrets
 import ssl
 from typing import Callable, Optional
 
@@ -59,6 +61,7 @@ from protocol.game_messages import ErrorMessage, JumpMessage, MoveMessage, SeatM
 from protocol.lobby_messages import (
     CancelRoomMessage,
     CreateRoomMessage,
+    IdentifyAckMessage,
     IdentifyMessage,
     JoinRoomMessage,
     LoginAckMessage,
@@ -69,7 +72,7 @@ from protocol.registry import decode_json_message
 from protocol.types import HOST as DEFAULT_HOST
 from protocol.types import PORT as DEFAULT_PORT
 from protocol.types import Reason
-from server.accounts import InvalidCredentialsError
+from server.accounts import InvalidCredentialsError, issue_session_token, verify_session_token
 from server.connections import ConnectionRegistry
 from server.game_loop import GameLoop
 from server.interfaces import (
@@ -94,6 +97,7 @@ from server.server_config import (
     MATCHMAKING_TIMEOUT_MS,
     PING_INTERVAL_S,
     PING_TIMEOUT_S,
+    SESSION_TOKEN_TTL_S,
 )
 
 _logger = logging.getLogger(__name__)
@@ -172,7 +176,21 @@ class GameServer:
         # (see server/redis/room_shard_index.py) - passed straight through
         # to GameLoop, see its own docstring on this same param.
         room_shard_index: Optional[RoomShardIndexProtocol] = None,
+        # The shared secret _handle_login signs a session token with and
+        # _handle_identify verifies one against (see server/accounts.py's
+        # issue_session_token/verify_session_token). None (the default)
+        # generates a fresh random one per GameServer instance - safe for
+        # bare-metal (this same process both issues and verifies) and for
+        # tests, but NOT for the distributed deployment, where
+        # services/api_gateway/main.py issues tokens in a different process
+        # from whichever Game Server Shard verifies them - server/main.py
+        # reads SESSION_TOKEN_SECRET from the environment for that case
+        # rather than relying on this default.
+        session_secret: Optional[bytes] = None,
+        session_ttl_s: int = SESSION_TOKEN_TTL_S,
     ):
+        self._session_secret = session_secret if session_secret is not None else secrets.token_bytes(32)
+        self._session_ttl_s = session_ttl_s
         self._user_store = user_store
         self._rating_store = rating_store
         self._rooms = RoomRegistry(store=room_store, busy_set=busy_set)
@@ -364,7 +382,11 @@ class GameServer:
             self._presence.mark_online(username)
 
         decision = self._router.decide_login(username, rating)
-        await self._connections.send(websocket, decision.ack)
+        ack = decision.ack
+        if ack.accepted:
+            token = issue_session_token(username, self._session_secret, self._session_ttl_s)
+            ack = dataclasses.replace(ack, token=token)
+        await self._connections.send(websocket, ack)
         if decision.start_room is not None:
             await self._loop.start_room_game(decision.start_room)
         return username
@@ -385,12 +407,22 @@ class GameServer:
     # registration half (stale-socket eviction, ConnectionRegistry.set), but
     # no password to verify and no rating to look up: a client sending this
     # already authenticated over REST (see services/api_gateway/main.py's
-    # POST /login), so username here is simply asserted, not proven. Same
-    # "just for presentation" trust level this project's login already has
-    # (see server/accounts.py's own docstring) - not a new relaxation.
+    # POST /login) or is reconnecting mid-game, proving it with the session
+    # token that LOGIN/POST-login issued (see server/accounts.py's
+    # issue_session_token) rather than a bare username assertion. A
+    # missing/expired/tampered token is rejected here, before any of the
+    # eviction/registration below runs - decide_identify (server/router.py)
+    # is never even reached in that case, so its own "always accepted"
+    # decision stays true for every call it actually receives.
     async def _handle_identify(self, websocket, identify_message: IdentifyMessage) -> Optional[str]:
         username = identify_message.username
         username_ctx.set(username)
+
+        if not verify_session_token(username, identify_message.token, self._session_secret):
+            await self._connections.send(
+                websocket, IdentifyAckMessage(accepted=False, reason=Reason.INVALID_SESSION)
+            )
+            return None
 
         stale_websocket = self._connections.get(username)
         if stale_websocket is not None and stale_websocket is not websocket:

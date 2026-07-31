@@ -160,7 +160,14 @@ class CommandRouter:
     # that branch is staying on LoginMessage for now) or its third (an
     # ordinary fresh login has nothing left to do here; REST already
     # returned rating/reconnected state). Always accepted - this is
-    # registration, not a decision that can be rejected.
+    # registration, not a decision that can be rejected. That's still true
+    # of every call this method actually receives: server/ws_server.py's
+    # _handle_identify now verifies the IdentifyMessage's session token
+    # (see server/accounts.py's verify_session_token) before calling this
+    # at all, and rejects on its own, one layer up, without ever reaching
+    # here - so "always accepted" describes this method's own contract on a
+    # pre-verified username, not a claim that no IDENTIFY can ever be
+    # rejected.
     #
     # Unlike decide_login, this always re-sends seat/snapshot when the
     # username is currently seated - not just when its seat was actually
@@ -282,7 +289,21 @@ class CommandRouter:
         if message.color != seat:
             return AckMessage(accepted=False, reason=Reason.WRONG_SEAT)
 
-        command = command_from_message(message)
+        # source/destination are typed as a plain dict on the wire message
+        # itself (protocol/game_messages.py) - any dict, even {} , already
+        # satisfies that dataclass's own construction, so a client sending
+        # e.g. {"source": {}} sails past protocol/registry.py's top-level
+        # gatekeeper untouched. command_from_message's own position_from_json
+        # is what actually needs "row"/"col" to be there - catching its
+        # failure here, rather than letting a bare KeyError/TypeError
+        # propagate out of routing entirely, is what keeps this one
+        # malformed command a normal rejected Ack instead of killing this
+        # connection's whole receive loop for every other message on it too.
+        try:
+            command = command_from_message(message)
+        except (KeyError, TypeError):
+            return AckMessage(accepted=False, reason=Reason.MALFORMED_COMMAND)
+
         result = game.session.apply_command(command)
         return AckMessage(accepted=result.is_accepted, reason=result.reason)
 
