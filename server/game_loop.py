@@ -412,8 +412,21 @@ class GameLoop:
             self._active_game_index.set(white_username, ActiveGameLocation(game_id, room_id, WHITE, self._shard_address))
             self._active_game_index.set(black_username, ActiveGameLocation(game_id, room_id, BLACK, self._shard_address))
 
+        # Guarded the same way _fail_game's own game_finished publish is -
+        # nats-py's publish() raises on a connection blip (ConnectionClosedError/
+        # OutboundBufferLimitError), and this call is reached from
+        # _try_start_a_match inside run_forever's own loop body, which has no
+        # per-call try/except around it (unlike the per-game _advance_game loop
+        # below). Left unguarded, a transient NATS hiccup here would propagate
+        # out of run_forever entirely and take down every other concurrently-
+        # running game on this shard - exactly what Server_Design.md §9's own
+        # broker row ("comparatively easy to keep available") says gameplay
+        # should not depend on.
         if self._lifecycle_publisher is not None:
-            await self._lifecycle_publisher.game_created(game_id, room_id, white_username, black_username)
+            try:
+                await self._lifecycle_publisher.game_created(game_id, room_id, white_username, black_username)
+            except Exception:
+                _logger.exception("failed to publish game.created for game %s", game_id)
 
         for seat, username in ((WHITE, white_username), (BLACK, black_username)):
             await self._connections.send_to_username(username, SeatMessage(color=seat))
@@ -493,10 +506,22 @@ class GameLoop:
         rating_update = await asyncio.get_event_loop().run_in_executor(None, session.finalize_ratings_if_game_over)
         if rating_update is not None:
             await self._broadcast_to_game(game, GameOverMessage(ratings=rating_update))
+            # Guarded, not left to propagate: GameOverMessage with the real,
+            # correct ratings has already reached both players above, so a
+            # publish failure here must not be treated as this game crashing.
+            # Unguarded, run_forever's per-game try/except would route it to
+            # _fail_game, which would re-publish game.finished (redundant but
+            # harmless - PostgresGameHistoryStore.record_games_batch's own
+            # ON CONFLICT DO NOTHING) and, worse, send both players a bogus
+            # ErrorMessage("internal_error") for a game that actually ended
+            # normally.
             if self._lifecycle_publisher is not None:
-                await self._lifecycle_publisher.game_finished(
-                    game_id, game.room_id, session.username_for(WHITE), session.username_for(BLACK), rating_update
-                )
+                try:
+                    await self._lifecycle_publisher.game_finished(
+                        game_id, game.room_id, session.username_for(WHITE), session.username_for(BLACK), rating_update
+                    )
+                except Exception:
+                    _logger.exception("failed to publish game.finished for game %s", game_id)
             if self._busy_set is not None:
                 self._busy_set.remove(session.username_for(WHITE))
                 self._busy_set.remove(session.username_for(BLACK))
