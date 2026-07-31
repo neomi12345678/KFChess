@@ -115,6 +115,23 @@ class _AllocationWaiters:
         if future is not None and not future.done():
             future.set_result(shard_address)
 
+    # Called by _resolve_shard whenever its own wait ends *without* a
+    # match.found/matchmaking.timeout ever arriving for this username (the
+    # client disconnected mid-wait, or the outer safety-net timeout fired) -
+    # without this, the Future wait_for() registered above sits in
+    # self._pending forever: resolve() is the only other thing that ever
+    # pops it, and once _resolve_shard's own MatchmakingCancelled publish
+    # (see its own docstring) makes the standalone Matchmaker remove this
+    # username from the queue, no match.found/matchmaking.timeout event for
+    # it will ever arrive to trigger that pop. A no-op if this username has
+    # since been resolved for real (e.g. resolve() already popped it in the
+    # same tick this was about to run) or was never registered in the first
+    # place, matching resolve()'s own pop(..., None) safety.
+    def cancel(self, username: str) -> None:
+        future = self._pending.pop(username, None)
+        if future is not None and not future.done():
+            future.cancel()
+
 
 # One shared table per process - {username: client_ws} - so the same
 # single matchmaking.status subscription below can push each "still
@@ -212,6 +229,18 @@ async def _resolve_shard(
 
         if future in done:
             return future.result()
+
+        # future never resolved (closed mid-wait, or the outer safety-net
+        # timeout fired) - pop it out of waiters._pending ourselves. Neither
+        # path below will ever get a match.found/matchmaking.timeout event
+        # for this username to do it via resolve() instead: the
+        # MatchmakingCancelled publish just below makes the standalone
+        # Matchmaker remove this username from its queue before it ever
+        # reaches its own timeout, and the safety-net timeout case means
+        # nothing was ever published for it in the first place. Left
+        # uncancelled, this Future sits in _pending forever - a slow,
+        # unbounded per-abandoned-wait leak in this long-running process.
+        waiters.cancel(username)
         if closed in done:
             await nats_connection.publish(
                 MatchmakingCancelled.SUBJECT, MatchmakingCancelled(username=username).encode()

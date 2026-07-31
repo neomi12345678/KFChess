@@ -39,7 +39,7 @@ from protocol.types import Reason, Role
 from server.game_loop import GameLoop, full_broadcast_payload
 from server.interfaces import MessageSender, RatingRepository
 from server.participant import ParticipantState, participant_state
-from server.command_translation import command_from_message
+from server.command_translation import MOVE, command_from_message
 from server.rooms import Room, RoomError, RoomLookupProtocol, RoomRegistry
 
 _logger = logging.getLogger(__name__)
@@ -302,6 +302,21 @@ class CommandRouter:
         try:
             command = command_from_message(message)
         except (KeyError, TypeError):
+            return AckMessage(accepted=False, reason=Reason.MALFORMED_COMMAND)
+
+        # position_from_json itself doesn't raise for this shape - a wire
+        # payload with "source"/"destination" explicitly present but null
+        # (as opposed to missing entirely, which the except above already
+        # catches via message_from_dict's own required-argument TypeError)
+        # decodes cleanly into a None Position, sailing past the try/except
+        # above untouched. Left unchecked, that None would only fail once it
+        # reaches board.is_in_bounds() several calls into apply_command
+        # (AttributeError: 'NoneType' object has no attribute 'row'), outside
+        # this method's own guard - source is required for both MOVE and
+        # JUMP, destination only for MOVE (JumpMessage carries none at all,
+        # so command.destination is always None there by construction, not a
+        # malformed one).
+        if command.source is None or (command.kind == MOVE and command.destination is None):
             return AckMessage(accepted=False, reason=Reason.MALFORMED_COMMAND)
 
         result = game.session.apply_command(command)
