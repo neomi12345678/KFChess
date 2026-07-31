@@ -396,6 +396,37 @@ def test_decide_game_command_rejects_a_move_with_a_malformed_source():
     assert ack.reason == "malformed_command"
 
 
+# "destination": null decodes cleanly (message_from_dict's cls(**kwargs)
+# never rejects an explicitly-present null the way it rejects a missing
+# key), so command_from_message itself never raises for this shape - unlike
+# the empty-source case above, this one used to sail past the try/except in
+# decide_game_command untouched and crash several calls later inside
+# apply_command (board.is_in_bounds(None)) instead of coming back as a
+# normal rejected Ack.
+def test_decide_game_command_rejects_a_move_with_a_null_destination():
+    rating_store = _rating_store()
+    router, loop, _rooms, _connections = _router(rating_store=rating_store)
+    _seat_alice_and_bob(loop, rating_store)
+    message = MoveMessage(color=WHITE, source={"row": 0, "col": 0}, destination=None)
+
+    ack = router.decide_game_command("alice", message)
+
+    assert ack.accepted is False
+    assert ack.reason == "malformed_command"
+
+
+def test_decide_game_command_rejects_a_move_with_a_null_source():
+    rating_store = _rating_store()
+    router, loop, _rooms, _connections = _router(rating_store=rating_store)
+    _seat_alice_and_bob(loop, rating_store)
+    message = MoveMessage(color=WHITE, source=None, destination={"row": 0, "col": 2})
+
+    ack = router.decide_game_command("alice", message)
+
+    assert ack.accepted is False
+    assert ack.reason == "malformed_command"
+
+
 def test_decide_game_command_accepts_a_legal_move_from_the_correct_seat():
     rating_store = _rating_store()
     router, loop, _rooms, _connections = _router(rating_store=rating_store)
