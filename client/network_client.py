@@ -140,6 +140,13 @@ class NetworkGameClient:
         self._connected = threading.Event()
         self._connect_error: Optional[BaseException] = None
         self._username: Optional[str] = None
+        # The session token login() captures from a successful LoginAckMessage
+        # - attached to every later IdentifyMessage (a reconnect, or the
+        # REST-login path's own connection-registration step below) and to
+        # play()'s own REST body, proving this client is who it claims rather
+        # than just asserting it (see server/accounts.py's
+        # issue_session_token/verify_session_token).
+        self._token: Optional[str] = None
         self._api_gateway_host = api_gateway_host if api_gateway_host is not None else host
         self._api_gateway_port = api_gateway_port
         self._ssl_context = ssl_context
@@ -234,6 +241,7 @@ class NetworkGameClient:
                 # so the username has to be remembered here instead of being
                 # implicit in "whichever connection sent it."
                 self._username = ack.username
+                self._token = ack.token
             return ack
 
         url = f"{self._http_scheme}://{self._api_gateway_host}:{self._api_gateway_port}/login"
@@ -256,10 +264,12 @@ class NetworkGameClient:
             rating=body.get("rating"),
             reconnected=body.get("reconnected"),
             color=body.get("color"),
+            token=body.get("token"),
         )
         if ack.accepted:
             self._username = ack.username
-            self.send_command(encode_json_message(IdentifyMessage(username=ack.username)))
+            self._token = ack.token
+            self.send_command(encode_json_message(IdentifyMessage(username=ack.username, token=ack.token)))
             self._wait_for_type(IdentifyAckMessage, timeout)
         return ack
 
@@ -282,7 +292,7 @@ class NetworkGameClient:
         url = f"{self._http_scheme}://{self._api_gateway_host}:{self._api_gateway_port}/play"
         request = urllib.request.Request(
             url,
-            data=json.dumps({"username": self._username}).encode("utf-8"),
+            data=json.dumps({"username": self._username, "token": self._token}).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )

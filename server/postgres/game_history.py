@@ -16,7 +16,7 @@ from typing import List, Optional, Tuple
 
 import psycopg
 
-from server.postgres import create_table_tolerating_concurrent_creation
+from server.postgres import commit_or_rollback, create_table_tolerating_concurrent_creation
 
 
 class PostgresGameHistoryStore:
@@ -59,16 +59,16 @@ class PostgresGameHistoryStore:
         white_rating: int,
         black_rating: int,
     ) -> None:
-        self._connection.execute(
-            """
-            INSERT INTO game_history
-                (game_id, room_id, white_username, black_username, white_rating, black_rating)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (game_id) DO NOTHING
-            """,
-            (game_id, room_id, white_username, black_username, white_rating, black_rating),
-        )
-        self._connection.commit()
+        with commit_or_rollback(self._connection):
+            self._connection.execute(
+                """
+                INSERT INTO game_history
+                    (game_id, room_id, white_username, black_username, white_rating, black_rating)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (game_id) DO NOTHING
+                """,
+                (game_id, room_id, white_username, black_username, white_rating, black_rating),
+            )
 
     # Server_Design.md §8's own "Persistence Workers consume it in batches" -
     # one executemany + one commit for the whole batch, not one INSERT/commit
@@ -83,17 +83,17 @@ class PostgresGameHistoryStore:
     ) -> None:
         if not games:
             return
-        with self._connection.cursor() as cursor:
-            cursor.executemany(
-                """
-                INSERT INTO game_history
-                    (game_id, room_id, white_username, black_username, white_rating, black_rating)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (game_id) DO NOTHING
-                """,
-                games,
-            )
-        self._connection.commit()
+        with commit_or_rollback(self._connection):
+            with self._connection.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT INTO game_history
+                        (game_id, room_id, white_username, black_username, white_rating, black_rating)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (game_id) DO NOTHING
+                    """,
+                    games,
+                )
 
     def all_games(self) -> List[dict]:
         rows = self._connection.execute(

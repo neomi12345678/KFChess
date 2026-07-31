@@ -1,8 +1,11 @@
 """Entry point: python -m server.main"""
 
 import asyncio
+import contextlib
 import logging
 import os
+import signal
+from typing import Optional, Tuple
 
 from boardio.board_parser import parse as parse_board
 from boardio.starting_position import STARTING_BOARD
@@ -10,6 +13,7 @@ from protocol.types import HOST as DEFAULT_HOST
 from protocol.types import PORT as DEFAULT_PORT
 from server.logging_config import configure_logging
 from server.observability_server import start_observability_server
+from server.server_config import MAX_ROOMS_PER_SHARD, SHARD_DRAIN_TIMEOUT_MS
 from server.sqlite.accounts import UserStore
 from server.sqlite.accounts_db import open_accounts_database
 from server.sqlite.rating_store import RatingStore
@@ -198,6 +202,22 @@ def _build_room_shard_index():
     return RoomShardIndex(redis_url)
 
 
+# SESSION_TOKEN_SECRET unset (the default) lets GameServer's own __init__
+# generate a fresh random secret for this one process - safe here, since a
+# bare-metal shard both issues (LOGIN) and verifies (IDENTIFY) session
+# tokens itself, same reasoning as every other REDIS_URL-gated "None is a
+# no-op" default in this module. Set (see docker-compose.yml), this must be
+# the same secret services/api_gateway/main.py issues tokens with -
+# required the moment a standalone API Gateway sits in front of this shard
+# instead of a bare-metal client logging in directly here, since issuing
+# and verifying then happen in two different processes.
+def _build_session_secret() -> Optional[bytes]:
+    secret = os.environ.get("SESSION_TOKEN_SECRET")
+    if secret is None:
+        return None
+    return secret.encode("utf-8")
+
+
 # Wraps rating_store so every update_rating call also keeps
 # Server_Design.md §5's own Redis leaderboard (server/redis/leaderboard.py)
 # in sync - see that module's own docstring for why GameSession.
@@ -269,19 +289,27 @@ async def _build_matchmaking_relay(server: GameServer) -> None:
 # set without REDIS_URL is a misconfiguration - logged and skipped, not
 # raised, matching every other opt-in feature's own "fail soft" convention
 # in this module.
-def _maybe_start_shard_heartbeat(server: GameServer) -> None:
+#
+# Returns the heartbeat task plus a draining Event _main's own SIGTERM
+# handling flips (see below) - None if there's nothing to drain (no
+# heartbeat was ever started).
+def _maybe_start_shard_heartbeat(server: GameServer) -> Optional[Tuple["asyncio.Task", asyncio.Event]]:
     shard_address = os.environ.get("SHARD_ADDRESS")
     if shard_address is None:
-        return
+        return None
 
     redis_url = os.environ.get("REDIS_URL")
     if redis_url is None:
         _logger.warning("SHARD_ADDRESS is set but REDIS_URL is not - shard registration skipped")
-        return
+        return None
 
     from server.redis.shard_registry import ShardRegistry
 
-    asyncio.create_task(_run_shard_heartbeat(ShardRegistry(redis_url), shard_address, server.active_game_count))
+    draining = asyncio.Event()
+    task = asyncio.create_task(
+        _run_shard_heartbeat(ShardRegistry(redis_url), shard_address, server.active_game_count, draining)
+    )
+    return task, draining
 
 
 # interval_s is well under ShardRegistry's own default 10s TTL, so one slow
@@ -290,9 +318,23 @@ def _maybe_start_shard_heartbeat(server: GameServer) -> None:
 # heartbeat reports this shard's *current* load (Server_Design.md §9's own
 # "bound the blast radius" - see server/redis/shard_registry.py's own
 # pick_shard docstring), not whatever it was when this loop started.
-async def _run_shard_heartbeat(registry, shard_address: str, room_count_fn, interval_s: float = 3.0) -> None:
+#
+# draining is set once _main's own SIGTERM handling begins Server_Design.md
+# §8's own "stops accepting new rooms" - reporting MAX_ROOMS_PER_SHARD
+# (never a real, lower count) from that point on is what makes
+# ShardRegistry.pick_shard's own capacity filter exclude this shard from
+# every *new* allocation, while this heartbeat itself keeps running -
+# deliberately NOT deregistering outright, so services/game_allocator/main.py's
+# own recovery sweep keeps seeing this shard as alive and doesn't
+# prematurely void the very games this drain is trying to let finish
+# naturally (a dead shard and a draining-but-still-ticking one need to look
+# different to that sweep, not the same).
+async def _run_shard_heartbeat(
+    registry, shard_address: str, room_count_fn, draining: asyncio.Event, interval_s: float = 3.0
+) -> None:
     while True:
-        registry.register(shard_address, room_count=room_count_fn())
+        room_count = MAX_ROOMS_PER_SHARD if draining.is_set() else room_count_fn()
+        registry.register(shard_address, room_count=room_count)
         await asyncio.sleep(interval_s)
 
 
@@ -349,6 +391,7 @@ async def _main() -> None:
     # server/interfaces.py's ActiveGameLocation and services/ws_gateway/main.py,
     # which resolves a shard to open its own internal relay connection to).
     shard_address = os.environ.get("SHARD_ADDRESS")
+    session_secret = _build_session_secret()
     server = GameServer(
         _new_board,
         user_store,
@@ -366,16 +409,96 @@ async def _main() -> None:
         fairness_checkpoint=fairness_checkpoint,
         presence=presence,
         room_shard_index=room_shard_index,
+        session_secret=session_secret,
     )
     await _build_matchmaking_relay(server)
-    _maybe_start_shard_heartbeat(server)
+    heartbeat = _maybe_start_shard_heartbeat(server)
     readiness_checks = _build_readiness_checks(
         os.environ.get("REDIS_URL"), os.environ.get("DATABASE_URL"), lifecycle_publisher
     )
     start_observability_server(HEALTH_PORT, readiness_checks)
     scheme = "wss" if SSL_CONTEXT is not None else "ws"
     _logger.info("KFChess server listening on %s://%s:%s", scheme, HOST, PORT)
-    await server.run_forever()
+    await _run_until_drained(server, heartbeat)
+
+
+# Server_Design.md §8's own "a Game-Authority pod being retired stops
+# accepting new rooms, drains its existing ones (bounded <=90s wait), then
+# exits" - previously a known, self-flagged gap (see k8s/70-game-server.yaml's
+# own comment): a SIGTERM'd pod just had its games end the same way any
+# other crash does. run_forever() itself never returns on its own, so this
+# runs it as a background task and races it against a SIGTERM-triggered
+# Event instead of awaiting run_forever() directly - the same "wait for
+# whichever happens first" shape as GameLoop's own per-game try/except one
+# level down, just at process scope.
+async def _run_until_drained(
+    server: GameServer, heartbeat: Optional[Tuple["asyncio.Task", asyncio.Event]]
+) -> None:
+    run_task = asyncio.create_task(server.run_forever())
+
+    # signal.signal, not loop.add_signal_handler - the latter raises
+    # NotImplementedError on Windows' default ProactorEventLoop; this
+    # module's own real target is a Linux container (docker-compose.yml/
+    # k8s), where SIGTERM is exactly what `docker stop`/a Kubernetes pod
+    # eviction actually sends, but registration itself must not crash a
+    # bare-metal dev run on any platform. call_soon_threadsafe is what
+    # makes it safe to flip an asyncio.Event from inside a signal handler,
+    # which otherwise runs interleaved with - not on - the event loop.
+    loop = asyncio.get_event_loop()
+    shutdown_requested = asyncio.Event()
+    signal.signal(signal.SIGTERM, lambda signum, frame: loop.call_soon_threadsafe(shutdown_requested.set))
+
+    await _wait_then_drain(server, heartbeat, run_task, shutdown_requested)
+
+
+# Split from _run_until_drained so tests/unit/test_server_main.py can
+# simulate "SIGTERM arrived" by just setting shutdown_requested directly,
+# without needing a real OS signal delivered to the test process itself
+# (unreliable to depend on cross-platform, and irrelevant to what this
+# function actually needs to get right: waiting for either run_forever()
+# to fail or a shutdown request, then draining with a bound).
+async def _wait_then_drain(
+    server: GameServer,
+    heartbeat: Optional[Tuple["asyncio.Task", asyncio.Event]],
+    run_task: "asyncio.Task",
+    shutdown_requested: asyncio.Event,
+    # Overridable so tests can use a bound of milliseconds, not the real
+    # 90s default - every real caller (_run_until_drained) omits this.
+    drain_timeout_ms: int = SHARD_DRAIN_TIMEOUT_MS,
+) -> None:
+    shutdown_task = asyncio.create_task(shutdown_requested.wait())
+
+    done, _pending = await asyncio.wait({run_task, shutdown_task}, return_when=asyncio.FIRST_COMPLETED)
+
+    if run_task in done:
+        # run_forever() has no natural exit - reaching here means it
+        # actually raised. Surface that instead of silently sitting here
+        # forever waiting for a shutdown request that was never the reason
+        # this needs to end.
+        shutdown_task.cancel()
+        run_task.result()
+        return
+
+    _logger.info("shutdown requested - draining before exit (up to %sms)", drain_timeout_ms)
+    if heartbeat is not None:
+        _, draining = heartbeat
+        draining.set()
+
+    deadline = asyncio.get_event_loop().time() + drain_timeout_ms / 1000
+    while server.active_game_count() > 0 and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+
+    remaining = server.active_game_count()
+    if remaining > 0:
+        _logger.warning("drain timed out with %d game(s) still active - exiting anyway", remaining)
+    else:
+        _logger.info("drain complete - every game finished naturally")
+
+    run_task.cancel()
+    if heartbeat is not None:
+        heartbeat[0].cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await run_task
 
 
 def main() -> None:  # pragma: no cover

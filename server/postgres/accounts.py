@@ -28,7 +28,7 @@ from typing import Optional
 import psycopg
 
 from server.accounts import Account, InvalidCredentialsError, _hash_password
-from server.postgres import create_table_tolerating_concurrent_creation
+from server.postgres import commit_or_rollback, create_table_tolerating_concurrent_creation
 from server.server_config import STARTING_RATING
 
 
@@ -84,24 +84,29 @@ class PostgresUserStore:
             # row is already a plain fetched tuple, unaffected by this.
             self._database.connection.rollback()
 
-            if row is None:
-                return self._register(username, password)
+        # Released above, before the deliberately-slow PBKDF2 hash below -
+        # holding this lock across it would serialize every concurrent
+        # RatingStore call (same connection, same lock) behind however long
+        # PASSWORD_HASH_ITERATIONS takes, for a comparison that doesn't
+        # touch the connection at all once row is in hand.
+        if row is None:
+            return self._register(username, password)
 
-            stored_hash, salt = row
-            if _hash_password(password, bytes(salt)) != bytes(stored_hash):
-                raise InvalidCredentialsError(f"wrong password for '{username}'")
+        stored_hash, salt = row
+        if _hash_password(password, bytes(salt)) != bytes(stored_hash):
+            raise InvalidCredentialsError(f"wrong password for '{username}'")
 
-            return Account(username=username)
+        return Account(username=username)
 
     def _register(self, username: str, password: str) -> Account:
+        salt = os.urandom(16)
+        password_hash = _hash_password(password, salt)
         with self._database.lock:
-            salt = os.urandom(16)
-            password_hash = _hash_password(password, salt)
-            self._database.connection.execute(
-                "INSERT INTO accounts (username, password_hash, password_salt, rating) VALUES (%s, %s, %s, %s)",
-                (username, password_hash, salt, STARTING_RATING),
-            )
-            self._database.connection.commit()
+            with commit_or_rollback(self._database.connection):
+                self._database.connection.execute(
+                    "INSERT INTO accounts (username, password_hash, password_salt, rating) VALUES (%s, %s, %s, %s)",
+                    (username, password_hash, salt, STARTING_RATING),
+                )
             return Account(username=username)
 
 
@@ -145,7 +150,7 @@ class PostgresRatingStore:
 
     def update_rating(self, username: str, rating: int) -> None:
         with self._database.lock:
-            self._database.connection.execute(
-                "UPDATE accounts SET rating = %s WHERE username = %s", (rating, username)
-            )
-            self._database.connection.commit()
+            with commit_or_rollback(self._database.connection):
+                self._database.connection.execute(
+                    "UPDATE accounts SET rating = %s WHERE username = %s", (rating, username)
+                )

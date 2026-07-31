@@ -40,6 +40,24 @@ third-party `redis` package by its bare top-level name below - Python 3's
 imports are absolute by default, so `import redis` here resolves to the
 installed library on sys.path, not to this package (server.redis)
 importing itself.
+
+advance_time/find_match are NOT safe to call concurrently from more than
+one caller against the same queue - advance_time reads each entry's
+waited_ms, adds elapsed_ms, and writes it back with no compare-and-swap,
+so two callers ticking the same entry at once would each add their own
+delta on top of a stale read (double-counting elapsed time, expiring
+waiters early); find_match reads a candidate pair but - deliberately, see
+its own docstring below and tests/unit/test_matchmaking_queue.py's own
+test_find_match_does_not_remove_either_side_of_the_match - never removes
+it itself, so two callers could both read the same still-present pair
+before either one's caller gets around to removing it, and both publish a
+match for it. Neither is a bug in a single-caller deployment (GameLoop's
+own bare-metal path is exactly one caller), but a horizontally-scaled
+standalone Matchmaker service (services/matchmaker/main.py) *is* multiple
+callers against the same shared queue - server/redis/matchmaker_leader.py's
+leader election is what makes that safe, by ensuring only one replica's
+tick loop ever actually calls advance_time/find_match at a time, rather
+than trying to make either method itself safe under concurrent callers.
 """
 
 import json

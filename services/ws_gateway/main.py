@@ -15,10 +15,10 @@ service never decodes a MOVE/JUMP or a snapshot broadcast to *act* on it,
 only the two lobby messages needed to know when the relay itself should
 start or give up.
 
-A client using this service needs no code changes at all (see
-client/network_client.py's own docstring on why it's transparent) - only
-a deployment pointed at this service's own host:port instead of straight
-at a Shard's.
+A client using this service needs no protocol changes beyond the session
+token every client already has to send a bare-metal shard directly (see
+client/network_client.py's own docstring) - just a deployment pointed at
+this service's own host:port instead of straight at a Shard's.
 
 Resolving *which* shard to relay to has three cases, all driven by existing
 cross-process state rather than anything new invented here:
@@ -214,10 +214,17 @@ async def _pump(source, destination) -> None:
 # FIRST_EXCEPTION (not asyncio.gather) is what makes this distinguishable:
 # gather would raise the first exception but leave the other pump running
 # in the background rather than telling us which direction actually failed.
-async def _relay(client_ws, shard_address: str, shard_port: int, username: str) -> None:
+async def _relay(client_ws, shard_address: str, shard_port: int, username: str, token: str) -> None:
     uri = f"ws://{shard_address}:{shard_port}"
     async with websockets.connect(uri) as internal_ws:
-        await internal_ws.send(encode_json_message(IdentifyMessage(username=username)))
+        # Forwards the public client's own token unmodified - this service
+        # holds no session secret and verifies nothing itself (see
+        # _handle_client_inner's own shape-only check just above its call
+        # site); the shard is the sole authority that actually verifies it
+        # (server/ws_server.py's _handle_identify), the same "Gateways
+        # relay, the shard decides" split this module's own docstring
+        # already states for game rules, extended here to identity.
+        await internal_ws.send(encode_json_message(IdentifyMessage(username=username, token=token)))
 
         # Forwards everything the shard sends in response to this internal
         # IDENTIFY - including the IdentifyAckMessage itself - straight to
@@ -298,7 +305,19 @@ async def _handle_client_inner(
         await client_ws.send(encode_json_message(ErrorMessage(message="identify_required")))
         return
 
+    # Shape-only - this service holds no session secret, so it can't verify
+    # the token itself (see _relay's own docstring on why that's the
+    # shard's job, not this one's). Rejecting an obviously-missing token
+    # here, before ever dialing a shard, is cheap hardening against holding
+    # open a shard connection + relay task per guessed username for no
+    # reason - the shard would reject it anyway, just not until after a
+    # wasted round trip.
+    if not decoded.token:
+        await client_ws.send(encode_json_message(ErrorMessage(message="token_required")))
+        return
+
     username = decoded.username
+    token = decoded.token
     username_ctx.set(username)
     # Server_Design.md §5's own presence/session directory - this service is
     # the one that actually terminates the client's socket in the
@@ -322,7 +341,7 @@ async def _handle_client_inner(
             return
 
         try:
-            await _relay(client_ws, shard_address, shard_port, username)
+            await _relay(client_ws, shard_address, shard_port, username, token)
         except (websockets.exceptions.ConnectionClosed, OSError) as error:
             _logger.warning("relay for '%s' (shard=%s) ended: %s", username, shard_address, error)
     finally:

@@ -8,14 +8,19 @@ now - PLAY, Login (authentication only - see POST /login's own docstring
 for the one piece of LoginMessage's three branches this narrower endpoint
 doesn't replicate), and Rooms move here so far.
 
-No session/token anywhere in this module - the same "just for
-presentation" trust level server/accounts.py's own docstring already
-states for login: once POST /login accepts a username, every later call
-(POST /play, POST /rooms/..., and the IDENTIFY websocket message a client
-sends afterward - see client/network_client.py's own api_gateway_port-
-gated login()) is just told which already-authenticated username is
-asking, the same way the all-websocket flow already worked before this
-pass. Reuses this project's existing pieces directly rather than
+POST /login issues a session token (server/accounts.py's
+issue_session_token) rather than leaving every later call to just trust a
+bare asserted username: POST /play, POST /rooms/..., and the IDENTIFY
+websocket message a client sends afterward (see
+client/network_client.py's own api_gateway_port-gated login()) all
+require that same token back and verify it (verify_session_token) against
+the username making the call - the fix for exactly the "just for
+presentation" trust level server/accounts.py's own docstring used to
+describe. SESSION_TOKEN_SECRET must be set and identical across this
+service and every Game Server Shard for that verification to agree
+cross-process (see build_app's own hard failure if it's unset - a random
+per-process fallback here would make every issued token silently
+unverifiable instead). Reuses this project's existing pieces directly rather than
 re-deriving the decisions server/router.py's CommandRouter used to make
 in-process: server/redis/busy_set.py's BusySet, server/redis/matchmaking.py's
 RedisMatchmakingQueue, server/redis/active_game_index.py's ActiveGameIndex,
@@ -70,8 +75,9 @@ from aiohttp import web
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
 
 from protocol.types import Reason, Role
-from server.accounts import InvalidCredentialsError
+from server.accounts import InvalidCredentialsError, issue_session_token, verify_session_token
 from server.logging_config import configure_logging, room_id_ctx, username_ctx
+from server.server_config import SESSION_TOKEN_TTL_S
 from server.nats.events import GameFinished, MatchmakingRequested, RoomOpponentJoined
 from server.postgres.accounts import (
     PostgresAccountsDatabase,
@@ -244,14 +250,39 @@ async def handle_login(request: web.Request) -> web.Response:
         return web.json_response({"accepted": False, "reason": Reason.WRONG_PASSWORD.value})
 
     rating = rating_store.rating_for(account.username)
+    token = issue_session_token(account.username, request.app["session_secret"], SESSION_TOKEN_TTL_S)
 
     location = active_game_index.get(account.username)
     if location is not None:
         return web.json_response(
-            {"accepted": True, "username": account.username, "rating": rating, "reconnected": True, "color": location.seat}
+            {
+                "accepted": True,
+                "username": account.username,
+                "rating": rating,
+                "reconnected": True,
+                "color": location.seat,
+                "token": token,
+            }
         )
 
-    return web.json_response({"accepted": True, "username": account.username, "rating": rating})
+    return web.json_response({"accepted": True, "username": account.username, "rating": rating, "token": token})
+
+
+# Shared by /play and every /rooms* route below - each already has
+# `username`/`body` in hand from its own request.json(), so this only adds
+# the one check specific to this pass: does the token that same body
+# carries actually prove `username` logged in recently (see
+# server/accounts.py's verify_session_token), not just that the JSON shape
+# is well-formed. None (the common case) means "proceed"; a Response means
+# "return this instead," mirroring every existing early-return
+# accepted=False shape in this module (_busy_reason included) rather than
+# raising, since a bad/missing token is exactly as ordinary a rejection as
+# already-queued/already-in-a-room, not a 5xx-worthy server fault.
+def _session_error_or_none(request: web.Request, username: str, body: dict) -> Optional[web.Response]:
+    token = body.get("token")
+    if not verify_session_token(username, token, request.app["session_secret"]):
+        return web.json_response({"accepted": False, "reason": Reason.INVALID_SESSION.value})
+    return None
 
 
 # Same busy-check server/router.py's CommandRouter._busy_reason (by way of
@@ -276,6 +307,10 @@ async def handle_play(request: web.Request) -> web.Response:
     username = body["username"]
     username_ctx.set(username)
 
+    session_error = _session_error_or_none(request, username, body)
+    if session_error is not None:
+        return session_error
+
     busy_set: BusySet = request.app["busy_set"]
     matchmaking: RedisMatchmakingQueue = request.app["matchmaking"]
     rating_store: PostgresRatingStore = request.app["rating_store"]
@@ -297,6 +332,10 @@ async def handle_create_room(request: web.Request) -> web.Response:
     body = await request.json()
     username = body["username"]
     username_ctx.set(username)
+
+    session_error = _session_error_or_none(request, username, body)
+    if session_error is not None:
+        return session_error
 
     busy_set: BusySet = request.app["busy_set"]
     matchmaking: RedisMatchmakingQueue = request.app["matchmaking"]
@@ -334,6 +373,10 @@ async def handle_join_room(request: web.Request) -> web.Response:
     username = body["username"]
     username_ctx.set(username)
 
+    session_error = _session_error_or_none(request, username, body)
+    if session_error is not None:
+        return session_error
+
     busy_set: BusySet = request.app["busy_set"]
     matchmaking: RedisMatchmakingQueue = request.app["matchmaking"]
     rooms: RedisRoomRegistry = request.app["rooms"]
@@ -368,6 +411,10 @@ async def handle_cancel_room(request: web.Request) -> web.Response:
     username = body["username"]
     username_ctx.set(username)
 
+    session_error = _session_error_or_none(request, username, body)
+    if session_error is not None:
+        return session_error
+
     rooms: RedisRoomRegistry = request.app["rooms"]
     try:
         rooms.cancel(username)
@@ -395,9 +442,24 @@ async def handle_leaderboard(request: web.Request) -> web.Response:
 # read-only here; services/ws_gateway/main.py is what actually marks a
 # username online/offline, since it's the process that actually terminates
 # that username's socket in this deployment (see its own docstring).
+#
+# Any currently-logged-in caller may ask about any username - this is
+# "is my opponent/friend online," not "prove you are this specific
+# username," so the token in ?requester=&token= is checked against
+# requester (the caller's own identity), never against the username
+# in the path (the one being asked about). Without this, any
+# unauthenticated request could probe whether an arbitrary username is
+# online right now - a real, if low-severity, info leak surfaced during
+# the same audit pass that found the two critical findings this token
+# mechanism was originally built to fix.
 @routes.get("/presence/{username}")
 async def handle_presence(request: web.Request) -> web.Response:
     username = request.match_info["username"]
+    requester = request.query.get("requester")
+    token = request.query.get("token")
+    if not verify_session_token(requester, token, request.app["session_secret"]):
+        return web.json_response({"error": Reason.INVALID_SESSION.value}, status=401)
+
     presence: Presence = request.app["presence"]
     return web.json_response({"username": username, "online": presence.is_online(username)})
 
@@ -505,6 +567,13 @@ def _build_rating_store(accounts_database) -> PostgresRatingStore:
 def build_app() -> web.Application:
     database_url = os.environ["DATABASE_URL"]
     redis_url = os.environ["REDIS_URL"]
+    # No fallback, unlike server/main.py's own _build_session_secret - this
+    # service issues tokens in a different process from whichever Game
+    # Server Shard verifies them, so a random per-process secret here would
+    # silently make every token this service issues unverifiable everywhere
+    # else instead of failing loudly at startup, the same way a missing
+    # DATABASE_URL already does above.
+    session_secret = os.environ["SESSION_TOKEN_SECRET"].encode("utf-8")
 
     accounts_database = open_postgres_accounts_database(database_url)
     busy_set = BusySet(redis_url)
@@ -512,6 +581,7 @@ def build_app() -> web.Application:
     app = web.Application(middlewares=[_count_requests])
     app["redis_url"] = redis_url
     app["database_url"] = database_url
+    app["session_secret"] = session_secret
     app["user_store"] = PostgresUserStore(accounts_database)
     app["rating_store"] = _build_rating_store(accounts_database)
     app["matchmaking"] = RedisMatchmakingQueue(redis_url)

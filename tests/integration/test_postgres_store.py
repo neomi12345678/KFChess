@@ -85,6 +85,36 @@ def test_update_rating_persists_the_new_value(rating_store):
     assert rating_store.rating_for("alice") == 1250
 
 
+# Simulates two shards racing to register the same brand-new username at
+# once (server/postgres/__init__.py's own commit_or_rollback docstring) -
+# two separate connections, since a single process's own lock
+# (PostgresAccountsDatabase.lock) already serializes every call made
+# through one UserStore instance and could never reproduce the race a
+# second, independent shard connection actually causes.
+def test_a_register_race_does_not_leave_the_losing_connection_stuck(database):
+    database.connection.execute("TRUNCATE accounts")
+    database.connection.commit()
+    other_database = open_postgres_accounts_database(DSN)
+    try:
+        store_a = PostgresUserStore(database)
+        store_b = PostgresUserStore(other_database)
+
+        store_a._register("race_user", "secret123")
+
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            store_b._register("race_user", "a-different-password")
+
+        # other_database's connection must still be usable afterward -
+        # exactly what commit_or_rollback's own rollback() on the exception
+        # path guarantees; before it existed, this next query would fail
+        # with InFailedSqlTransaction instead, since nothing had ever rolled
+        # back the aborted transaction the UniqueViolation above left open.
+        account = store_b.login("race_user", "secret123")
+        assert account.username == "race_user"
+    finally:
+        other_database.connection.close()
+
+
 @pytest.fixture
 def room_store():
     store = PostgresRoomStore(DSN)

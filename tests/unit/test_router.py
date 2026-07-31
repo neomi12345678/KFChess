@@ -13,7 +13,7 @@ ConnectionRegistry are all cheap to construct directly), not fakes.
 from boardio.board_parser import parse
 from model.piece import BLACK, WHITE
 from model.position import Position
-from protocol.game_messages import build_jump, build_move
+from protocol.game_messages import MoveMessage, build_jump, build_move
 from server.connections import ConnectionRegistry
 from server.game_loop import ActiveGame, GameLoop
 from server.publisher import NetworkPublisher
@@ -376,6 +376,24 @@ def test_decide_game_command_rejects_a_move_claiming_the_wrong_seats_color():
 
     assert ack.accepted is False
     assert ack.reason == "wrong_seat"
+
+
+# A structurally-valid MoveMessage (satisfies protocol/registry.py's own
+# top-level dataclass construction - source is *a* dict) whose source
+# carries none of the "row"/"col" keys command_from_message's own
+# position_from_json needs - see server/router.py's own comment on why
+# this must be a normal rejected Ack, not a KeyError left to propagate out
+# of routing and kill this connection's whole receive loop.
+def test_decide_game_command_rejects_a_move_with_a_malformed_source():
+    rating_store = _rating_store()
+    router, loop, _rooms, _connections = _router(rating_store=rating_store)
+    _seat_alice_and_bob(loop, rating_store)
+    message = MoveMessage(color=WHITE, source={}, destination={"row": 0, "col": 2})
+
+    ack = router.decide_game_command("alice", message)
+
+    assert ack.accepted is False
+    assert ack.reason == "malformed_command"
 
 
 def test_decide_game_command_accepts_a_legal_move_from_the_correct_seat():

@@ -152,12 +152,14 @@ async def _print_incoming(websocket, state: _ClientState) -> None:
 # services/api_gateway/main.py) - a plain blocking call, same as this module's own
 # build_command/input() calls, run via run_in_executor so it doesn't block
 # this coroutine's event loop.
-def _post_play(username: str, api_gateway_host: str, api_gateway_port: int, ssl_context: Optional[ssl.SSLContext]) -> dict:
+def _post_play(
+    username: str, token: Optional[str], api_gateway_host: str, api_gateway_port: int, ssl_context: Optional[ssl.SSLContext]
+) -> dict:
     scheme = "https" if ssl_context is not None else "http"
     url = f"{scheme}://{api_gateway_host}:{api_gateway_port}/play"
     request = urllib.request.Request(
         url,
-        data=json.dumps({"username": username}).encode("utf-8"),
+        data=json.dumps({"username": username, "token": token}).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -187,6 +189,7 @@ async def _read_commands(
     websocket,
     state: _ClientState,
     username: str,
+    token: Optional[str],
     api_gateway_host: str,
     api_gateway_port: Optional[int],
     ssl_context: Optional[ssl.SSLContext],
@@ -203,7 +206,7 @@ async def _read_commands(
                 continue
             try:
                 body = await loop.run_in_executor(
-                    None, _post_play, username, api_gateway_host, api_gateway_port, ssl_context
+                    None, _post_play, username, token, api_gateway_host, api_gateway_port, ssl_context
                 )
             except urllib.error.URLError as error:
                 print(f"(could not reach the API Gateway: {error})")
@@ -306,9 +309,10 @@ async def _main(
                 rating=body.get("rating"),
                 reconnected=body.get("reconnected"),
                 color=body.get("color"),
+                token=body.get("token"),
             )
             if login_ack.accepted:
-                await websocket.send(encode_json_message(IdentifyMessage(username=login_ack.username)))
+                await websocket.send(encode_json_message(IdentifyMessage(username=login_ack.username, token=login_ack.token)))
                 await _recv_of_type(websocket, IdentifyAckMessage)
 
         if not login_ack.accepted:
@@ -325,7 +329,7 @@ async def _main(
 
         await asyncio.gather(
             _print_incoming(websocket, state),
-            _read_commands(websocket, state, username, api_gateway_host, api_gateway_port, ssl_context),
+            _read_commands(websocket, state, username, login_ack.token, api_gateway_host, api_gateway_port, ssl_context),
         )
 
 

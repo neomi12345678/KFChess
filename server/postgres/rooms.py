@@ -12,7 +12,7 @@ from typing import Dict, List
 
 import psycopg
 
-from server.postgres import create_table_tolerating_concurrent_creation
+from server.postgres import commit_or_rollback, create_table_tolerating_concurrent_creation
 from server.rooms import Room
 
 
@@ -50,26 +50,26 @@ class PostgresRoomStore:
         self._connection.close()
 
     def save(self, room: Room) -> None:
-        self._connection.execute(
-            "INSERT INTO rooms (room_id, creator, opponent) VALUES (%s, %s, %s) "
-            "ON CONFLICT (room_id) DO UPDATE SET opponent = excluded.opponent",
-            (room.room_id, room.creator, room.opponent),
-        )
-        self._connection.execute("DELETE FROM room_spectators WHERE room_id = %s", (room.room_id,))
-        # Unlike sqlite3.Connection, psycopg's Connection has no executemany
-        # shortcut of its own - only Cursor does.
-        if room.spectators:
-            with self._connection.cursor() as cursor:
-                cursor.executemany(
-                    "INSERT INTO room_spectators (room_id, username) VALUES (%s, %s)",
-                    [(room.room_id, spectator) for spectator in room.spectators],
-                )
-        self._connection.commit()
+        with commit_or_rollback(self._connection):
+            self._connection.execute(
+                "INSERT INTO rooms (room_id, creator, opponent) VALUES (%s, %s, %s) "
+                "ON CONFLICT (room_id) DO UPDATE SET opponent = excluded.opponent",
+                (room.room_id, room.creator, room.opponent),
+            )
+            self._connection.execute("DELETE FROM room_spectators WHERE room_id = %s", (room.room_id,))
+            # Unlike sqlite3.Connection, psycopg's Connection has no executemany
+            # shortcut of its own - only Cursor does.
+            if room.spectators:
+                with self._connection.cursor() as cursor:
+                    cursor.executemany(
+                        "INSERT INTO room_spectators (room_id, username) VALUES (%s, %s)",
+                        [(room.room_id, spectator) for spectator in room.spectators],
+                    )
 
     def delete(self, room_id: str) -> None:
-        self._connection.execute("DELETE FROM room_spectators WHERE room_id = %s", (room_id,))
-        self._connection.execute("DELETE FROM rooms WHERE room_id = %s", (room_id,))
-        self._connection.commit()
+        with commit_or_rollback(self._connection):
+            self._connection.execute("DELETE FROM room_spectators WHERE room_id = %s", (room_id,))
+            self._connection.execute("DELETE FROM rooms WHERE room_id = %s", (room_id,))
 
     def load_all(self) -> List[dict]:
         rooms: Dict[str, dict] = {

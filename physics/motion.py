@@ -12,10 +12,10 @@ def _sign(value: int) -> int:
     return (value > 0) - (value < 0)
 
 
-# Anything that isn't a straight rank/file/diagonal line is treated as a
-# jump (a knight's L-shape) - it has no continuous path to collide along,
-# matching how knights already ignore what's in between.
 def is_straight_line(source: Position, destination: Position) -> bool:
+    """Anything that isn't a straight rank/file/diagonal line is treated as
+    a jump (a knight's L-shape) - it has no continuous path to collide
+    along, matching how knights already ignore what's in between."""
     row_diff = destination.row - source.row
     col_diff = destination.col - source.col
     return row_diff == 0 or col_diff == 0 or abs(row_diff) == abs(col_diff)

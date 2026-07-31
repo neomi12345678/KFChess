@@ -4,20 +4,20 @@
 # no public IP - only reachable inside the cluster (see docker-compose.yml's
 # own matchmaker service, which likewise publishes no host port).
 #
-# replicas: 1, deliberately, and no HorizontalPodAutoscaler below - unlike
-# every other stateless role in this manifest set, this one is NOT actually
-# safe to run with more than one replica against today's code:
-# RedisMatchmakingQueue.advance_time mutates each waiting entry's own
+# replicas: 3 + the HPA below are now actually safe: earlier revisions of
+# this manifest pinned this to replicas: 1 with no HPA, because
+# RedisMatchmakingQueue.advance_time mutated each waiting entry's own
 # waited_ms with no distributed lock (two replicas both ticking would
-# double-count it, expiring players early), and find_match is read-then-
+# double-count it, expiring players early), and find_match was read-then-
 # later-remove with no atomic claim (two replicas could both read the same
-# pair before either removes it, and both publish match.found for it -
-# services/game_allocator/main.py mints a *fresh* game_id per match.found,
-# so the usual per-game_id lease never catches this particular
-# double-match). §11's own "Scales on: Queue depth" is the target, not
-# what this code does today - reaching it needs either a leader-election
-# lock around the tick loop or partitioning the queue by a hash range
-# across replicas, neither of which exists yet.
+# pair before either removed it, and both publish match.found for it).
+# server/redis/matchmaker_leader.py's leader election is the fix - every
+# replica still consumes its own share of matchmaking.requested (enqueue
+# has no shared counter to race on), but only whichever replica currently
+# holds that lease actually calls advance_time/find_match each tick, so
+# the two problems above can no longer happen regardless of replica count.
+# See that module's own docstring, and server/redis/matchmaking.py's, for
+# the full reasoning.
 
 apiVersion: v1
 kind: Service
@@ -38,7 +38,7 @@ metadata:
   name: matchmaker
   namespace: kfchess
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: matchmaker
@@ -74,3 +74,31 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+
+---
+# Server_Design.md §11's own "Scales on: Queue depth" - CPU is the
+# available proxy here until a Prometheus Adapter can drive this off
+# kfchess_matchmaker_queue_depth directly (see 00-namespace-and-config.yaml's
+# own top comment) - same placeholder-metric reasoning every other HPA in
+# this manifest set already uses. Safe to actually scale now (see this
+# file's own top comment) - the leader election means added replicas widen
+# NATS consumption of matchmaking.requested without adding a second ticker.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: matchmaker
+  namespace: kfchess
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: matchmaker
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

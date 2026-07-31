@@ -9,18 +9,21 @@
 # opens a connection to one of these, and only ever the internal, headless
 # one below.
 #
-# Known gap, flagged rather than silently assumed solved: §8's own "a
-# Game-Authority pod being retired stops accepting new rooms, drains its
-# existing ones (bounded ≤90s wait), then exits" describes a SIGTERM
-# handler this codebase's own server/main.py doesn't implement yet - today
-# a pod terminated mid-game just has its games end the same way any other
-# crash does (server/redis/room_shard_index.py's lease expiring,
-# services/game_allocator/main.py's own recovery sweep voiding them - see
-# that module's own docstring), not a graceful drain first.
+# §8's own "a Game-Authority pod being retired stops accepting new rooms,
+# drains its existing ones (bounded ≤90s wait), then exits" - implemented
+# in server/main.py's _run_until_drained/_wait_then_drain: SIGTERM flips a
+# draining flag the shard heartbeat starts reporting into
+# server/redis/shard_registry.py (a room-count of MAX_ROOMS_PER_SHARD,
+# never a real lower one - see that function's own docstring on why this
+# excludes the shard from *new* allocations via pick_shard's existing
+# capacity filter without deregistering it outright, which would make the
+# recovery sweep wrongly void its still-live rooms), then waits for
+# active_game_count() to reach zero or SHARD_DRAIN_TIMEOUT_MS (90s) to
+# elapse, whichever comes first, before actually exiting.
 # terminationGracePeriodSeconds below is set generously (comfortably above
-# §8's own 90s bound) so a real drain handler, once written, has room to
-# actually finish before Kubernetes SIGKILLs the pod - it doesn't by itself
-# make today's abrupt shutdown graceful.
+# that same 90s bound) so the drain has room to actually finish before
+# Kubernetes SIGKILLs the pod - it doesn't by itself make shutdown graceful,
+# the handler above is what does.
 
 apiVersion: v1
 kind: Service

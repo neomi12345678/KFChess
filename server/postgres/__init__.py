@@ -11,7 +11,31 @@ default for a bare-metal run.
     game_history.py   PostgresGameHistoryStore (used by services/persistence_worker/main.py, not server/main.py)
 """
 
+import contextlib
+
 import psycopg
+
+
+# Every write path in this package (PostgresUserStore._register,
+# PostgresRatingStore.update_rating, PostgresGameHistoryStore.record_game/
+# record_games_batch, PostgresRoomStore.save/delete) used to execute() then
+# commit() with nothing between them - if execute() itself raised (a
+# UniqueViolation from two shards racing to register the same brand-new
+# username at once is the concrete case that surfaced this, not a
+# theoretical one), nothing ever called rollback(), leaving the connection
+# wedged in an aborted transaction: every later query on that same
+# long-lived, shared connection then fails with InFailedSqlTransaction
+# until the process restarts. One context manager, used at every write
+# site instead of a bare commit(), so the whole class of bug can't recur
+# somewhere new.
+@contextlib.contextmanager
+def commit_or_rollback(connection: "psycopg.Connection"):
+    try:
+        yield
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
 
 
 # Every store in this package runs its own CREATE TABLE IF NOT EXISTS on

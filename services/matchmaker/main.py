@@ -49,6 +49,7 @@ from prometheus_client import Gauge
 from server.logging_config import configure_logging, username_ctx
 from server.nats.events import MatchFound, MatchmakingRequested, MatchmakingStatus, MatchmakingTimeout
 from server.observability_server import start_observability_server
+from server.redis.matchmaker_leader import MatchmakerLeaderElection
 from server.redis.matchmaking import RedisMatchmakingQueue
 from server.server_config import DEFAULT_TICK_INTERVAL_S
 
@@ -64,7 +65,9 @@ async def _on_matchmaking_requested(queue: RedisMatchmakingQueue, msg) -> None:
     queue.enqueue(event.username, event.rating)
 
 
-async def _run_forever(queue: RedisMatchmakingQueue, nats_connection, tick_interval_s: float) -> None:
+async def _run_forever(
+    queue: RedisMatchmakingQueue, nats_connection, tick_interval_s: float, leader: MatchmakerLeaderElection
+) -> None:
     last = asyncio.get_event_loop().time()
     while True:
         await asyncio.sleep(tick_interval_s)
@@ -82,7 +85,17 @@ async def _run_forever(queue: RedisMatchmakingQueue, nats_connection, tick_inter
         # "isolate, don't crash the whole loop" reasoning
         # server/game_loop.py's own run_forever already applies per-game.
         try:
-            await _run_one_tick(queue, nats_connection, elapsed_ms)
+            # Only the replica currently holding this lease actually ticks
+            # the shared queue - see server/redis/matchmaker_leader.py's own
+            # docstring, and server/redis/matchmaking.py's, on why more than
+            # one caller doing this concurrently double-counts waited_ms and
+            # can double-claim a match. Every replica (leader or not) still
+            # reaches this point every tick_interval_s, so whichever one is
+            # leader notices a crashed predecessor's expired lease and takes
+            # over within MATCHMAKER_LEADER_TTL_MS, not a whole
+            # tick_interval_s later.
+            if leader.acquire_or_renew():
+                await _run_one_tick(queue, nats_connection, elapsed_ms)
         except Exception:
             _logger.exception("matchmaker tick failed - skipping this tick")
 
@@ -115,6 +128,7 @@ async def _main() -> None:
     tick_interval_s = float(os.environ.get("MATCHMAKER_TICK_INTERVAL_S", DEFAULT_TICK_INTERVAL_S))
 
     queue = RedisMatchmakingQueue(redis_url)
+    leader = MatchmakerLeaderElection(redis_url)
     nats_connection = await nats.connect(nats_url)
 
     async def _on_message(msg) -> None:
@@ -135,7 +149,7 @@ async def _main() -> None:
     )
 
     _logger.info("matchmaker running (redis=%s nats=%s)", redis_url, nats_url)
-    await _run_forever(queue, nats_connection, tick_interval_s)
+    await _run_forever(queue, nats_connection, tick_interval_s, leader)
 
 
 def main() -> None:  # pragma: no cover

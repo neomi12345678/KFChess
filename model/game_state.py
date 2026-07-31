@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from model.board import BoardStore
-from model.piece import ActionResultReason, PieceRepresentation
+from model.piece import ActionResultReason, Color, MotionPhase, PieceKind, PieceRepresentation, PieceState
 from model.position import Position
 
 
@@ -70,8 +70,8 @@ class MoveLoggedEvent:
     event's own "no display text" rule above.
     """
 
-    color: str
-    kind: str
+    color: Color
+    kind: PieceKind
     source: Position
     destination: Position
     is_capture: bool
@@ -113,8 +113,8 @@ class GameObserver:
 @dataclass(frozen=True)
 class PieceSnapshot:
     id: str
-    kind: str
-    color: str
+    kind: PieceKind
+    color: Color
     # Continuous board coordinates, not pixels - the model has no notion of
     # screen space. A stationary piece sits at integer (row, col); a piece
     # mid-motion is fractional, interpolated between source and destination.
@@ -122,7 +122,7 @@ class PieceSnapshot:
     # layer's job (see view/renderer.py), never the engine's.
     row: float
     col: float
-    state: str
+    state: PieceState
     # The engine's own report of what real-time phase this piece is in -
     # one of model.piece.PHASE_IDLE/PHASE_MOVE/PHASE_JUMP/PHASE_SHORT_REST/
     # PHASE_LONG_REST (see GameEngine._motion_phase). Resting is a real
@@ -133,7 +133,7 @@ class PieceSnapshot:
     # rendering instruction - the model has no notion that "animation" is a
     # thing; which sprite folder each phase maps to is view/
     # animation_states.py's business alone.
-    motion_phase: str
+    motion_phase: MotionPhase
     # How much of this piece's current stretch of unavailability has
     # elapsed vs. its total duration, in ms - both 0 when motion_phase is
     # PHASE_IDLE/PHASE_MOVE. For PHASE_JUMP/PHASE_SHORT_REST this spans

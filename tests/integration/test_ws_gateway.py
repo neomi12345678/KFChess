@@ -32,6 +32,7 @@ from model.piece import WHITE
 from protocol.game_messages import build_move
 from protocol.lobby_messages import IdentifyMessage
 from protocol.registry import encode_json_message
+from server.accounts import issue_session_token
 from server.interfaces import ActiveGameLocation
 from server.redis.active_game_index import ActiveGameIndex
 from server.redis.presence import Presence
@@ -120,6 +121,17 @@ async def send_move(websocket, color: str, source: str, destination: str, board_
     await websocket.send(encode_json_message(message))
 
 
+# None of these tests ever send a real LOGIN - they seed a game/room
+# directly (see running_shard's own reasoning on why: this file is about
+# the relay, not about how a game gets started), so there's no login_ack to
+# pull a real session token off of. Signs one directly against the shard's
+# own (auto-generated per test instance, see GameServer's own __init__)
+# session secret instead - the same secret _handle_identify verifies
+# against, whichever process holds it.
+def _token_for(server: GameServer, username: str) -> str:
+    return issue_session_token(username, server._session_secret, ttl_s=3600)
+
+
 @pytest.fixture
 def clean_active_game_index():
     import redis as redis_lib
@@ -165,7 +177,9 @@ def test_identify_for_an_already_allocated_username_relays_moves(clean_active_ga
 
             async with running_ws_gateway(shard_port=server.bound_port) as gw_port:
                 async with websockets.connect(f"ws://localhost:{gw_port}") as client:
-                    await client.send(encode_json_message(IdentifyMessage(username="gw_alice")))
+                    await client.send(
+                        encode_json_message(IdentifyMessage(username="gw_alice", token=_token_for(server, "gw_alice")))
+                    )
 
                     # Proves _relay's own internal handshake frame (the
                     # shard's IdentifyAckMessage) actually reaches the public
@@ -194,7 +208,9 @@ def test_identify_before_allocation_waits_for_game_allocated(clean_active_game_i
         async with running_shard() as server:
             async with running_ws_gateway(shard_port=server.bound_port) as gw_port:
                 async with websockets.connect(f"ws://localhost:{gw_port}") as client:
-                    await client.send(encode_json_message(IdentifyMessage(username="gw_carol")))
+                    await client.send(
+                        encode_json_message(IdentifyMessage(username="gw_carol", token=_token_for(server, "gw_carol")))
+                    )
                     # Gives _handle_client time to reach _resolve_shard's own
                     # waiters.wait_for("gw_carol") before this test publishes
                     # game.allocated - same reasoning as this project's other
@@ -228,7 +244,9 @@ def test_matchmaking_status_heartbeat_is_relayed_while_waiting_for_allocation(cl
         async with running_shard() as server:
             async with running_ws_gateway(shard_port=server.bound_port) as gw_port:
                 async with websockets.connect(f"ws://localhost:{gw_port}") as client:
-                    await client.send(encode_json_message(IdentifyMessage(username="gw_frank")))
+                    await client.send(
+                        encode_json_message(IdentifyMessage(username="gw_frank", token=_token_for(server, "gw_frank")))
+                    )
                     # Same reasoning as test_identify_before_allocation_waits_for_game_allocated
                     # above - gives _handle_client time to register with
                     # _StatusRelay before this test publishes matchmaking.status.
@@ -282,7 +300,11 @@ def test_identify_as_a_spectator_of_an_existing_room_relays_a_snapshot_with_no_s
 
             async with running_ws_gateway(shard_port=server.bound_port) as gw_port:
                 async with websockets.connect(f"ws://localhost:{gw_port}") as client:
-                    await client.send(encode_json_message(IdentifyMessage(username="gw_room_spectator")))
+                    await client.send(
+                        encode_json_message(
+                            IdentifyMessage(username="gw_room_spectator", token=_token_for(server, "gw_room_spectator"))
+                        )
+                    )
 
                     ack = json.loads(await asyncio.wait_for(client.recv(), timeout=3.0))
                     assert ack == {"type": "identify_ack", "accepted": True}
@@ -314,7 +336,9 @@ def test_identify_before_allocation_gives_up_on_matchmaking_timeout(clean_active
         async with running_shard() as server:
             async with running_ws_gateway(shard_port=server.bound_port) as gw_port:
                 async with websockets.connect(f"ws://localhost:{gw_port}") as client:
-                    await client.send(encode_json_message(IdentifyMessage(username="gw_erin")))
+                    await client.send(
+                        encode_json_message(IdentifyMessage(username="gw_erin", token=_token_for(server, "gw_erin")))
+                    )
                     await asyncio.sleep(0.2)
 
                     nats_connection = await nats.connect(NATS_URL)
