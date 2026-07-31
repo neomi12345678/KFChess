@@ -6,7 +6,18 @@ each next to its own single use; collected here instead so every server knob
 can be found and tuned from one file. The owning module still imports its
 own constant back as its parameter default, so call sites needing a default
 don't have to reach into this module themselves.
+
+The four matchmaking knobs below also read a KFCHESS_-prefixed env var, so
+an operator can retune pairing behavior per-deployment (a looser rating
+range during a low-traffic period, a shorter timeout for a demo) without a
+code change - the same tunability a competing implementation's scattered
+per-service os.getenv() calls had, but without giving that up as the single
+place every server knob is defined and found: the default a deployment gets
+when nothing overrides it is still spelled out here, in one file, not
+rediscovered by grepping five services.
 """
+
+import os
 
 # server/game_loop.py - GameLoop.run_forever's own tick period. Mirrors
 # play.py's frame loop (real elapsed wall-clock time, fractional ms carried
@@ -15,20 +26,20 @@ don't have to reach into this module themselves.
 DEFAULT_TICK_INTERVAL_S = 0.05
 
 # server/matchmaking.py - MatchmakingQueue's own pairing/timeout knobs.
-RATING_RANGE = 100
-MATCHMAKING_TIMEOUT_MS = 60_000
+RATING_RANGE = int(os.getenv("KFCHESS_RATING_RANGE", "100"))
+MATCHMAKING_TIMEOUT_MS = int(os.getenv("KFCHESS_MATCHMAKING_TIMEOUT_MS", "60000"))
 
 # server/matchmaking.py - how often a still-waiting PLAY queue entry gets a
 # reassuring "still searching" push (MatchmakingStatusMessage) between
 # enqueue and either a match or MATCHMAKING_TIMEOUT_MS above.
-MATCHMAKING_STATUS_INTERVAL_MS = 5_000
+MATCHMAKING_STATUS_INTERVAL_MS = int(os.getenv("KFCHESS_MATCHMAKING_STATUS_INTERVAL_MS", "5000"))
 
 # server/rooms.py - length of a freshly generated room id (RoomRegistry._new_id).
 ROOM_ID_LENGTH = 6
 
 # server/rating.py - standard chess ELO's own conventional step size, how
 # much of the gap between expected and actual outcome one game moves a rating.
-RATING_K_FACTOR = 32
+RATING_K_FACTOR = int(os.getenv("KFCHESS_RATING_K_FACTOR", "32"))
 
 # server/ws_server.py - tighter than `websockets`' own 20s/20s stock
 # defaults (a dead connection must be caught well inside session.py's

@@ -114,6 +114,55 @@ def test_on_matchmaking_requested_enqueues_into_the_real_queue():
     assert test_queue.is_waiting("dana") is True
 
 
+def test_on_matchmaking_cancelled_removes_from_the_real_queue():
+    import asyncio as _asyncio
+
+    from services.matchmaker.main import _on_matchmaking_cancelled
+
+    class _FakeMsg:
+        def __init__(self, data: bytes):
+            self.data = data
+
+    import redis as redis_lib
+
+    from server.redis.matchmaking import RedisMatchmakingQueue
+
+    redis_lib.Redis.from_url(REDIS_URL).delete("kfchess:matchmaking:by_rating", "kfchess:matchmaking:waiting")
+    test_queue = RedisMatchmakingQueue(REDIS_URL, timeout_ms=1500, status_interval_ms=500)
+    test_queue.enqueue("erin", 1300)
+    assert test_queue.is_waiting("erin") is True
+
+    msg = _FakeMsg(json.dumps({"username": "erin"}).encode("utf-8"))
+    _asyncio.run(_on_matchmaking_cancelled(test_queue, msg))
+
+    assert test_queue.is_waiting("erin") is False
+
+
+def test_on_matchmaking_cancelled_is_a_no_op_for_a_username_never_queued():
+    import asyncio as _asyncio
+
+    from services.matchmaker.main import _on_matchmaking_cancelled
+
+    class _FakeMsg:
+        def __init__(self, data: bytes):
+            self.data = data
+
+    import redis as redis_lib
+
+    from server.redis.matchmaking import RedisMatchmakingQueue
+
+    redis_lib.Redis.from_url(REDIS_URL).delete("kfchess:matchmaking:by_rating", "kfchess:matchmaking:waiting")
+    test_queue = RedisMatchmakingQueue(REDIS_URL, timeout_ms=1500, status_interval_ms=500)
+
+    # A username still waiting on a room's opponent (never enqueued at all -
+    # see server/nats/events.py's own MatchmakingCancelled docstring) -
+    # publishing this event for it must not raise.
+    msg = _FakeMsg(json.dumps({"username": "never_queued"}).encode("utf-8"))
+    _asyncio.run(_on_matchmaking_cancelled(test_queue, msg))
+
+    assert test_queue.is_waiting("never_queued") is False
+
+
 def test_a_lone_waiter_gets_a_status_heartbeat_then_times_out(queue):
     import nats
 

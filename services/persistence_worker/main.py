@@ -46,10 +46,10 @@ import os
 import time
 from typing import List, Optional, Tuple
 
-import nats
 from prometheus_client import Gauge
 
 from server.logging_config import configure_logging, room_id_ctx
+from server.nats.client import connect as connect_nats
 from server.nats.events import GameFinished
 from server.observability_server import start_observability_server
 from server.postgres.game_history import PostgresGameHistoryStore
@@ -129,7 +129,7 @@ async def _main() -> None:
 
     store = PostgresGameHistoryStore(database_url)
     queue: "asyncio.Queue[GameFinished]" = asyncio.Queue()
-    nats_connection = await nats.connect(nats_url)
+    nats_connection = await connect_nats(nats_url)
 
     # Deliberately no I/O here - just decode and enqueue, so a slow flush
     # never backs up NATS message delivery for this subscription (see this

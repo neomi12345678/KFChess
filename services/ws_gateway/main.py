@@ -75,7 +75,8 @@ from protocol.registry import decode_json_message, encode_json_message
 from protocol.types import PORT as SHARD_PORT
 from protocol.types import WS_GATEWAY_PORT
 from server.logging_config import configure_logging, username_ctx
-from server.nats.events import GameAllocated, MatchmakingStatus, MatchmakingTimeout
+from server.nats.client import connect as connect_nats
+from server.nats.events import GameAllocated, MatchmakingCancelled, MatchmakingStatus, MatchmakingTimeout
 from server.observability_server import start_observability_server
 from server.redis.active_game_index import ActiveGameIndex
 from server.redis.presence import Presence
@@ -165,8 +166,8 @@ async def _subscribe_matchmaking_events(
 
 # None means "give up" - the caller sends MatchmakingTimeoutMessage and
 # closes rather than ever attempting to relay with no shard to relay to.
-# The outer wait_for bound (MATCHMAKING_TIMEOUT_MS, server/server_config.py
-# - not a new constant) is a safety net for the case nothing ever arrives,
+# The outer wait bound (MATCHMAKING_TIMEOUT_MS, server/server_config.py -
+# not a new constant) is a safety net for the case nothing ever arrives,
 # same reasoning client/network_client.py's own _wait_for_type already has
 # for every blocking wire wait in this project.
 async def _resolve_shard(
@@ -175,6 +176,8 @@ async def _resolve_shard(
     rooms: RedisRoomRegistry,
     room_shard_index: RoomShardIndex,
     waiters: _AllocationWaiters,
+    nats_connection,
+    client_ws,
 ) -> Optional[str]:
     location = active_game_index.get(username)
     if location is not None:
@@ -189,11 +192,34 @@ async def _resolve_shard(
     if room is not None and username in room.spectators:
         return room_shard_index.get(room.room_id)
 
+    # Raced against the client socket itself closing - server/router.py's
+    # decide_disconnect can dequeue a disconnected username the instant it
+    # happens because the bare-metal path holds the matchmaking queue
+    # in-process; this service holds no queue at all, only a websocket, so
+    # the earliest it can act is the moment that websocket closes. Without
+    # this, a client that gives up mid-wait (closes the app, loses network)
+    # would sit in the standalone Matchmaker's shared queue - visible to
+    # every other waiting player as a match candidate - for up to the full
+    # MATCHMAKING_TIMEOUT_MS below instead of leaving immediately.
     future = waiters.wait_for(username)
+    closed = asyncio.ensure_future(client_ws.wait_closed())
     try:
-        return await asyncio.wait_for(future, timeout=MATCHMAKING_TIMEOUT_MS / 1000)
-    except asyncio.TimeoutError:
-        return None
+        done, pending = await asyncio.wait(
+            {future, closed}, timeout=MATCHMAKING_TIMEOUT_MS / 1000, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+
+        if future in done:
+            return future.result()
+        if closed in done:
+            await nats_connection.publish(
+                MatchmakingCancelled.SUBJECT, MatchmakingCancelled(username=username).encode()
+            )
+        return None  # closed mid-wait, or the outer safety-net timeout fired
+    finally:
+        if not closed.done():
+            closed.cancel()
 
 
 async def _pump(source, destination) -> None:
@@ -271,6 +297,7 @@ async def _handle_client(
     status_relay: _StatusRelay,
     presence: Presence,
     shard_port: int,
+    nats_connection,
     client_ws,
 ) -> None:
     # _CONNECTIONS_GAUGE covers this client's whole lifetime - accepted
@@ -279,7 +306,15 @@ async def _handle_client(
     _CONNECTIONS_GAUGE.inc()
     try:
         await _handle_client_inner(
-            active_game_index, rooms, room_shard_index, waiters, status_relay, presence, shard_port, client_ws
+            active_game_index,
+            rooms,
+            room_shard_index,
+            waiters,
+            status_relay,
+            presence,
+            shard_port,
+            nats_connection,
+            client_ws,
         )
     finally:
         _CONNECTIONS_GAUGE.dec()
@@ -293,6 +328,7 @@ async def _handle_client_inner(
     status_relay: _StatusRelay,
     presence: Presence,
     shard_port: int,
+    nats_connection,
     client_ws,
 ) -> None:
     try:
@@ -333,11 +369,19 @@ async def _handle_client_inner(
         # there's no more "still searching" to report.
         status_relay.register(username, client_ws)
         try:
-            shard_address = await _resolve_shard(username, active_game_index, rooms, room_shard_index, waiters)
+            shard_address = await _resolve_shard(
+                username, active_game_index, rooms, room_shard_index, waiters, nats_connection, client_ws
+            )
         finally:
             status_relay.unregister(username)
         if shard_address is None:
-            await client_ws.send(encode_json_message(MatchmakingTimeoutMessage()))
+            # Also reached when _resolve_shard gave up because the client's
+            # own socket just closed (see its own docstring) - suppressed
+            # the same way every other post-disconnect send in this module
+            # already is, rather than a genuine timeout being the only path
+            # that expects this send to fail.
+            with contextlib.suppress(websockets.exceptions.ConnectionClosed):
+                await client_ws.send(encode_json_message(MatchmakingTimeoutMessage()))
             return
 
         try:
@@ -359,15 +403,13 @@ async def _main() -> None:
     # but configurable in case a deployment ever picks a different one.
     shard_port = int(os.environ.get("SHARD_PORT", SHARD_PORT))
 
-    import nats
-
     active_game_index = ActiveGameIndex(redis_url)
     rooms = RedisRoomRegistry(redis_url)
     room_shard_index = RoomShardIndex(redis_url)
     presence = Presence(redis_url)
     waiters = _AllocationWaiters()
     status_relay = _StatusRelay()
-    nats_connection = await nats.connect(nats_url)
+    nats_connection = await connect_nats(nats_url)
     await _subscribe_matchmaking_events(nats_connection, waiters, status_relay)
 
     import redis as redis_lib
@@ -386,7 +428,15 @@ async def _main() -> None:
 
     async def _handler(client_ws) -> None:
         await _handle_client(
-            active_game_index, rooms, room_shard_index, waiters, status_relay, presence, shard_port, client_ws
+            active_game_index,
+            rooms,
+            room_shard_index,
+            waiters,
+            status_relay,
+            presence,
+            shard_port,
+            nats_connection,
+            client_ws,
         )
 
     # SSL_CERT_FILE/SSL_KEY_FILE both unset (the default) keeps today's

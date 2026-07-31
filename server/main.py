@@ -12,6 +12,7 @@ from boardio.starting_position import STARTING_BOARD
 from protocol.types import HOST as DEFAULT_HOST
 from protocol.types import PORT as DEFAULT_PORT
 from server.logging_config import configure_logging
+from server.nats.client import connect as connect_nats
 from server.observability_server import start_observability_server
 from server.server_config import MAX_ROOMS_PER_SHARD, SHARD_DRAIN_TIMEOUT_MS
 from server.sqlite.accounts import UserStore
@@ -267,9 +268,7 @@ async def _build_matchmaking_relay(server: GameServer) -> None:
     if nats_url is None:
         return
 
-    import nats
-
-    connection = await nats.connect(nats_url)
+    connection = await connect_nats(nats_url)
     external = os.environ.get("EXTERNAL_MATCHMAKER") == "1"
     await server.start_matchmaking_relay(connection, external=external)
     # Same connection, a second subscription - see

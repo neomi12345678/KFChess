@@ -18,6 +18,7 @@ resolves to the installed library on sys.path, not to this package
 import time
 from typing import Dict, Optional
 
+from server.nats.client import connect as connect_nats
 from server.nats.events import GameCreated, GameFinished
 
 
@@ -27,9 +28,7 @@ class NatsLifecyclePublisher:
 
     @classmethod
     async def connect(cls, nats_url: str) -> "NatsLifecyclePublisher":
-        import nats
-
-        connection = await nats.connect(nats_url)
+        connection = await connect_nats(nats_url)
         return cls(connection)
 
     # Exposed read-only so server/main.py's own readiness check can read
