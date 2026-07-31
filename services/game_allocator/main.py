@@ -100,11 +100,11 @@ import os
 import uuid
 from typing import Optional
 
-import nats
 import redis
 from prometheus_client import Counter
 
 from server.logging_config import configure_logging, room_id_ctx
+from server.nats.client import connect as connect_nats
 from server.nats.events import GameAllocated, MatchFound, RoomOpponentJoined
 from server.observability_server import start_observability_server
 from server.redis.active_game_index import ActiveGameIndex
@@ -352,7 +352,7 @@ async def _main() -> None:
     rooms = RedisRoomRegistry(redis_url, busy_set=busy_set)
     active_game_index = ActiveGameIndex(redis_url)
     fairness_checkpoint = FairnessCheckpoint(redis_url)
-    nats_connection = await nats.connect(nats_url)
+    nats_connection = await connect_nats(nats_url)
 
     async def _on_match_found(msg) -> None:
         shard_address = registry.pick_shard(max_rooms_per_shard=MAX_ROOMS_PER_SHARD)

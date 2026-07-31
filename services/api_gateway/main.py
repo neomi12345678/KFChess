@@ -481,10 +481,10 @@ async def _on_game_finished(rooms: RedisRoomRegistry, room_shard_index: RoomShar
 
 
 async def _on_startup(app: web.Application) -> None:
-    import nats
+    from server.nats.client import connect as connect_nats
 
     nats_url = os.environ["NATS_URL"]
-    nats_connection = await nats.connect(nats_url)
+    nats_connection = await connect_nats(nats_url)
     app["nats_connection"] = nats_connection
 
     rooms: RedisRoomRegistry = app["rooms"]

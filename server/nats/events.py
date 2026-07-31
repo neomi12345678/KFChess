@@ -1,10 +1,10 @@
 """Typed payload contracts for every internal NATS control-plane subject
 this project's services publish/subscribe - matchmaking.requested,
-matchmaking.status, matchmaking.timeout, match.found, room.opponent_joined,
-game.allocated, game.created, game.finished (see each service's own
-docstring - services/matchmaker/main.py, services/api_gateway/main.py,
-services/game_allocator/main.py, services/ws_gateway/main.py,
-server/game_loop.py, server/nats/lifecycle.py,
+matchmaking.status, matchmaking.timeout, matchmaking.cancelled,
+match.found, room.opponent_joined, game.allocated, game.created,
+game.finished (see each service's own docstring - services/matchmaker/main.py,
+services/api_gateway/main.py, services/game_allocator/main.py,
+services/ws_gateway/main.py, server/game_loop.py, server/nats/lifecycle.py,
 services/persistence_worker/main.py - for who publishes/subscribes to
 which).
 
@@ -82,6 +82,25 @@ class MatchmakingTimeout(_NatsEvent):
 
     @classmethod
     def decode(cls, raw: bytes) -> "MatchmakingTimeout":
+        return cls(username=json.loads(raw)["username"])
+
+
+@dataclass(frozen=True)
+class MatchmakingCancelled(_NatsEvent):
+    # Published by services/ws_gateway/main.py the instant a client's socket
+    # closes while it's still waiting on a PLAY allocation - the standalone
+    # deployment's equivalent of server/router.py's own decide_disconnect
+    # calling self._loop.matchmaking.remove(username) directly, which only
+    # the bare-metal (single-process GameServer) path can do since it holds
+    # the queue in-process. Safe to publish even for a username that was
+    # only ever waiting on a room's opponent, never actually queued
+    # (services/matchmaker/main.py's own handler is a plain queue.remove,
+    # already a no-op for a username that isn't present).
+    SUBJECT: ClassVar[str] = "matchmaking.cancelled"
+    username: str
+
+    @classmethod
+    def decode(cls, raw: bytes) -> "MatchmakingCancelled":
         return cls(username=json.loads(raw)["username"])
 
 

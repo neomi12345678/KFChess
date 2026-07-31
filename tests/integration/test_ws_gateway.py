@@ -98,7 +98,15 @@ async def running_ws_gateway(shard_port: int):
 
     async def _handler(client_ws) -> None:
         await _handle_client(
-            active_game_index, rooms, room_shard_index, waiters, status_relay, presence, shard_port, client_ws
+            active_game_index,
+            rooms,
+            room_shard_index,
+            waiters,
+            status_relay,
+            presence,
+            shard_port,
+            nats_connection,
+            client_ws,
         )
 
     async with websockets.serve(_handler, "localhost", 0) as gw_server:
@@ -327,6 +335,46 @@ def test_identify_as_a_spectator_of_an_existing_room_relays_a_snapshot_with_no_s
                     assert "gw_room_spectator" in server._loop.get(room.room_id).spectator_usernames
 
     asyncio.run(scenario())
+
+
+# Proves the standalone deployment's own dequeue-on-disconnect (server/nats/events.py's
+# MatchmakingCancelled) - the distributed counterpart to server/router.py's
+# decide_disconnect, which the bare-metal (single-process) path already had.
+# Closes the client's own socket, rather than publishing matchmaking.timeout
+# like the test above, and checks _resolve_shard reacts to *that* instead.
+def test_client_disconnect_during_matchmaking_wait_publishes_matchmaking_cancelled(clean_active_game_index):
+    async def scenario():
+        import nats
+
+        async with running_shard() as server:
+            async with running_ws_gateway(shard_port=server.bound_port) as gw_port:
+                listener = await nats.connect(NATS_URL)
+                received = []
+                done = asyncio.Event()
+
+                async def _on_cancelled(msg) -> None:
+                    received.append(json.loads(msg.data))
+                    done.set()
+
+                sub = await listener.subscribe("matchmaking.cancelled", cb=_on_cancelled)
+
+                client = await websockets.connect(f"ws://localhost:{gw_port}")
+                await client.send(
+                    encode_json_message(IdentifyMessage(username="gw_greta", token=_token_for(server, "gw_greta")))
+                )
+                # Same reasoning as this file's other allocation-wait tests -
+                # gives _handle_client time to reach _resolve_shard's own
+                # wait before this test closes the socket out from under it.
+                await asyncio.sleep(0.2)
+                await client.close()
+
+                await asyncio.wait_for(done.wait(), timeout=3.0)
+                await sub.unsubscribe()
+                await listener.close()
+                return received
+
+    received = asyncio.run(scenario())
+    assert received == [{"username": "gw_greta"}]
 
 
 def test_identify_before_allocation_gives_up_on_matchmaking_timeout(clean_active_game_index):

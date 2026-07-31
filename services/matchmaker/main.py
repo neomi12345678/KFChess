@@ -43,11 +43,11 @@ import asyncio
 import logging
 import os
 
-import nats
 from prometheus_client import Gauge
 
 from server.logging_config import configure_logging, username_ctx
-from server.nats.events import MatchFound, MatchmakingRequested, MatchmakingStatus, MatchmakingTimeout
+from server.nats.client import connect as connect_nats
+from server.nats.events import MatchFound, MatchmakingCancelled, MatchmakingRequested, MatchmakingStatus, MatchmakingTimeout
 from server.observability_server import start_observability_server
 from server.redis.matchmaker_leader import MatchmakerLeaderElection
 from server.redis.matchmaking import RedisMatchmakingQueue
@@ -63,6 +63,18 @@ async def _on_matchmaking_requested(queue: RedisMatchmakingQueue, msg) -> None:
     event = MatchmakingRequested.decode(msg.data)
     username_ctx.set(event.username)
     queue.enqueue(event.username, event.rating)
+
+
+# The standalone deployment's counterpart to server/router.py's own
+# decide_disconnect, which removes a disconnected username from the
+# bare-metal path's in-process queue directly - see
+# server/nats/events.py's own MatchmakingCancelled docstring for why this
+# service (not services/ws_gateway/main.py, which publishes the event but
+# holds no queue of its own) is what actually has to act on it.
+async def _on_matchmaking_cancelled(queue: RedisMatchmakingQueue, msg) -> None:
+    event = MatchmakingCancelled.decode(msg.data)
+    username_ctx.set(event.username)
+    queue.remove(event.username)
 
 
 async def _run_forever(
@@ -129,12 +141,16 @@ async def _main() -> None:
 
     queue = RedisMatchmakingQueue(redis_url)
     leader = MatchmakerLeaderElection(redis_url)
-    nats_connection = await nats.connect(nats_url)
+    nats_connection = await connect_nats(nats_url)
 
     async def _on_message(msg) -> None:
         await _on_matchmaking_requested(queue, msg)
 
+    async def _on_cancelled(msg) -> None:
+        await _on_matchmaking_cancelled(queue, msg)
+
     await nats_connection.subscribe(MatchmakingRequested.SUBJECT, cb=_on_message)
+    await nats_connection.subscribe(MatchmakingCancelled.SUBJECT, cb=_on_cancelled)
 
     import redis as redis_lib
 
