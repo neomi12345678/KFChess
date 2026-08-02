@@ -88,6 +88,25 @@ local self-signed dev cert, generated once via
 `python -m tls_config <cert> <key>`) - see `.env.example`'s own worked
 example.
 
+### Running the distributed deployment
+
+```
+docker-compose up --build
+```
+
+brings up the architecture `Server_Design.md` designs and the "Distributed
+deployment" bullet below describes: Postgres (a primary plus a genuine
+streaming read replica), Redis, NATS, the five standalone `services/*`
+deployables, and two independent Game Server Shards (`game-server`/
+`game-server-2`) - the same `server/main.py` the bare-metal command above
+runs, just with `DATABASE_URL`/`REDIS_URL`/`NATS_URL`/`EXTERNAL_MATCHMAKER`
+set so each concern defers to Postgres/Redis/NATS and the standalone
+Matchmaker instead of its own in-memory/SQLite defaults (see `server/main.py`'s
+own env lookups). The API Gateway (`:8080`) and WS Gateway (`:8767`) are the
+only two services meant to be reached directly; everything else is internal
+to the compose network. `k8s/` has the matching Kubernetes manifests for
+the same topology.
+
 ## Architecture
 
 The codebase is organized so each layer only knows about the layer below it
@@ -237,27 +256,56 @@ swapped out without touching the others:
   a `NameError`/`AttributeError` at the call site, not a silent `KeyError`
   three services away.
 
-- **Server.** `server/` hosts the authoritative game. `server/session.py`'s
-  `GameSession` wraps one `engine.GameEngine` (built the same way local play
-  builds one, via `engine/game_builder.py`) plus the one check `GameEngine`
-  itself has no notion of — which connection is allowed to move which color
-  (`GameEngine.request_move`/`request_jump` take no color argument at all,
-  since this is a real-time game with no turn order to enforce it through).
-  `server/game_loop.py`'s `GameLoop` owns every concurrently active session
-  plus the matchmaking queue, and the single tick that advances all of them.
-  `server/router.py`'s `CommandRouter` makes routing *decisions* (is this
-  `PLAY` allowed right now, does this `JOIN_ROOM` seat an opponent or a
-  spectator) against plain typed values, and is never async and never
-  touches a websocket/JSON/dict itself; `server/ws_server.py`'s `GameServer`
-  is the only async, wire-facing piece, decoding through
-  `protocol.registry.decode_json_message` and sending through
-  `server/connections.py`'s `ConnectionRegistry` (the only place that ever
-  calls `websocket.send`). `server/accounts.py`/`server/accounts_db.py`
-  (login) and `server/rating_store.py`/`server/rating.py` (ELO) are
-  deliberately separate concerns that happen to share one SQLite table.
-  **`server/` never imports `client/` or `view/`** — its own dependencies
-  stop at `model/`, `rules/`, `physics/`, `realtime/`, `engine/`, `events/`,
-  and `protocol/`.
+- **Server.** `server/` hosts one Game Server Shard - the authoritative game
+  for whatever it's holding, whether that's every player (a lone bare-metal
+  `python -m server.main`) or one shard of many (the distributed deployment
+  below). `server/session.py`'s `GameSession` wraps one `engine.GameEngine`
+  (built the same way local play builds one, via `engine/game_builder.py`)
+  plus the one check `GameEngine` itself has no notion of — which connection
+  is allowed to move which color (`GameEngine.request_move`/`request_jump`
+  take no color argument at all, since this is a real-time game with no turn
+  order to enforce it through). `server/game_loop.py`'s `GameLoop` owns every
+  concurrently active session plus the matchmaking queue, and the single
+  tick that advances all of them. `server/router.py`'s `CommandRouter` makes
+  routing *decisions* (is this `PLAY` allowed right now, does this
+  `JOIN_ROOM` seat an opponent or a spectator) against plain typed values,
+  and is never async and never touches a websocket/JSON/dict itself;
+  `server/ws_server.py`'s `GameServer` is the only async, wire-facing piece,
+  decoding through `protocol.registry.decode_json_message` and sending
+  through `server/connections.py`'s `ConnectionRegistry` (the only place
+  that ever calls `websocket.send`). `server/accounts.py` (session-token
+  issuance/verification, shared with `services/api_gateway`) and
+  `server/rating.py` (pure ELO math) sit on top of a swappable storage
+  layer: `server/sqlite/` (`accounts_db.py`, `rating_store.py`, `rooms.py`)
+  is the default, single-process backend one SQLite file, and
+  `server/postgres/` (`accounts.py`, `game_history.py`, `rooms.py`) is the
+  Postgres-backed equivalent the distributed deployment switches to once
+  `DATABASE_URL` is set — `server/main.py`'s own env lookups pick one, never
+  both. **`server/` never imports `client/` or `view/`** — its own
+  dependencies stop at `model/`, `rules/`, `physics/`, `realtime/`,
+  `engine/`, `events/`, and `protocol/`.
+
+- **Distributed deployment.** Everything above runs as a single process by
+  default, in-memory/SQLite. Setting `DATABASE_URL`/`REDIS_URL`/`NATS_URL`
+  (see `server/main.py`'s own env lookups) swaps each concern for its
+  distributed counterpart one at a time: `server/postgres/` for
+  `server/sqlite/` (above); `server/redis/` (`presence.py`, `matchmaking.py`,
+  `busy_set.py`, `active_game_index.py`, `rooms.py`, `fairness_checkpoint.py`,
+  `shard_registry.py`, `leaderboard.py`) for what's otherwise tracked
+  in-process; and `server/nats/` (`events.py`'s per-subject dataclasses,
+  `client.py`, `lifecycle.py`) for the control-plane pub/sub a single
+  process doesn't need. `services/` is five standalone deployables built on
+  those same backends, each pulling a piece out of the single process above
+  so it can scale independently: `api_gateway` (REST login/`PLAY`/rooms,
+  issuing the session tokens a Game Server Shard verifies), `matchmaker`
+  (the pairing tick `GameLoop` runs in-process otherwise), `game_allocator`
+  (assigns a matched pair or room to a live shard via `shard_registry.py`'s
+  lease), `ws_gateway` (a stateless websocket relay to whichever shard owns
+  a given client's game), and `persistence_worker` (batches `game.finished`
+  events into Postgres). `docker-compose.yml` wires all of it together
+  locally; `k8s/` has the matching Kubernetes manifests. **This split, and
+  the scaling numbers behind it, are documented in depth in
+  `Server_Design.md`** — this README only covers what's needed to run it.
 
 - **Client.** `client/` is the networked counterpart to `input/`/`view/`, and
   is just as strictly isolated: **it never imports `server/`**, only
@@ -295,14 +343,21 @@ input/      Pixel clicks -> board cells -> engine calls (Controller, BoardMapper
 view/       Renders a GameSnapshot onto an injected canvas (App wires click -> engine -> render)
 events/     Generic pub/sub Bus + GameEngine-observer bridges; move-log/score/sound/animation subscribers
 protocol/   Wire vocabulary shared by client/ and server/: message dataclasses, JSON codec, registry
-server/     Authoritative networked game: lobby, matchmaking/rooms, GameSession/GameLoop, accounts/rating
+server/     One Game Server Shard: lobby, matchmaking/rooms, GameSession/GameLoop, accounts/rating
+  nats/       Control-plane pub/sub client + per-subject event dataclasses (events.py)
+  postgres/   Postgres-backed accounts/rooms/rating - distributed deployment (DATABASE_URL set)
+  redis/      Redis-backed presence/matchmaking/busy-set/shard-registry/leaderboard - distributed (REDIS_URL set)
+  sqlite/     SQLite-backed accounts/rooms/rating - the default, single-process storage
+services/   Standalone microservices for the distributed deployment: api_gateway, matchmaker,
+            game_allocator, ws_gateway, persistence_worker - see Server_Design.md
 client/     Networked counterpart to input/+view/: NetworkGameClient, GameViewState, NetworkController
 texttests/  The .kfc script format: parsing + the shared command dispatcher
 tests/      Unit tests per module, plus tests/integration/scripts/*.kfc end-to-end scenarios
 ```
 
-Everything above is a package; a handful of top-level modules are shared
-config or composition roots instead of a layer of their own, and are read
+Everything above is a package (`services/` holds five, one per standalone
+deployable); a handful of top-level modules are shared config or
+composition roots instead of a layer of their own, and are read
 accordingly:
 
 - `logic_config.py`/`display_config.py` split gameplay-timing/movement-shape
@@ -318,6 +373,10 @@ accordingly:
   only places allowed to import across every layer at once to wire a
   runnable program together. No package under `model/` through `client/`
   above imports any of them.
+- `k8s/` and `docker/` aren't Python packages — Kubernetes manifests and
+  Docker Compose support scripts (Postgres replication init) for the
+  distributed deployment `services/` above describes; see
+  `docker-compose.yml` and `Server_Design.md`.
 
 `app.py`/`view/renderer.py` provide the interactive surface (click handling,
 per-piece pixel interpolation while a piece is mid-flight) against any
