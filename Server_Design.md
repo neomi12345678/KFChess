@@ -292,7 +292,7 @@ every external packet terminates at a Gateway (API or WS) first.
 Those two Gateways are also the only processes that need to speak TLS at
 all — `tls_config.py`'s `get_server_ssl_context` (wired into both
 `services/api_gateway/main.py` and `services/ws_gateway/main.py` via
-`SSL_CERT_FILE`/`SSL_KEY_FILE`) terminates it right there, matching a real
+`KFCHESS_SSL_CERT_FILE`/`KFCHESS_SSL_KEY_FILE`) terminates it right there, matching a real
 rollout's likely choice of an Ingress/L4 LoadBalancer doing the same job
 at the cluster edge instead (see `k8s/60-api-gateway.yaml`'s own comment).
 Either way, every hop behind that edge — Gateway→Shard, Gateway→NATS/Redis,

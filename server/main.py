@@ -42,7 +42,7 @@ PORT = int(os.environ.get("KFCHESS_PORT", DEFAULT_PORT))
 # every other port in this project already is.
 HEALTH_PORT = int(os.environ.get("HEALTH_PORT", 9105))
 
-# SSL_CERT_FILE/SSL_KEY_FILE both unset (the default) keeps today's
+# KFCHESS_SSL_CERT_FILE/KFCHESS_SSL_KEY_FILE both unset (the default) keeps today's
 # plaintext ws:// behavior - see tls_config.py's own docstring. Set (see
 # docker-compose.yml/k8s's own commented-out example), this shard speaks
 # wss:// to whatever connects to it directly instead - relevant for a
@@ -53,7 +53,7 @@ HEALTH_PORT = int(os.environ.get("HEALTH_PORT", 9105))
 # _relay) - Server_Design.md §3's own "Game Server Shards carry no public
 # IP at all" already keeps that hop inside the compose/cluster network,
 # out of reach of anything this cert would protect against.
-SSL_CONTEXT = get_server_ssl_context(os.environ.get("SSL_CERT_FILE"), os.environ.get("SSL_KEY_FILE"))
+SSL_CONTEXT = get_server_ssl_context(os.environ.get("KFCHESS_SSL_CERT_FILE"), os.environ.get("KFCHESS_SSL_KEY_FILE"))
 
 _logger = logging.getLogger(__name__)
 
@@ -333,7 +333,22 @@ async def _run_shard_heartbeat(
 ) -> None:
     while True:
         room_count = MAX_ROOMS_PER_SHARD if draining.is_set() else room_count_fn()
-        registry.register(shard_address, room_count=room_count)
+        # A transient Redis error here must not end this loop: nothing
+        # restarts this task if it exits (see _maybe_start_shard_heartbeat -
+        # it's only ever cancelled, never re-created), so one failed write
+        # would otherwise silently stop every future renewal too. The lease
+        # would then expire on its own ShardRegistry TTL, and the recovery
+        # sweep (services/game_allocator/main.py) would treat this shard as
+        # dead and void every real, still-healthy game running on it - the
+        # exact wrong outcome for what was only ever a one-off write
+        # failure. Logging and retrying next interval_s (well under the
+        # TTL - see this function's own docstring) is the same "a blip
+        # doesn't get to end the whole loop" reasoning already applied to
+        # GameLoop.run_forever's own matchmaking phase and per-game tick.
+        try:
+            registry.register(shard_address, room_count=room_count)
+        except Exception:
+            _logger.exception("failed to renew shard-registry heartbeat for %s - retrying next interval", shard_address)
         await asyncio.sleep(interval_s)
 
 

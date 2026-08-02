@@ -280,19 +280,30 @@ def test_recovery_sweep_leaves_a_room_whose_shard_is_still_live():
     deps["room_shard_index"].set(room.room_id, "alive-shard")
     deps["registry"].register("alive-shard")
 
-    asyncio.run(
-        _sweep_for_dead_shards(
-            deps["registry"],
-            deps["room_shard_index"],
-            deps["rooms"],
-            deps["active_game_index"],
-            deps["fairness_checkpoint"],
-            deps["busy_set"],
+    try:
+        asyncio.run(
+            _sweep_for_dead_shards(
+                deps["registry"],
+                deps["room_shard_index"],
+                deps["rooms"],
+                deps["active_game_index"],
+                deps["fairness_checkpoint"],
+                deps["busy_set"],
+            )
         )
-    )
 
-    assert deps["rooms"].room_for_id(room.room_id) is not None
-    assert deps["room_shard_index"].get(room.room_id) == "alive-shard"
+        assert deps["rooms"].room_for_id(room.room_id) is not None
+        assert deps["room_shard_index"].get(room.room_id) == "alive-shard"
+    finally:
+        # Unlike the "dead shard" tests above, the sweep under test
+        # deliberately leaves this room alone (its shard is still live), so
+        # nothing cleans it up on our behalf - room.join() already persist()s
+        # its owner keys with no TTL once it starts (RedisRoomRegistry's own
+        # docstring), so a leaked room here silently outlives this test run
+        # and fails the *next* one (`create` raising ALREADY_IN_A_ROOM for
+        # gwa_sweep_alive_creator) rather than this one.
+        deps["rooms"].close(room.room_id)
+        deps["room_shard_index"].remove(room.room_id)
 
 
 # A PLAY match has no RoomShardIndex entry at all (room_id is None - see

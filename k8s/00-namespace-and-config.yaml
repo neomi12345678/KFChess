@@ -78,12 +78,24 @@ stringData:
   POSTGRES_DB: "kfchess"
   DATABASE_URL: "postgresql://kfchess:kfchess@postgres:5432/kfchess"
   DATABASE_URL_REPLICA: "postgresql://kfchess:kfchess@postgres-replica:5432/kfchess"
-  # server/accounts.py's issue_session_token/verify_session_token - not a
-  # Postgres credential, but this Secret's own envFrom is already wired
-  # into both 60-api-gateway.yaml (issues tokens on POST /login) and
-  # 70-game-server.yaml (verifies them on IDENTIFY), which is exactly the
-  # sharing this needs; a separate Secret object would only add a second
-  # envFrom entry to both for no real benefit. Same dev-only placeholder
-  # docker-compose.yml's own SESSION_TOKEN_SECRET uses - a real rollout
-  # replaces this the same way it replaces POSTGRES_PASSWORD above.
+
+---
+# server/accounts.py's issue_session_token/verify_session_token - kept as
+# its own Secret, not folded into kfchess-postgres-credentials above, even
+# though 60-api-gateway.yaml and 70-game-server.yaml are the only two
+# consumers of either: a session-signing secret and a Postgres password are
+# two unrelated credential types, and 20-postgres.yaml's own
+# postgres/postgres-replica StatefulSets already envFrom the credentials
+# Secret wholesale - bundling this one in meant both those containers
+# received SESSION_TOKEN_SECRET in their environment despite never using
+# it, pure blast-radius widening with no benefit. Same dev-only placeholder
+# docker-compose.yml's own SESSION_TOKEN_SECRET uses - a real rollout
+# replaces this the same way it replaces POSTGRES_PASSWORD above.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kfchess-session-secret
+  namespace: kfchess
+type: Opaque
+stringData:
   SESSION_TOKEN_SECRET: "dev-only-change-me-session-token-secret"

@@ -73,7 +73,7 @@ def test_draw_image_paints_the_piece_sprite_onto_the_frame():
     before = canvas.frame().copy()
 
     center_x, center_y = CELL_SIZE // 2, CELL_SIZE // 2
-    canvas.draw_image("p1:white:king:idle", x=center_x, y=center_y)
+    canvas.draw_image("p1", "white", "king", "idle", x=center_x, y=center_y)
 
     region_before = before[0:CELL_SIZE, 0:CELL_SIZE]
     region_after = canvas.frame()[0:CELL_SIZE, 0:CELL_SIZE]
@@ -94,7 +94,7 @@ def test_draw_image_uses_the_given_skins_pieces_dir():
     before = canvas.frame().copy()
 
     center_x, center_y = CELL_SIZE // 2, CELL_SIZE // 2
-    canvas.draw_image("p1:white:king:idle", x=center_x, y=center_y)
+    canvas.draw_image("p1", "white", "king", "idle", x=center_x, y=center_y)
 
     region_before = before[0:CELL_SIZE, 0:CELL_SIZE]
     region_after = canvas.frame()[0:CELL_SIZE, 0:CELL_SIZE]
@@ -125,9 +125,9 @@ def test_draw_text_is_visible_within_the_frame_even_at_y_zero():
 
 
 def test_renderer_and_img_canvas_integrate_end_to_end_for_a_real_snapshot():
-    # Renderer builds the draw_image key and ImgCanvas parses it back apart
-    # (view/canvas/img_canvas.py's key.split(":")) - exercised here with a key
-    # Renderer actually produced, not one hand-written for a single method.
+    # Exercises Renderer._draw_pieces calling ImgCanvas.draw_image with a
+    # real snapshot's own piece_id/color/kind/state, not values hand-written
+    # for a single method.
     board = parse("wK . .\n. . .\n. . bK")
     engine = GameEngine(board=board, rule_engine=RuleEngine(), real_time_arbiter=RealTimeArbiter(board))
     canvas = ImgCanvas(board_width=board.width, board_height=board.height)
@@ -221,6 +221,48 @@ def test_draw_cooldown_bar_shrinks_its_width_with_a_smaller_fraction():
     assert not np.array_equal(untouched_rest, np.full_like(untouched_rest, [0, 0, 255]))
 
 
+# The bug this covers: a jumping piece's cooldown bar used to be one solid
+# color for its whole length, so a piece that could still reverse-capture
+# an attacker (still airborne) looked identical to one that already lost
+# that ability and was merely finishing its short_rest - "sometimes the
+# jump eats the attacker, sometimes it doesn't", with nothing on screen
+# explaining why. defend_fraction=0.7 here means the leading 70% of the
+# bar's full length is a genuine defense window; the trailing 30% (nearest
+# x, since the bar depletes from its outer edge inward - see
+# draw_cooldown_bar's own docstring) is rest_color for the bar's entire
+# life, not just once fraction has shrunk that far.
+def test_draw_cooldown_bar_paints_the_rest_only_tail_in_a_different_color_even_at_full_fraction():
+    canvas = ImgCanvas()
+    canvas.begin_frame()
+
+    canvas.draw_cooldown_bar(row=0, col=0, fraction=1.0, defend_fraction=0.7, color=(0, 0, 255), rest_color=(0, 0, 130))
+
+    rest_width = round(_BAR_FULL_WIDTH * 0.3)
+    x0 = _BAR_LEFT_MARGIN
+    rest_segment = canvas.frame()[CELL_SIZE - _BAR_HEIGHT:CELL_SIZE, x0:x0 + rest_width, :3]
+    defend_segment = canvas.frame()[CELL_SIZE - _BAR_HEIGHT:CELL_SIZE, x0 + rest_width:x0 + _BAR_FULL_WIDTH, :3]
+    assert np.array_equal(rest_segment, np.full_like(rest_segment, [0, 0, 130]))
+    assert np.array_equal(defend_segment, np.full_like(defend_segment, [0, 0, 255]))
+
+
+# Once the bar has shrunk down to (or below) the rest-only tail's own
+# width, it must be entirely rest_color - there's no defend segment left
+# to draw, matching the piece genuinely no longer being able to defend.
+def test_draw_cooldown_bar_is_entirely_rest_colored_once_only_the_tail_remains():
+    canvas = ImgCanvas()
+    canvas.begin_frame()
+
+    rest_fraction = 0.3
+    canvas.draw_cooldown_bar(
+        row=0, col=0, fraction=rest_fraction, defend_fraction=0.7, color=(0, 0, 255), rest_color=(0, 0, 130)
+    )
+
+    bar_width = round(_BAR_FULL_WIDTH * rest_fraction)
+    x0 = _BAR_LEFT_MARGIN
+    painted = canvas.frame()[CELL_SIZE - _BAR_HEIGHT:CELL_SIZE, x0:x0 + bar_width, :3]
+    assert np.array_equal(painted, np.full_like(painted, [0, 0, 130]))
+
+
 def test_draw_cooldown_bar_draws_nothing_at_zero_fraction():
     canvas = ImgCanvas()
     canvas.begin_frame()
@@ -254,7 +296,7 @@ def test_begin_frame_forgets_animation_state_for_a_piece_no_longer_drawn():
     # once a previously-drawn piece (e.g. captured) stops being drawn.
     canvas = ImgCanvas()
     canvas.begin_frame()
-    canvas.draw_image("p1:white:king:idle", x=CELL_SIZE // 2, y=CELL_SIZE // 2)
+    canvas.draw_image("p1", "white", "king", "idle", x=CELL_SIZE // 2, y=CELL_SIZE // 2)
 
     canvas.begin_frame()  # p1 not drawn this frame - pruned on the next begin_frame
     canvas.begin_frame()  # must not raise even though p1 never reappears
@@ -266,7 +308,7 @@ def test_draw_image_is_shifted_right_by_the_side_panel_width():
     before = canvas.frame().copy()
 
     center_x, center_y = CELL_SIZE // 2, CELL_SIZE // 2
-    canvas.draw_image("p1:white:king:idle", x=center_x, y=center_y)
+    canvas.draw_image("p1", "white", "king", "idle", x=center_x, y=center_y)
 
     assert np.array_equal(canvas.frame()[:, 0:200], before[:, 0:200])
     assert not np.array_equal(

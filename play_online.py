@@ -206,8 +206,18 @@ def main() -> None:  # pragma: no cover
         # their own ever selected) at all.
         selected_cell = controller.selected if controller is not None else None
         display_snapshot = dataclasses.replace(state.snapshot, selected_cell=selected_cell)
+        # client.is_connected() is local knowledge (the background receive
+        # thread has ended), not a wire message - GameViewState's own
+        # status_message only ever reacts to what the server sent, so this
+        # is layered on here rather than taught to GameViewState itself.
+        # Without it, a dead connection just freezes the board on its last
+        # snapshot with zero indication anything is wrong (poll_messages()
+        # silently returns [] forever once the receive thread is gone).
+        status_message = state.status_message
+        if status_message is None and not client.is_connected():
+            status_message = "Connection to server lost"
         ui_snapshot = build_ui_snapshot(
-            display_snapshot, move_log=state.panel_state, score=state.panel_state, status_message=state.status_message
+            display_snapshot, move_log=state.panel_state, score=state.panel_state, status_message=status_message
         )
         canvas.begin_frame()
         renderer.draw(ui_snapshot)

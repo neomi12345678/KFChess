@@ -1,14 +1,8 @@
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from model.board import BoardStore
 from model.piece import ActionResultReason, Color, MotionPhase, PieceKind, PieceRepresentation, PieceState
 from model.position import Position
-
-
-@dataclass
-class GameState:
-    board: BoardStore
 
 
 # Shared event/snapshot vocabulary: the engine, the real-time arbiter, and
@@ -148,6 +142,15 @@ class PieceSnapshot:
     # left for boardio/view code to format.
     cooldown_remaining_ms: int = 0
     cooldown_total_ms: int = 0
+    # How much of cooldown_total_ms, counted from elapsed_ms=0, is a genuine
+    # defense window - only nonzero for PHASE_JUMP/PHASE_SHORT_REST (see
+    # RealTimeArbiter.unavailable_progress's own docstring): while still
+    # inside this window a jumping piece can reverse-capture an attacker
+    # landing on its square, but once elapsed time passes it (still inside
+    # the same short_rest tail cooldown_total_ms otherwise looks identical
+    # for) that piece can no longer defend at all. 0 for PHASE_IDLE/
+    # PHASE_MOVE/PHASE_LONG_REST, which have no defense window to report.
+    cooldown_defend_ms: int = 0
 
 
 # Frozen for the same reason PieceSnapshot is - the view's own read-only copy

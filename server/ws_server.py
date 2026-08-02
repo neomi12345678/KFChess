@@ -290,12 +290,17 @@ class GameServer:
     async def _handle_message(self, websocket, username: Optional[str], message: str) -> Optional[str]:
         try:
             decoded = decode_json_message(message)
-        except (json.JSONDecodeError, TypeError, KeyError):
-            # A malformed message: not valid JSON at all, or a recognized
-            # "type" tag whose payload is missing/mistyped a required field
+        except (json.JSONDecodeError, TypeError, KeyError, ValueError):
+            # A malformed message: not valid JSON at all, a recognized "type"
+            # tag whose payload is missing/mistyped a required field
             # (message_from_dict's cls(**kwargs), which decode_json_message
-            # calls internally, is what raises TypeError/KeyError for that) -
-            # never a message this table simply doesn't recognize, see the
+            # calls internally, is what raises TypeError/KeyError for that),
+            # or a field typed as an Enum (e.g. JoinRoomAckMessage.role)
+            # carrying a value that isn't one of its members -
+            # protocol/registry.py's own _enum_type coercion is what raises
+            # ValueError for that one, and this is still the one declared
+            # gatekeeper that has to cover it, same as the other two - never
+            # a message this table simply doesn't recognize, see the
             # `decoded is None` branch below for that case instead.
             await self._connections.send(websocket, ErrorMessage(message=f"malformed message: {message!r}"))
             return username
@@ -318,7 +323,11 @@ class GameServer:
             return username
 
         if isinstance(decoded, PlayMessage):
-            await self._connections.send(websocket, self._router.decide_play(username))
+            # Off the event loop, same reasoning as _handle_login's own
+            # rating_for call - see decide_play's own docstring for why
+            # CommandRouter can't do this offloading itself.
+            rating = await asyncio.get_event_loop().run_in_executor(None, self._rating_store.rating_for, username)
+            await self._connections.send(websocket, self._router.decide_play(username, rating))
             return username
 
         if isinstance(decoded, CreateRoomMessage):
@@ -359,7 +368,15 @@ class GameServer:
             return None
 
         username = account.username
-        rating = self._rating_store.rating_for(username)
+        # Off the event loop too, same reasoning as the login call just
+        # above: for a Postgres-backed RatingRepository this is a real,
+        # blocking network round trip (server/postgres/accounts.py's
+        # PostgresRatingStore), and it runs on *every* login - calling it
+        # directly here would stall every other connection's messages and
+        # every in-progress game's tick for that long, exactly the
+        # pathology this function's own login call was already rewritten to
+        # avoid.
+        rating = await loop.run_in_executor(None, self._rating_store.rating_for, username)
 
         # A reconnect (or someone just logging the same username in twice)
         # supersedes whatever connection was previously on file - close it

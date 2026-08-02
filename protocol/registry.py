@@ -19,7 +19,9 @@ still funnels through there rather than each site calling json.dumps itself.
 """
 
 import json
+import typing
 from dataclasses import asdict, fields, is_dataclass
+from enum import Enum
 from typing import Dict, Optional, Type, TypeVar
 
 _MESSAGE_CLASSES: Dict[str, Type] = {}
@@ -35,6 +37,24 @@ def register(type_tag: str):
     return decorator
 
 
+# The Enum a field is (or, for an Optional[SomeEnum] field like
+# JoinRoomAckMessage.role, is allowed to be) - None for anything else
+# (str, int, another dataclass's own field, ...). Used by message_from_dict
+# below so a decoded field actually comes back as that Enum member, not the
+# plain str value that happens to compare equal to it (Role/Reason/etc. are
+# all `str, Enum` subclasses - see protocol/types.py) - real today only
+# because nothing has ever needed isinstance(x.role, Role) to hold after a
+# real decode, not because the field types don't say otherwise.
+def _enum_type(field_type) -> Optional[Type[Enum]]:
+    if isinstance(field_type, type) and issubclass(field_type, Enum):
+        return field_type
+    if typing.get_origin(field_type) is typing.Union:
+        for arg in typing.get_args(field_type):
+            if isinstance(arg, type) and issubclass(arg, Enum):
+                return arg
+    return None
+
+
 # Reconstructs the dataclass a wire dict's own "type" says it is, or None
 # for a type this table doesn't recognize - covers both the per-tick
 # snapshot broadcast (which carries no "type" at all, see
@@ -46,14 +66,33 @@ def register(type_tag: str):
 # **payload, so an extra key (e.g. a stale "clock_ms" from some other
 # caller) is silently ignored instead of raising a TypeError here.
 def message_from_dict(payload: Dict[str, object]) -> Optional[object]:
+    # payload is only actually guaranteed to be a dict once it's crossed
+    # this boundary successfully - valid JSON can just as easily decode to
+    # a bare scalar or list (json.loads('null')/('42')/('[1,2,3]')), which
+    # has no .get at all. Treated the same as an unrecognized type tag
+    # rather than left to raise AttributeError here: the one declared
+    # gatekeeper for this wire boundary (see server/ws_server.py's
+    # _handle_message) should cover every malformed shape, not just a
+    # missing/mistyped field inside an otherwise-well-formed dict.
+    if not isinstance(payload, dict):
+        return None
     type_tag = payload.get("type")
     if not isinstance(type_tag, str):
         return None
     cls = _MESSAGE_CLASSES.get(type_tag)
     if cls is None:
         return None
-    field_names = {f.name for f in fields(cls)}
-    return cls(**{key: value for key, value in payload.items() if key in field_names})
+    kwargs = {}
+    for field in fields(cls):
+        if field.name not in payload:
+            continue
+        value = payload[field.name]
+        if value is not None:
+            enum_type = _enum_type(field.type)
+            if enum_type is not None:
+                value = enum_type(value)
+        kwargs[field.name] = value
+    return cls(**kwargs)
 
 
 # Plain-dict form of any registered wire dataclass - a field only ever has a

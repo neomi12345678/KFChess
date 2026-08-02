@@ -180,8 +180,8 @@ services:
       # below) -
       #   python -m tls_config ./docker/certs/cert.pem ./docker/certs/key.pem
       # - then uncomment these two plus the "volumes:" block underneath.
-      # SSL_CERT_FILE: "/certs/cert.pem"
-      # SSL_KEY_FILE: "/certs/key.pem"
+      # KFCHESS_SSL_CERT_FILE: "/certs/cert.pem"
+      # KFCHESS_SSL_KEY_FILE: "/certs/key.pem"
     # volumes:
     #   - ./docker/certs:/certs:ro
     depends_on:
@@ -220,8 +220,8 @@ services:
       # See api-gateway's own comment above on both of these, and the
       # "volumes:" line underneath - same opt-in TLS, this being the other
       # public-facing listener (Server_Design.md §3's edge tier).
-      # SSL_CERT_FILE: "/certs/cert.pem"
-      # SSL_KEY_FILE: "/certs/key.pem"
+      # KFCHESS_SSL_CERT_FILE: "/certs/cert.pem"
+      # KFCHESS_SSL_KEY_FILE: "/certs/key.pem"
     # volumes:
     #   - ./docker/certs:/certs:ro
     depends_on:

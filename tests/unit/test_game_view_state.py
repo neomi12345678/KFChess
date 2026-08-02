@@ -36,6 +36,7 @@ def test_a_snapshot_message_updates_the_board_and_panel_state():
             "motion_phase": "idle",
             "cooldown_remaining_ms": 0,
             "cooldown_total_ms": 0,
+            "cooldown_defend_ms": 0,
         }
     ]
     payload["move_log"][WHITE] = [{"notation": "a1a2", "elapsed_ms": 5}]

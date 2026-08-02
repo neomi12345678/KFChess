@@ -62,3 +62,16 @@ spec:
               port: 8222
             initialDelaySeconds: 10
             periodSeconds: 10
+          # Every other Deployment/StatefulSet in this manifest set already
+          # sets these (see 50/51/52/60/61/70) - this single broker is what
+          # every role's own control-plane publish/subscribe depends on, so
+          # it's the last place to leave unbounded (BestEffort/Burstable QoS
+          # with no requests at all is the first evicted under node
+          # pressure).
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

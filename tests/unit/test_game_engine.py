@@ -564,6 +564,7 @@ def test_snapshot_reports_zero_cooldown_for_a_piece_that_has_not_acted():
 
     assert piece_snapshot.cooldown_remaining_ms == 0
     assert piece_snapshot.cooldown_total_ms == 0
+    assert piece_snapshot.cooldown_defend_ms == 0
 
 
 def test_snapshot_reports_full_remaining_cooldown_right_after_a_move_lands():
@@ -575,6 +576,9 @@ def test_snapshot_reports_full_remaining_cooldown_right_after_a_move_lands():
 
     assert piece_snapshot.cooldown_remaining_ms == LONG_REST_DURATION_MS
     assert piece_snapshot.cooldown_total_ms == LONG_REST_DURATION_MS
+    # An ordinary move's long_rest was never a defense window at all - see
+    # RealTimeArbiter.unavailable_progress's own docstring.
+    assert piece_snapshot.cooldown_defend_ms == 0
 
 
 def test_snapshot_reports_falling_remaining_cooldown_partway_through_a_rest():
@@ -613,6 +617,11 @@ def test_snapshot_reports_full_unavailable_window_the_instant_a_jump_launches():
 
     assert piece_snapshot.cooldown_remaining_ms == AIRBORNE_DURATION_MS + SHORT_REST_DURATION_MS
     assert piece_snapshot.cooldown_total_ms == AIRBORNE_DURATION_MS + SHORT_REST_DURATION_MS
+    # The leading AIRBORNE_DURATION_MS of this span is a genuine defense
+    # window (see RealTimeArbiter.unavailable_progress's own docstring) -
+    # reported from the instant the jump is thrown, same as the combined
+    # total above.
+    assert piece_snapshot.cooldown_defend_ms == AIRBORNE_DURATION_MS
 
 
 def test_snapshot_reports_falling_cooldown_continuously_from_jump_through_its_short_rest():
@@ -625,6 +634,11 @@ def test_snapshot_reports_falling_cooldown_continuously_from_jump_through_its_sh
 
     assert piece_snapshot.cooldown_remaining_ms == SHORT_REST_DURATION_MS - 100
     assert piece_snapshot.cooldown_total_ms == AIRBORNE_DURATION_MS + SHORT_REST_DURATION_MS
+    # Unchanged now that the piece has landed into short_rest - the
+    # defense window is over (is_airborne is now False), but its *size*
+    # within the still-continuous combined span never changes; that's what
+    # lets the view draw a fixed boundary rather than a moving one.
+    assert piece_snapshot.cooldown_defend_ms == AIRBORNE_DURATION_MS
 
 
 def test_an_accepted_move_notifies_observers_with_the_move_facts():

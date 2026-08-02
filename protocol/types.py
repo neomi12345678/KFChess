@@ -77,9 +77,10 @@ class MessageType(str, Enum):
 # not a plain Enum, for the same reason Color/ActionResultReason
 # (model/piece.py) are: server/ws_server.py's `role == Role.OPPONENT`
 # check, this dataclass's own JSON serialization, and
-# client/setup_dialogs.py's `join_ack["role"] == Role.SPECTATOR` (the
-# client only ever gets the plain decoded dict back, never this class
-# itself) all keep comparing against the same "opponent"/"spectator" wire
+# client/setup_dialogs.py's `join_ack.role == Role.SPECTATOR` (a real
+# JoinRoomAckMessage attribute - protocol/registry.py's message_from_dict
+# is what turns the wire dict into that dataclass before the client ever
+# sees it) all keep comparing against the same "opponent"/"spectator" wire
 # text either way.
 class Role(str, Enum):
     OPPONENT = "opponent"

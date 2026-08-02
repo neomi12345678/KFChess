@@ -19,6 +19,7 @@ the one place that gap is closed.
 from dataclasses import dataclass
 from typing import Optional, Union
 
+from model.piece import Color
 from model.position import Position
 from protocol.game_messages import JumpMessage, MoveMessage
 from protocol.snapshot_codec import position_from_json
@@ -32,18 +33,25 @@ MOVE = MessageType.MOVE
 
 @dataclass(frozen=True)
 class Command:
-    color: str
-    kind: str
+    color: Color
+    kind: MessageType
     source: Position
     destination: Optional[Position]
 
 
 def command_from_message(message: Union[MoveMessage, JumpMessage]) -> Command:
+    # MoveMessage/JumpMessage.color is plain str on the wire (see
+    # protocol/game_messages.py's own docstring on why source/destination
+    # stay plain dicts too) - Color(...) here is what makes Command's own
+    # color field actually hold what its type hint says, the same way
+    # source/destination get turned into a real Position two lines below.
     if isinstance(message, JumpMessage):
-        return Command(color=message.color, kind=JUMP, source=position_from_json(message.source), destination=None)
+        return Command(
+            color=Color(message.color), kind=JUMP, source=position_from_json(message.source), destination=None
+        )
 
     return Command(
-        color=message.color,
+        color=Color(message.color),
         kind=MOVE,
         source=position_from_json(message.source),
         destination=position_from_json(message.destination),

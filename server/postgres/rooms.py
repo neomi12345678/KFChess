@@ -12,7 +12,7 @@ from typing import Dict, List
 
 import psycopg
 
-from server.postgres import commit_or_rollback, create_table_tolerating_concurrent_creation
+from server.postgres import commit_or_rollback, create_table_tolerating_concurrent_creation, rollback_after
 from server.rooms import Room
 
 
@@ -72,12 +72,6 @@ class PostgresRoomStore:
             self._connection.execute("DELETE FROM rooms WHERE room_id = %s", (room_id,))
 
     def load_all(self) -> List[dict]:
-        rooms: Dict[str, dict] = {
-            row[0]: {"room_id": row[0], "creator": row[1], "opponent": row[2], "spectators": set()}
-            for row in self._connection.execute("SELECT room_id, creator, opponent FROM rooms")
-        }
-        for room_id, username in self._connection.execute("SELECT room_id, username FROM room_spectators"):
-            rooms[room_id]["spectators"].add(username)
         # Same reasoning as server/postgres/accounts.py's own
         # PostgresUserStore.login/PostgresRatingStore.rating_for: two
         # read-only SELECTs under autocommit=False would otherwise leave
@@ -89,5 +83,13 @@ class PostgresRoomStore:
         # an unrelated exclusive operation elsewhere (e.g. a test
         # fixture's own TRUNCATE) indefinitely - a real hang this project's
         # own docker-compose verification hit, not a theoretical one.
-        self._connection.rollback()
+        # rollback_after (see its own docstring) guarantees that rollback
+        # runs even if either SELECT itself raises, not just on success.
+        with rollback_after(self._connection):
+            rooms: Dict[str, dict] = {
+                row[0]: {"room_id": row[0], "creator": row[1], "opponent": row[2], "spectators": set()}
+                for row in self._connection.execute("SELECT room_id, creator, opponent FROM rooms")
+            }
+            for room_id, username in self._connection.execute("SELECT room_id, username FROM room_spectators"):
+                rooms[room_id]["spectators"].add(username)
         return list(rooms.values())

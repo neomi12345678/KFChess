@@ -257,9 +257,22 @@ class GameLoop:
             # polling instead (see start_matchmaking_relay) - running both
             # at once would be two independent consumers racing to
             # find_match()/remove() the same shared Redis-backed queue.
+            #
+            # Wrapped in its own try/except for the same reason the per-game
+            # loop below is: self.matchmaking is a RedisMatchmakingQueue
+            # whenever REDIS_URL is set (the actual deployed topology), and
+            # a transient Redis error here (Server_Design.md §9's own "a
+            # shard becomes unavailable... automatic failover" - exactly the
+            # kind of blip that must not be fatal) would otherwise propagate
+            # out of run_forever entirely and crash this whole shard process
+            # - taking every other, perfectly healthy in-progress game on it
+            # down too, over a one-off hiccup in an unrelated subsystem.
             if not self._matchmaker_is_external:
-                await self._advance_matchmaking(whole_ms)
-                await self._try_start_a_match()
+                try:
+                    await self._advance_matchmaking(whole_ms)
+                    await self._try_start_a_match()
+                except Exception:
+                    _logger.exception("matchmaking phase failed this tick - skipping, will retry next tick")
 
             # list(...) up front - a game finishing mid-loop below mutates
             # self._games (see _advance_game), which would otherwise be
@@ -404,24 +417,40 @@ class GameLoop:
         game = ActiveGame(session=session, publisher=NetworkPublisher(session.bus), room_id=room_id)
         self._games[game_id] = game
 
+        # Guarded like the lifecycle_publisher call just below: self._games
+        # above is already this shard's own authoritative record that the
+        # game exists, so a Redis blip here must not propagate - reached
+        # from run_forever's own tick loop via _try_start_a_match with no
+        # per-call try/except of its own around *this* method, a transient
+        # failure writing either secondary index would otherwise crash the
+        # whole shard the same way an unguarded matchmaking-phase call
+        # would (see run_forever's own comment). Worst case on failure: the
+        # standalone API Gateway's busy-check/reconnect-lookup is briefly
+        # stale for this one user, not that the game fails to start.
         if self._busy_set is not None:
-            self._busy_set.add(white_username)
-            self._busy_set.add(black_username)
+            try:
+                self._busy_set.add(white_username)
+                self._busy_set.add(black_username)
+            except Exception:
+                _logger.exception("failed to update busy-set for game %s", game_id)
 
         if self._active_game_index is not None and self._shard_address is not None:
-            self._active_game_index.set(white_username, ActiveGameLocation(game_id, room_id, WHITE, self._shard_address))
-            self._active_game_index.set(black_username, ActiveGameLocation(game_id, room_id, BLACK, self._shard_address))
+            try:
+                self._active_game_index.set(white_username, ActiveGameLocation(game_id, room_id, WHITE, self._shard_address))
+                self._active_game_index.set(black_username, ActiveGameLocation(game_id, room_id, BLACK, self._shard_address))
+            except Exception:
+                _logger.exception("failed to update active-game index for game %s", game_id)
 
-        # Guarded the same way _fail_game's own game_finished publish is -
-        # nats-py's publish() raises on a connection blip (ConnectionClosedError/
-        # OutboundBufferLimitError), and this call is reached from
-        # _try_start_a_match inside run_forever's own loop body, which has no
-        # per-call try/except around it (unlike the per-game _advance_game loop
-        # below). Left unguarded, a transient NATS hiccup here would propagate
-        # out of run_forever entirely and take down every other concurrently-
-        # running game on this shard - exactly what Server_Design.md §9's own
-        # broker row ("comparatively easy to keep available") says gameplay
-        # should not depend on.
+        # Belt-and-suspenders with NatsLifecyclePublisher.game_created's own
+        # internal guard (see its own docstring): that protects every
+        # caller against the real NATS client specifically, but this call
+        # is reached from _try_start_a_match inside run_forever's own loop
+        # body, which has no per-call try/except of its own around it
+        # (unlike the per-game _advance_game loop below) - GameLoop
+        # shouldn't have to trust that whatever LifecyclePublisher
+        # implementation it was constructed with (today or in the future)
+        # never raises, the same reasoning run_forever's own matchmaking-
+        # phase guard already applies to self.matchmaking.
         if self._lifecycle_publisher is not None:
             try:
                 await self._lifecycle_publisher.game_created(game_id, room_id, white_username, black_username)
@@ -506,15 +535,22 @@ class GameLoop:
         rating_update = await asyncio.get_event_loop().run_in_executor(None, session.finalize_ratings_if_game_over)
         if rating_update is not None:
             await self._broadcast_to_game(game, GameOverMessage(ratings=rating_update))
-            # Guarded, not left to propagate: GameOverMessage with the real,
+            # NatsLifecyclePublisher.game_finished guards its own publish
+            # call (see its own docstring) - GameOverMessage with the real,
             # correct ratings has already reached both players above, so a
-            # publish failure here must not be treated as this game crashing.
-            # Unguarded, run_forever's per-game try/except would route it to
-            # _fail_game, which would re-publish game.finished (redundant but
-            # harmless - PostgresGameHistoryStore.record_games_batch's own
-            # ON CONFLICT DO NOTHING) and, worse, send both players a bogus
+            # publish failure here must not be treated as this game
+            # crashing. Belt-and-suspenders with
+            # NatsLifecyclePublisher.game_finished's own internal guard
+            # (see its own docstring) - unlike the game_created call in
+            # _start_game, this one *is* already inside run_forever's own
+            # per-game try/except, so an unguarded exception here wouldn't
+            # crash the loop, only route to _fail_game, which would
+            # re-publish game.finished (redundant but harmless -
+            # PostgresGameHistoryStore.record_games_batch's own ON
+            # CONFLICT DO NOTHING) and, worse, send both players a bogus
             # ErrorMessage("internal_error") for a game that actually ended
-            # normally.
+            # normally - the local guard here is what prevents that
+            # spurious message, not just extra crash-proofing.
             if self._lifecycle_publisher is not None:
                 try:
                     await self._lifecycle_publisher.game_finished(
@@ -594,6 +630,11 @@ class GameLoop:
         # _advance_game's own game-over path, leaving a crashed game's
         # history unwritten and its room's Redis keys leaked forever (see
         # server/redis/rooms.py's own close() docstring, now fixed).
+        # try/except here is for the rating_store reads, not the publish
+        # itself - NatsLifecyclePublisher.game_finished already guards that
+        # (see its own docstring). A crashed game must still get through to
+        # the best-effort notification below even if fetching either
+        # rating raises.
         if self._lifecycle_publisher is not None:
             try:
                 ratings = {

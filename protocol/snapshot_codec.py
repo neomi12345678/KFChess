@@ -63,6 +63,7 @@ def snapshot_to_json(snapshot) -> dict:
                 "motion_phase": piece.motion_phase,
                 "cooldown_remaining_ms": piece.cooldown_remaining_ms,
                 "cooldown_total_ms": piece.cooldown_total_ms,
+                "cooldown_defend_ms": piece.cooldown_defend_ms,
             }
             for piece in snapshot.pieces
         ],
@@ -96,6 +97,7 @@ def snapshot_from_json(payload: dict) -> GameSnapshot:
                 motion_phase=piece["motion_phase"],
                 cooldown_remaining_ms=piece["cooldown_remaining_ms"],
                 cooldown_total_ms=piece["cooldown_total_ms"],
+                cooldown_defend_ms=piece["cooldown_defend_ms"],
             )
             for piece in payload["pieces"]
         ),

@@ -66,6 +66,8 @@ spec:
                 name: kfchess-config
             - secretRef:
                 name: kfchess-postgres-credentials
+            - secretRef:
+                name: kfchess-session-secret
           env:
             - name: KFCHESS_HOST
               value: "0.0.0.0"

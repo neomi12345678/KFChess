@@ -106,6 +106,19 @@ spec:
               command: ["pg_isready", "-U", "kfchess", "-d", "kfchess"]
             initialDelaySeconds: 15
             periodSeconds: 10
+          # Every other Deployment/StatefulSet in this manifest set already
+          # sets these (see 50/51/52/60/61/70) - this is the one writer
+          # every role's own accounts/rating/room/game-history read or
+          # write eventually reaches, so it's the last place to leave
+          # unbounded (BestEffort/Burstable QoS with no requests at all is
+          # the first evicted under node pressure).
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
       volumes:
         - name: init-scripts
           configMap:
@@ -186,6 +199,13 @@ spec:
               command: ["pg_isready", "-U", "kfchess", "-d", "kfchess"]
             initialDelaySeconds: 30
             periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
       volumes:
         - name: entrypoint
           configMap:

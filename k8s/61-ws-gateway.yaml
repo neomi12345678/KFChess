@@ -9,7 +9,7 @@
 # 60-api-gateway.yaml's own top comment: an Ingress/L4 LoadBalancer
 # terminating TLS itself needs no change here; otherwise
 # services/ws_gateway/main.py speaks wss:// directly given
-# SSL_CERT_FILE/SSL_KEY_FILE (see tls_config.py).
+# KFCHESS_SSL_CERT_FILE/KFCHESS_SSL_KEY_FILE (see tls_config.py).
 
 apiVersion: v1
 kind: Service
