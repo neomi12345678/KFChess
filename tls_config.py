@@ -6,7 +6,7 @@ plaintext behavior" convention every other cross-process feature in this
 project already follows (see server/main.py's own docstrings on
 REDIS_URL/NATS_URL/DATABASE_URL).
 
-Unset SSL_CERT_FILE/SSL_KEY_FILE (the default): get_server_ssl_context()
+Unset KFCHESS_SSL_CERT_FILE/KFCHESS_SSL_KEY_FILE (the default): get_server_ssl_context()
 returns None, and every websockets.serve/web.run_app call site already
 treats ssl=None/ssl_context=None as "plaintext ws://, http://" - exactly
 today's behavior, no other code has to change to keep running without TLS.
@@ -16,7 +16,7 @@ certificate is loaded and that listener speaks wss://, https:// instead.
 generate_self_signed_cert exists for local development/demos only (see its
 own docstring) - a deployment that actually needs TLS in front of real
 traffic should mount a certificate from cert-manager or a real CA via
-SSL_CERT_FILE/SSL_KEY_FILE, never this function.
+KFCHESS_SSL_CERT_FILE/KFCHESS_SSL_KEY_FILE, never this function.
 """
 
 import ipaddress
@@ -104,7 +104,7 @@ def get_server_ssl_context(cert_file: Optional[str], key_file: Optional[str]) ->
     if cert_file is None and key_file is None:
         return None
     if cert_file is None or key_file is None:
-        raise ValueError("SSL_CERT_FILE and SSL_KEY_FILE must both be set, or neither")
+        raise ValueError("KFCHESS_SSL_CERT_FILE and KFCHESS_SSL_KEY_FILE must both be set, or neither")
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(cert_file, key_file)
@@ -141,7 +141,7 @@ def _main() -> None:  # pragma: no cover
 
     parser = argparse.ArgumentParser(
         description="Generate a throwaway self-signed cert/key pair for local development. "
-        "Point SSL_CERT_FILE/SSL_KEY_FILE at the output, and (for a client connecting to it) "
+        "Point KFCHESS_SSL_CERT_FILE/KFCHESS_SSL_KEY_FILE at the output, and (for a client connecting to it) "
         "pass verify_ssl=False - see this module's own docstring."
     )
     parser.add_argument("cert_path")

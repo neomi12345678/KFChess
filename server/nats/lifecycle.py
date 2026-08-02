@@ -15,11 +15,14 @@ resolves to the installed library on sys.path, not to this package
 (server.nats) importing itself.
 """
 
+import logging
 import time
 from typing import Dict, Optional
 
 from server.nats.client import connect as connect_nats
 from server.nats.events import GameCreated, GameFinished
+
+_logger = logging.getLogger(__name__)
 
 
 class NatsLifecyclePublisher:
@@ -41,11 +44,29 @@ class NatsLifecyclePublisher:
     def connection(self):
         return self._connection
 
+    # Guarded here too, not only at each call site - server/game_loop.py's
+    # own three call sites each keep their own try/except as well (defense
+    # against whatever LifecyclePublisher implementation GameLoop is
+    # actually constructed with), but that guard is only as good as every
+    # caller remembering to add it; a future caller of *this* class that
+    # forgets still gets the protection, since it's now a property of the
+    # class talking to NATS, not something borrowed from its callers.
+    # nats-py's publish() raises on a connection blip
+    # (ConnectionClosedError/OutboundBufferLimitError), and this is
+    # low-volume control-plane traffic (Server_Design.md §9's own "broker...
+    # comparatively easy to keep available"), not something a transient
+    # hiccup should ever be allowed to crash a caller over. A publish
+    # failure is logged and swallowed - the caller's own state (the game
+    # itself, ratings already computed) is never contingent on this
+    # succeeding.
     async def game_created(
         self, game_id: str, room_id: Optional[str], white_username: str, black_username: str
     ) -> None:
         event = GameCreated(game_id=game_id, room_id=room_id, white_username=white_username, black_username=black_username)
-        await self._connection.publish(GameCreated.SUBJECT, event.encode())
+        try:
+            await self._connection.publish(GameCreated.SUBJECT, event.encode())
+        except Exception:
+            _logger.exception("failed to publish game.created for game %s", game_id)
 
     async def game_finished(
         self,
@@ -67,4 +88,7 @@ class NatsLifecyclePublisher:
             # services/persistence_worker/main.py's own lag gauge).
             published_at=time.time(),
         )
-        await self._connection.publish(GameFinished.SUBJECT, event.encode())
+        try:
+            await self._connection.publish(GameFinished.SUBJECT, event.encode())
+        except Exception:
+            _logger.exception("failed to publish game.finished for game %s", game_id)

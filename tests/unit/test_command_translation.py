@@ -1,3 +1,5 @@
+import pytest
+
 from events.observers import MoveLogObserver, ScoreObserver
 from model.game_state import ArrivalEvent, MoveLoggedEvent
 from model.piece import BLACK, KNIGHT, PAWN, Piece, WHITE
@@ -40,6 +42,18 @@ def test_command_from_message_black_color():
     assert command.destination == Position(2, 5)
 
 
+# MoveMessage.color is a plain str on the wire (see command_from_message's
+# own comment on why Color(...) is what makes Command.color actually hold a
+# real Color) - a value that isn't "white"/"black" raises ValueError here,
+# the exact exception server/router.py's own try/except around this call
+# must also catch alongside KeyError/TypeError.
+def test_command_from_message_raises_value_error_for_an_unrecognized_color():
+    message = build_move("purple", Position(6, 4), Position(4, 4))
+
+    with pytest.raises(ValueError):
+        command_from_message(message)
+
+
 def test_snapshot_to_json_is_plain_json_serializable_data():
     from model.game_state import GameSnapshot, PieceSnapshot
 
@@ -73,6 +87,7 @@ def test_snapshot_to_json_is_plain_json_serializable_data():
                 "motion_phase": "idle",
                 "cooldown_remaining_ms": 0,
                 "cooldown_total_ms": 0,
+                "cooldown_defend_ms": 0,
             }
         ],
     }

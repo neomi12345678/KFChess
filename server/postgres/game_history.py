@@ -16,7 +16,7 @@ from typing import List, Optional, Tuple
 
 import psycopg
 
-from server.postgres import commit_or_rollback, create_table_tolerating_concurrent_creation
+from server.postgres import commit_or_rollback, create_table_tolerating_concurrent_creation, rollback_after
 
 
 class PostgresGameHistoryStore:
@@ -96,19 +96,21 @@ class PostgresGameHistoryStore:
                 )
 
     def all_games(self) -> List[dict]:
-        rows = self._connection.execute(
-            "SELECT game_id, room_id, white_username, black_username, white_rating, black_rating "
-            "FROM game_history ORDER BY finished_at"
-        ).fetchall()
         # Same reasoning as server/postgres/rooms.py's own PostgresRoomStore.
         # load_all - a read-only SELECT under autocommit=False would
         # otherwise leave this connection idle in an open transaction
         # indefinitely, holding a lock that can block an unrelated
         # exclusive operation (e.g. a test fixture's own TRUNCATE)
-        # elsewhere. .fetchall() first, not lazily iterating the cursor in
-        # the list comprehension below - rollback() must run after every
-        # row has actually been read, not before.
-        self._connection.rollback()
+        # elsewhere. rollback_after (see its own docstring) guarantees that
+        # rollback runs even if execute()/fetchall() itself raises, not just
+        # on success - .fetchall() still happens inside the block, not
+        # lazily iterating the cursor in the list comprehension below, so
+        # every row is read before the rollback ends the transaction.
+        with rollback_after(self._connection):
+            rows = self._connection.execute(
+                "SELECT game_id, room_id, white_username, black_username, white_rating, black_rating "
+                "FROM game_history ORDER BY finished_at"
+            ).fetchall()
         return [
             {
                 "game_id": row[0],

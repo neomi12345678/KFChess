@@ -62,14 +62,14 @@ library on sys.path, not to this package (server.redis) importing itself.
 """
 
 import uuid
-from typing import Optional
+from typing import List, Optional
 
 import redis
 
 from protocol.types import Reason
 from server.interfaces import BusySetProtocol
 from server.rooms import Room, RoomError
-from server.server_config import ROOM_ID_LENGTH
+from server.server_config import PENDING_ROOM_TTL_S, ROOM_ID_LENGTH
 
 _ROOM_KEY_PREFIX = "kfchess:room:"
 _ROOM_OWNER_KEY_PREFIX = "kfchess:room_owner:"
@@ -85,8 +85,18 @@ class RedisRoomRegistry:
             raise RoomError(Reason.ALREADY_IN_A_ROOM)
 
         room_id = self._new_id()
-        self._redis.hset(f"{_ROOM_KEY_PREFIX}{room_id}", mapping={"creator": username})
-        self._redis.set(f"{_ROOM_OWNER_KEY_PREFIX}{username}", room_id)
+        room_key = f"{_ROOM_KEY_PREFIX}{room_id}"
+        owner_key = f"{_ROOM_OWNER_KEY_PREFIX}{username}"
+        self._redis.hset(room_key, mapping={"creator": username})
+        self._redis.set(owner_key, room_id)
+        # Backstop TTL for a pending room whose creator never comes back and
+        # whose disconnect the polite path (services/ws_gateway/main.py's own
+        # _resolve_shard) never gets to react to - see PENDING_ROOM_TTL_S's
+        # own docstring. Cleared the instant an opponent actually joins
+        # (see join() below) - a started room's lifetime is governed by its
+        # actual game, not this bound.
+        self._redis.expire(room_key, PENDING_ROOM_TTL_S)
+        self._redis.expire(owner_key, PENDING_ROOM_TTL_S)
         if self._busy_set is not None:
             self._busy_set.add(username)
         return Room(room_id=room_id, creator=username)
@@ -105,6 +115,14 @@ class RedisRoomRegistry:
 
         became_opponent = self._redis.hsetnx(room_key, "opponent", username)
         if became_opponent:
+            # The room has genuinely started now - persist() clears the
+            # pending-only backstop TTL create() set (see its own docstring),
+            # since this room's lifetime is governed by its actual game from
+            # here on (close()/_reconcile_started_rooms), not that bound.
+            self._redis.persist(room_key)
+            creator = self._redis.hget(room_key, "creator")
+            if creator is not None:
+                self._redis.persist(f"{_ROOM_OWNER_KEY_PREFIX}{creator}")
             if self._busy_set is not None:
                 self._busy_set.add(username)
         else:
@@ -147,6 +165,23 @@ class RedisRoomRegistry:
     # not just a boolean "did it close."
     def room_for_id(self, room_id: str) -> Optional[Room]:
         return self._load_if_exists(room_id)
+
+    # Every room this registry currently considers started (has an
+    # opponent) - used by services/api_gateway/main.py's own
+    # _reconcile_started_rooms, the backstop for a game.finished publish
+    # that never arrives (see PENDING_ROOM_TTL_S's own docstring for why a
+    # started room gets no TTL of its own to fall back on instead). A full
+    # scan, not a hot-path lookup - deliberately infrequent, see that
+    # function's own docstring.
+    def started_room_ids(self) -> List[str]:
+        room_ids = []
+        for key in self._redis.scan_iter(match=f"{_ROOM_KEY_PREFIX}*"):
+            if key.endswith(":spectators"):
+                continue
+            room_id = key[len(_ROOM_KEY_PREFIX):]
+            if self._redis.hexists(key, "opponent"):
+                room_ids.append(room_id)
+        return room_ids
 
     def _forget(self, room: Room) -> None:
         room_key = f"{_ROOM_KEY_PREFIX}{room.room_id}"

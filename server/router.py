@@ -225,12 +225,24 @@ class CommandRouter:
             ack=IdentifyAckMessage(accepted=True), seat=seat, snapshot=full_broadcast_payload(game.session)
         )
 
-    def decide_play(self, username: str) -> PlayAckMessage:
+    # rating: None (the default) fetches it here, synchronously - fine for
+    # a caller with no event loop to block (every existing test). The real
+    # server/ws_server.py caller instead fetches it off the event loop first
+    # (loop.run_in_executor, same reasoning as its own _handle_login) and
+    # passes the result in, since this class stays deliberately synchronous
+    # (see this module's own docstring) and so can't do that offloading
+    # itself - a blocking rating_store round trip (a real Postgres query
+    # under server/postgres/accounts.py's PostgresRatingStore) reached
+    # straight from this method would otherwise stall every other
+    # connection's messages and every in-progress game's tick on that shard
+    # for as long as it takes, on every single PLAY click.
+    def decide_play(self, username: str, rating: Optional[int] = None) -> PlayAckMessage:
         reason = self._busy_reason(username)
         if reason is not None:
             return PlayAckMessage(accepted=False, reason=reason)
 
-        rating = self._rating_store.rating_for(username)
+        if rating is None:
+            rating = self._rating_store.rating_for(username)
         self._loop.matchmaking.enqueue(username, rating)
         return PlayAckMessage(accepted=True, reason=Reason.QUEUED)
 
@@ -299,9 +311,15 @@ class CommandRouter:
         # propagate out of routing entirely, is what keeps this one
         # malformed command a normal rejected Ack instead of killing this
         # connection's whole receive loop for every other message on it too.
+        # ValueError alongside them: command_from_message's own Color(message.color)
+        # would raise it for a color string that isn't a real Color member -
+        # unreachable today since the wrong_seat check above already requires
+        # message.color to equal seat (always a real Color), but this stays
+        # consistent with server/ws_server.py's own equivalent gatekeeper
+        # rather than relying on that check never changing shape.
         try:
             command = command_from_message(message)
-        except (KeyError, TypeError):
+        except (KeyError, TypeError, ValueError):
             return AckMessage(accepted=False, reason=Reason.MALFORMED_COMMAND)
 
         # position_from_json itself doesn't raise for this shape - a wire

@@ -82,6 +82,7 @@ from server.redis.active_game_index import ActiveGameIndex
 from server.redis.presence import Presence
 from server.redis.room_shard_index import RoomShardIndex
 from server.redis.rooms import RedisRoomRegistry
+from server.rooms import RoomError
 from server.server_config import MATCHMAKING_TIMEOUT_MS
 from tls_config import get_server_ssl_context
 
@@ -242,6 +243,26 @@ async def _resolve_shard(
         # unbounded per-abandoned-wait leak in this long-running process.
         waiters.cancel(username)
         if closed in done:
+            # A Room creator waiting here for an opponent has no
+            # matchmaking-queue entry for the MatchmakingCancelled publish
+            # below to remove (that only reaches services/matchmaker/main.py's
+            # PLAY queue, a completely different flow) - without this, a
+            # creator who vanishes before anyone joins leaves this room's
+            # Redis keys (kfchess:room:*/kfchess:room_owner:*, none of them
+            # TTL'd) held forever, permanently blocking that username from
+            # creating or joining any future room/game. Mirrors
+            # server/router.py's own decide_disconnect - the bare-metal
+            # path's equivalent, which already handles this. RoomError is
+            # swallowed here for the same reason every other post-disconnect
+            # action in this module is best-effort: a benign race (the
+            # opponent joined in the instant between this check and the
+            # cancel call) just means there's nothing left to cancel.
+            pending_room = rooms.room_for_username(username)
+            if pending_room is not None and pending_room.is_pending:
+                try:
+                    rooms.cancel(username)
+                except RoomError:
+                    pass
             await nats_connection.publish(
                 MatchmakingCancelled.SUBJECT, MatchmakingCancelled(username=username).encode()
             )
@@ -468,12 +489,12 @@ async def _main() -> None:
             client_ws,
         )
 
-    # SSL_CERT_FILE/SSL_KEY_FILE both unset (the default) keeps today's
+    # KFCHESS_SSL_CERT_FILE/KFCHESS_SSL_KEY_FILE both unset (the default) keeps today's
     # plaintext ws:// behavior - see tls_config.py's own docstring. This is
     # the one listener in the whole deployment public clients actually
     # speak WebSocket to directly (Server_Design.md §3's own edge tier), so
     # it's the one that matters most for TLS.
-    ssl_context = get_server_ssl_context(os.environ.get("SSL_CERT_FILE"), os.environ.get("SSL_KEY_FILE"))
+    ssl_context = get_server_ssl_context(os.environ.get("KFCHESS_SSL_CERT_FILE"), os.environ.get("KFCHESS_SSL_KEY_FILE"))
     scheme = "wss" if ssl_context is not None else "ws"
 
     async with websockets.serve(_handler, "0.0.0.0", port, ssl=ssl_context):

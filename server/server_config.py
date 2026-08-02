@@ -66,6 +66,18 @@ PASSWORD_HASH_ITERATIONS = 200_000
 # token ever gets - a deliberate, documented trade-off, not an oversight.
 SESSION_TOKEN_TTL_S = 3600 * 6
 
+# server/redis/presence.py - the entire process crashing (not an individual
+# socket closing, which mark_offline already handles deterministically -
+# see that module's own docstring) is the one scenario the polite
+# mark_online/mark_offline pair can't reach: nothing runs the "offline"
+# side of that pair for every username the crashed process had marked
+# online. Same backstop shape as PENDING_ROOM_TTL_S/SESSION_TOKEN_TTL_S
+# above - generous enough that no real session (mark_online is refreshed
+# on every login/identify, i.e. roughly every reconnect) ever hits it while
+# genuinely still connected, so this only ever matters for the crash case
+# it exists to bound.
+PRESENCE_TTL_S = 3600 * 6
+
 # server/session.py - how long a disconnected seat gets before it's ruled a
 # resignation (the Home-screen slide's own "auto-resign after 20 sec").
 DISCONNECT_GRACE_MS = 20_000
@@ -99,6 +111,16 @@ SHARD_RECOVERY_SWEEP_INTERVAL_MS = 5_000
 # expire a still-live room's own lease.
 ROOM_LEASE_TTL_MS = 15_000
 ROOM_LEASE_RENEW_INTERVAL_MS = 5_000
+
+# services/game_allocator/main.py - _acquire_lease's own short-lived,
+# one-shot `kfchess:game:{game_id}:owner` guard around a single allocation
+# handoff (never renewed, deliberately distinct from ROOM_LEASE_TTL_MS
+# above, which lasts a room's whole lifetime - see room_shard_index.py's
+# own docstring on why the two keys/TTLs are kept separate). Just long
+# enough to cover the handoff itself (a Redis SET plus one NATS publish),
+# short enough that a crashed allocator replica never strands a game_id's
+# lease for long.
+GAME_ALLOCATION_LEASE_TTL_MS = 5_000
 
 # services/game_allocator/main.py - Server_Design.md §9's own "bound the
 # blast radius: cap each Game-Authority pod's concurrent room count... so
@@ -144,3 +166,35 @@ MATCHMAKER_LEADER_TTL_MS = 2_000
 # of leaving a small batch waiting indefinitely for it to fill.
 PERSISTENCE_BATCH_SIZE = 50
 PERSISTENCE_BATCH_FLUSH_INTERVAL_MS = 2_000
+
+# server/redis/rooms.py - RedisRoomRegistry.create's own backstop TTL on a
+# still-pending (no opponent yet) room's Redis keys. The polite path for an
+# abandoned pending room is services/ws_gateway/main.py's own
+# _resolve_shard explicitly cancelling it the instant the creator's socket
+# closes - this is the unattended path for everything that can't reach that
+# code (the ws-gateway process itself dying mid-wait, a network partition
+# that never delivers a close) - without it, an un-TTL'd
+# kfchess:room_owner:{username} key left behind by a creator who never
+# comes back locks that username out of creating/joining any room forever.
+# An hour comfortably exceeds any real human's patience waiting for an
+# opponent (MATCHMAKING_TIMEOUT_MS above bounds the equivalent PLAY wait at
+# a minute), so this never fires against a pending room anyone is still
+# plausibly waiting on - persist() clears it the instant the room actually
+# starts (see RedisRoomRegistry.join), since a started room's lifetime is
+# governed by its actual game, not this bound.
+PENDING_ROOM_TTL_S = 3600
+
+# services/api_gateway/main.py - how often the standalone API Gateway
+# reconciles RedisRoomRegistry's own "started" rooms against
+# server/redis/room_shard_index.py's RoomShardIndex (see
+# _reconcile_started_rooms). A started room's Redis keys are otherwise only
+# ever cleaned up by the game.finished NATS event (see _on_game_finished) -
+# a publish that server/game_loop.py already guards against a transient
+# failure, but not one guaranteed to ever arrive during a sustained broker
+# outage. GameLoop unconditionally drops a room from RoomShardIndex the
+# instant its game ends (success or crash), regardless of whether that
+# publish succeeded - so "started here, but no longer owned by any shard"
+# is an independent, reliable signal the game is over, making this a real
+# backstop rather than a guess. Infrequent on purpose: this is a full scan
+# of every started room, a safety net, not the primary cleanup mechanism.
+ROOM_RECONCILE_INTERVAL_S = 30

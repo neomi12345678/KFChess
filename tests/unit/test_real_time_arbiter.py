@@ -125,7 +125,7 @@ def test_unavailable_progress_reports_elapsed_and_duration_during_a_long_rest():
 
     arbiter.advance_time(100)
 
-    assert arbiter.unavailable_progress(piece) == (100, LONG_REST_DURATION_MS)
+    assert arbiter.unavailable_progress(piece) == (100, LONG_REST_DURATION_MS, 0)
 
 
 def test_unavailable_progress_counts_from_the_jump_itself_while_still_airborne():
@@ -141,7 +141,7 @@ def test_unavailable_progress_counts_from_the_jump_itself_while_still_airborne()
 
     arbiter.advance_time(50)
 
-    assert arbiter.unavailable_progress(piece) == (50, AIRBORNE_DURATION_MS + SHORT_REST_DURATION_MS)
+    assert arbiter.unavailable_progress(piece) == (50, AIRBORNE_DURATION_MS + SHORT_REST_DURATION_MS, AIRBORNE_DURATION_MS)
 
 
 def test_unavailable_progress_keeps_counting_continuously_into_the_short_rest_that_follows_a_jump():
@@ -156,6 +156,7 @@ def test_unavailable_progress_keeps_counting_continuously_into_the_short_rest_th
     assert arbiter.unavailable_progress(piece) == (
         AIRBORNE_DURATION_MS + 50,
         AIRBORNE_DURATION_MS + SHORT_REST_DURATION_MS,
+        AIRBORNE_DURATION_MS,
     )
 
 
@@ -714,6 +715,56 @@ def test_a_still_flying_target_intercepts_every_enemy_landing_on_its_remaining_p
     assert board.get_piece(Position(0, 6)) is target
     assert arbiter.is_in_cooldown(target) is True
     assert ArrivalEvent(piece=target, captured_piece=None) in events
+
+
+def test_a_same_color_truncation_drops_an_interception_the_shortened_motion_can_no_longer_reach():
+    # black_attacker lands on target's remaining path early (cell index 4),
+    # scheduling an interception due once target's own elapsed_ms reaches
+    # 4*CELL_DURATION_MS. Before that, white_blocker - same color as target -
+    # lands on cell index 3, an *earlier* cell still ahead of target at that
+    # instant, triggering the same-color truncation branch: target's own
+    # destination (and therefore duration_ms, a property derived from it -
+    # see physics/motion.py) shrinks to reach only index 2. target will now
+    # complete (and be removed from _active_motions, elapsed_ms frozen)
+    # long before its own elapsed_ms could ever reach the black_attacker
+    # interception's 4*CELL_DURATION_MS trigger - without
+    # _drop_unreachable_interceptions, that entry would leak in
+    # self._pending_interceptions for the rest of this arbiter's life.
+    board = parse(
+        ". . . . . . .\n"
+        ". . . wR bR . .\n"
+        "wR . . . . . .\n"
+    )
+    arbiter = RealTimeArbiter(board)
+    target = board.get_piece(Position(2, 0))
+    white_blocker = board.get_piece(Position(1, 3))
+    black_attacker = board.get_piece(Position(1, 4))
+
+    arbiter.start_motion(target, Position(2, 0), Position(2, 6))  # 6 cells
+    arbiter.start_motion(black_attacker, Position(1, 4), Position(2, 4))  # 1 cell -> lands at index 4
+
+    # black_attacker lands - target has traveled only 1 cell so far, so
+    # index 4 is still on its remaining path.
+    arbiter.advance_time(CELL_DURATION_MS)
+    assert len(arbiter._pending_interceptions) == 1
+    assert arbiter._pending_interceptions[0].cell == Position(2, 4)
+
+    arbiter.start_motion(white_blocker, Position(1, 3), Position(2, 3))  # 1 cell -> lands at index 3
+
+    # white_blocker lands the same tick target crosses into index 2 (index
+    # 3 is still ahead of it at that instant) - same-color truncation
+    # shortens target's own destination to (2, 2), well short of index 4.
+    arbiter.advance_time(CELL_DURATION_MS)
+
+    assert arbiter._pending_interceptions == []
+
+    # target completes its own (now 2-cell) motion normally, and
+    # black_attacker is never touched again by a stale, unreachable
+    # interception - the true regression this guards against.
+    arbiter.advance_time(10 * CELL_DURATION_MS)
+    assert board.get_piece(Position(2, 2)) is target
+    assert black_attacker.state == IDLE
+    assert board.get_piece(Position(2, 4)) is black_attacker
 
 
 def test_an_intercepted_motions_own_fallback_cell_can_itself_domino_into_a_third_motion():

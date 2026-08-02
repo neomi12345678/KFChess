@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from model.board import BoardQuery
 from model.game_state import ArrivalEvent, GameObserver, GameSnapshot, JumpResult, MoveLoggedEvent, MoveResult, PieceSnapshot
@@ -13,11 +13,13 @@ from model.piece import (
     PHASE_SHORT_REST,
     MOVING,
     PieceKind,
+    PieceRepresentation,
     is_selectable,
     jump_availability,
     move_availability,
 )
 from model.position import Position
+from physics.motion import Motion
 from realtime.real_time_arbiter import RealTimeArbiter
 from rules.rule_engine import KingCaptureWinCondition, RuleEngine, WinCondition
 
@@ -248,12 +250,13 @@ class GameEngine:
                 if motion is not None:
                     board_row, board_col = _interpolated_cell(motion)
 
-                cooldown_remaining_ms, cooldown_total_ms = 0, 0
+                cooldown_remaining_ms, cooldown_total_ms, cooldown_defend_ms = 0, 0, 0
                 progress = self._real_time_arbiter.unavailable_progress(piece)
                 if progress is not None:
-                    elapsed_ms, duration_ms = progress
+                    elapsed_ms, duration_ms, defend_ms = progress
                     cooldown_remaining_ms = max(0, duration_ms - elapsed_ms)
                     cooldown_total_ms = duration_ms
+                    cooldown_defend_ms = defend_ms
 
                 pieces.append(
                     PieceSnapshot(
@@ -266,6 +269,7 @@ class GameEngine:
                         motion_phase=self._motion_phase(piece),
                         cooldown_remaining_ms=cooldown_remaining_ms,
                         cooldown_total_ms=cooldown_total_ms,
+                        cooldown_defend_ms=cooldown_defend_ms,
                     )
                 )
 
@@ -282,7 +286,7 @@ class GameEngine:
     # like is_airborne()/MOVING do, so it's as much a real report as those
     # (see model/piece.py's PHASE_* comment). Which sprite a renderer shows
     # for any of these is still view/animation_states.py's business.
-    def _motion_phase(self, piece) -> MotionPhase:
+    def _motion_phase(self, piece: PieceRepresentation) -> MotionPhase:
         if self._real_time_arbiter.is_airborne(piece):
             return PHASE_JUMP
         if piece.state == MOVING:
@@ -296,7 +300,7 @@ class GameEngine:
 
 # Linear interpolation between source and destination based on how much of
 # the motion's total duration has elapsed.
-def _interpolated_cell(motion) -> tuple:
+def _interpolated_cell(motion: Motion) -> Tuple[float, float]:
     progress = min(1.0, motion.elapsed_ms / motion.duration_ms) if motion.duration_ms else 1.0
     row = motion.source.row + (motion.destination.row - motion.source.row) * progress
     col = motion.source.col + (motion.destination.col - motion.source.col) * progress

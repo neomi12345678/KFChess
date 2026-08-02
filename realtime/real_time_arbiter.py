@@ -90,10 +90,10 @@ class RealTimeArbiter:
     def is_in_long_rest(self, piece: PieceRepresentation) -> bool:
         return any(rest.piece.id == piece.id for rest in self._long_rests)
 
-    # (elapsed_ms, total_ms) covering the *entire* stretch this piece is
-    # unavailable for a new move/jump - not just whichever single TimedState
-    # currently holds it. For a jump, that's airborne time plus its
-    # subsequent short_rest reported as one continuous span (elapsed_ms
+    # (elapsed_ms, total_ms, defend_ms) covering the *entire* stretch this
+    # piece is unavailable for a new move/jump - not just whichever single
+    # TimedState currently holds it. For a jump, that's airborne time plus
+    # its subsequent short_rest reported as one continuous span (elapsed_ms
     # keeps counting up through the airborne-to-short_rest handoff, total_ms
     # is airborne_duration + short_rest_duration throughout) - a piece that
     # jumped is just as unavailable while airborne as while resting
@@ -106,17 +106,36 @@ class RealTimeArbiter:
     # start would leave the clock looking like it started late. An ordinary
     # move's long_rest has no such mismatch (its own motion animation
     # already spans the whole move) so that one is reported alone, unchanged.
+    #
+    # defend_ms is the leading portion of total_ms during which this piece
+    # can still actually reverse-capture an attacker landing on its square
+    # (see _resolve_arrival's is_airborne(defender) branch) - _AIRBORNE_DURATION_MS
+    # while airborne or in the short_rest that continues the same span
+    # (defense ended the moment airborne expired, whichever sub-list this
+    # piece is currently in), 0 for an ordinary move's long_rest (which was
+    # never a defense window at all). Without this, a single depleting bar
+    # drawn from (elapsed_ms, total_ms) alone reads as "still defending"
+    # for its entire length, when roughly the last third of it (the
+    # short_rest tail) is really just "unavailable, but no longer
+    # defending" - the piece already lost the ability to reverse-capture,
+    # even though the bar still looks the same as when it could. See
+    # view/renderer.py's own use of this for the two-tone bar that actually
+    # shows the difference.
     # None if the piece isn't airborne or resting at all.
-    def unavailable_progress(self, piece: PieceRepresentation) -> Optional[Tuple[int, int]]:
+    def unavailable_progress(self, piece: PieceRepresentation) -> Optional[Tuple[int, int, int]]:
         for airborne in self._airborne_states:
             if airborne.piece.id == piece.id:
-                return airborne.elapsed_ms, airborne.duration_ms + _SHORT_REST_DURATION_MS
+                return airborne.elapsed_ms, airborne.duration_ms + _SHORT_REST_DURATION_MS, airborne.duration_ms
         for rest in self._short_rests:
             if rest.piece.id == piece.id:
-                return _AIRBORNE_DURATION_MS + rest.elapsed_ms, _AIRBORNE_DURATION_MS + rest.duration_ms
+                return (
+                    _AIRBORNE_DURATION_MS + rest.elapsed_ms,
+                    _AIRBORNE_DURATION_MS + rest.duration_ms,
+                    _AIRBORNE_DURATION_MS,
+                )
         for rest in self._long_rests:
             if rest.piece.id == piece.id:
-                return rest.elapsed_ms, rest.duration_ms
+                return rest.elapsed_ms, rest.duration_ms, 0
         return None
 
     # Whoever is already moving has right of way - see route_planner.plan_route.
@@ -316,7 +335,26 @@ class RealTimeArbiter:
 
         # A same-color piece won a race to this cell since this motion
         # started - stop short instead of overwriting a teammate. It still
-        # completed a motion, so it still earns a long_rest.
+        # completed a motion, so it still earns a long_rest, even on the
+        # rare fallback==motion.source case (retreat_cell's own last-resort
+        # return - a knight has no partial path to fall back onto at all,
+        # see its own docstring, and a 1-cell straight move degenerates to
+        # the same thing) - see test_a_knight_that_arrives_to_find_a_teammate_
+        # already_there_stays_at_its_source_cell and
+        # test_airborne_piece_does_not_capture_a_teammate_that_arrives_on_its_cell
+        # for why that's deliberate here, not an oversight: this is an
+        # *arrival* discovering a conflict it had no way to react to
+        # mid-flight (a knight can't detect a blocked landing square before
+        # jumping; a defender that got there by start_jump, not a Motion,
+        # never triggers _intercept_motions_crossing along the way) - not
+        # the same shape as start_motion's own request-time rejection
+        # (plan_route's safe_cells<1 branch), which only ever fires for a
+        # straight-line mover that could see the conflict before ever
+        # starting. The two look similar (both end up "back where they
+        # started, no cooldown" vs. "back where they started, full
+        # cooldown") but differ in exactly the thing that matters here:
+        # whether the piece ever had a chance to not commit to the move in
+        # the first place.
         if defender is not None and defender.color == motion.piece.color:
             fallback = retreat_cell(self._board, motion.source, motion.destination)
             self._board.remove_piece(motion.source)
@@ -432,6 +470,7 @@ class RealTimeArbiter:
 
         if occupant.color == motion.piece.color:
             motion.destination = retreat_cell(self._board, motion.source, cell)
+            self._drop_unreachable_interceptions(motion)
             return []
 
         if cell == motion.destination:
@@ -453,6 +492,29 @@ class RealTimeArbiter:
             self._pending_interceptions.append(
                 _PendingInterception(motion=motion, cell=cell, trigger_elapsed_ms=trigger_elapsed_ms)
             )
+
+    # Called right after a same-color truncation shortens `motion` in
+    # place (see _intercept_motion above) - motion.duration_ms is a
+    # property derived from source/destination (physics/motion.py), so it
+    # just shrank too, and any interception scheduled earlier for a cell
+    # farther out than the new destination (trigger_elapsed_ms exceeding
+    # the new, shorter duration_ms) can now never be reached: motion will
+    # complete - and, per advance_time, get removed from _active_motions
+    # with elapsed_ms frozen at that point - before its own elapsed_ms
+    # would ever climb high enough to satisfy
+    # _resolve_due_interceptions' own `elapsed_ms >= trigger_elapsed_ms`
+    # check. Left unpurged, that entry (holding its own reference to
+    # `motion` and whatever piece is standing on the now-unreachable cell)
+    # would never be resolved or removed for the rest of this arbiter's
+    # life - a slow, unbounded leak in a long-running server process, not
+    # a wrong game outcome (the truncated motion's own destination change
+    # already correctly reflects the race it lost).
+    def _drop_unreachable_interceptions(self, motion: Motion) -> None:
+        self._pending_interceptions = [
+            pending
+            for pending in self._pending_interceptions
+            if pending.motion is not motion or pending.trigger_elapsed_ms <= motion.duration_ms
+        ]
 
     # Resolves every scheduled interception (see _schedule_interception)
     # whose trigger has actually been reached - called once per

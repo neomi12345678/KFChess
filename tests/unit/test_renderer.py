@@ -18,8 +18,9 @@ class FakeCanvas:
     rects: List[Tuple[int, int, int, int]] = field(default_factory=list)
     images: List[Tuple[str, int, int]] = field(default_factory=list)
     highlighted_cells: List[Tuple[int, int]] = field(default_factory=list)
-    # (row, col, fraction) triples, one per _draw_cooldown_bars call.
-    cooldown_bars: List[Tuple[int, int, float]] = field(default_factory=list)
+    # (row, col, fraction, defend_fraction) quadruples, one per
+    # _draw_cooldown_bars call.
+    cooldown_bars: List[Tuple[int, int, float, float]] = field(default_factory=list)
     texts: List[str] = field(default_factory=list)
     # (text, x) pairs, in addition to `texts` above - new panel-placement
     # tests need the x each line was drawn at; existing tests only ever
@@ -34,14 +35,14 @@ class FakeCanvas:
     def draw_rect(self, x, y, width, height):
         self.rects.append((x, y, width, height))
 
-    def draw_image(self, name, x, y):
-        self.images.append((name, x, y))
+    def draw_image(self, piece_id, color, kind, state, x, y):
+        self.images.append((f"{piece_id}:{color}:{kind}:{state}", x, y))
 
     def highlight_cell(self, row, col):
         self.highlighted_cells.append((row, col))
 
-    def draw_cooldown_bar(self, row, col, fraction, color=(255, 140, 0)):
-        self.cooldown_bars.append((row, col, fraction))
+    def draw_cooldown_bar(self, row, col, fraction, defend_fraction=1.0, color=(255, 140, 0), rest_color=(0, 0, 130)):
+        self.cooldown_bars.append((row, col, fraction, defend_fraction))
 
     def draw_text(self, text, x, y, font_size=1.0, color=(255, 255, 255, 255)):
         self.texts.append(text)
@@ -138,7 +139,44 @@ def test_renderer_draws_a_cooldown_bar_for_a_resting_piece_sized_by_the_remainin
 
     Renderer(canvas).draw(build_ui_snapshot(snapshot))
 
-    assert canvas.cooldown_bars == [(0, 0, 0.25)]
+    assert canvas.cooldown_bars == [(0, 0, 0.25, 0.0)]
+
+
+# A jumping piece's cooldown_defend_ms (see RealTimeArbiter.
+# unavailable_progress) is the leading portion of cooldown_total_ms during
+# which it can still reverse-capture an attacker - unlike an ordinary
+# move's long_rest (cooldown_defend_ms=0, see the test above), this must
+# reach the canvas as its own fraction, not just get silently dropped, or
+# the two-tone bar this whole field exists for could never actually draw.
+def test_renderer_reports_the_defend_fraction_separately_for_a_jumping_piece():
+    from model.game_state import GameSnapshot, PieceSnapshot
+    from model.piece import IDLE, PHASE_SHORT_REST, WHITE
+
+    snapshot = GameSnapshot(
+        board_width=3,
+        board_height=3,
+        pieces=(
+            PieceSnapshot(
+                id="wK-0-0",
+                kind="king",
+                color=WHITE,
+                row=0.0,
+                col=0.0,
+                state=IDLE,
+                motion_phase=PHASE_SHORT_REST,
+                cooldown_remaining_ms=400,
+                cooldown_total_ms=1000,
+                cooldown_defend_ms=700,
+            ),
+        ),
+        selected_cell=None,
+        game_over=False,
+    )
+    canvas = FakeCanvas()
+
+    Renderer(canvas).draw(build_ui_snapshot(snapshot))
+
+    assert canvas.cooldown_bars == [(0, 0, 0.4, 0.7)]
 
 
 def test_renderer_shows_game_over_message():

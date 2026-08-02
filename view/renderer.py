@@ -109,10 +109,9 @@ class Renderer:
     # the model only ever deals in board-relative row/col.
     def _draw_pieces(self, snapshot) -> None:
         for piece in snapshot.pieces:
-            key = f"{piece.id}:{piece.color}:{piece.kind}:{piece.motion_phase}"
             x = int(piece.col * self._cell_size + self._cell_size // 2)
             y = int(piece.row * self._cell_size + self._cell_size // 2)
-            self._canvas.draw_image(key, x=x, y=y)
+            self._canvas.draw_image(piece.id, piece.color, piece.kind, piece.motion_phase, x=x, y=y)
 
     def _draw_selection(self, snapshot) -> None:
         if snapshot.selected_cell is not None:
@@ -124,12 +123,24 @@ class Renderer:
     # separate from _draw_selection's click-time square highlight above.
     # cooldown_total_ms is 0 for every piece not unavailable, so this only
     # ever draws for the ones that are.
+    #
+    # defend_fraction is what makes the bar two-tone (see
+    # ImgCanvas.draw_cooldown_bar's own docstring): the fraction of the
+    # *original* span (from cooldown_defend_ms, not the remaining time)
+    # that's still a genuine defense window - 0 for every phase but
+    # PHASE_JUMP/PHASE_SHORT_REST, where a bar drawn from fraction alone
+    # would otherwise look identical whether this piece can still
+    # reverse-capture an attacker or has already lost that ability and is
+    # merely finishing its cooldown.
     def _draw_cooldown_bars(self, snapshot) -> None:
         for piece in snapshot.pieces:
             if piece.cooldown_total_ms <= 0:
                 continue
             fraction = piece.cooldown_remaining_ms / piece.cooldown_total_ms
-            self._canvas.draw_cooldown_bar(row=int(piece.row), col=int(piece.col), fraction=fraction)
+            defend_fraction = piece.cooldown_defend_ms / piece.cooldown_total_ms
+            self._canvas.draw_cooldown_bar(
+                row=int(piece.row), col=int(piece.col), fraction=fraction, defend_fraction=defend_fraction
+            )
 
     # Purely cosmetic - reads whatever view/ui_snapshot.py's UiSnapshot
     # carries for this frame's move_log/score panels. Drawn in

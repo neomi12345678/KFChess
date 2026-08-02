@@ -7,7 +7,7 @@
 # (the common case), this Deployment needs no changes; if it doesn't (a
 # bare LoadBalancer/NodePort, or TLS all the way to the pod), the app
 # itself can also terminate TLS - services/api_gateway/main.py's own
-# get_server_ssl_context reads SSL_CERT_FILE/SSL_KEY_FILE (see
+# get_server_ssl_context reads KFCHESS_SSL_CERT_FILE/KFCHESS_SSL_KEY_FILE (see
 # tls_config.py) - point those at a Secret volume mount holding a real,
 # cert-manager-issued cert, same shape as docker-compose.yml's own
 # commented-out example.
@@ -49,6 +49,8 @@ spec:
                 name: kfchess-config
             - secretRef:
                 name: kfchess-postgres-credentials
+            - secretRef:
+                name: kfchess-session-secret
           ports:
             - containerPort: 8080
           # /healthz//readyz live on the same aiohttp app/port as ordinary

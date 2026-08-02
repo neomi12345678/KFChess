@@ -81,7 +81,7 @@ move, `jump e4` to jump - see `client/client_cli.py`'s `build_command`). No
 second player.
 
 Every server/service above speaks plaintext `ws://`/`http://` by default;
-`SSL_CERT_FILE`/`SSL_KEY_FILE` (see `tls_config.py`) switch a given
+`KFCHESS_SSL_CERT_FILE`/`KFCHESS_SSL_KEY_FILE` (see `tls_config.py`) switch a given
 process to `wss://`/`https://`, and either client's own `--tls`/
 `--insecure-tls` flag opts into speaking it back (`--insecure-tls` for a
 local self-signed dev cert, generated once via

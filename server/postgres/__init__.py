@@ -38,6 +38,29 @@ def commit_or_rollback(connection: "psycopg.Connection"):
         raise
 
 
+# The read-only counterpart to commit_or_rollback above - every read site in
+# this package (PostgresUserStore.login, PostgresRatingStore._fetch_row,
+# PostgresGameHistoryStore.all_games, PostgresRoomStore.load_all) used to
+# execute() a SELECT and *then* call rollback() unconditionally afterward
+# (autocommit=False means even a bare SELECT opens a transaction that would
+# otherwise sit idle-in-transaction on this long-lived, shared connection
+# forever - see each call site's own comment on why rollback(), not
+# commit(), ends it). But that rollback() was never reached if execute()
+# itself raised (a statement timeout, a connection reset mid-round-trip, a
+# deadlock) - the exact same "nothing ever calls rollback(), so the
+# connection is wedged in an aborted transaction until the process
+# restarts" bug commit_or_rollback's own docstring describes, just on the
+# read side, which had no equivalent guard. finally, not except-and-raise:
+# a read has nothing to commit on success, so every path through here ends
+# in a rollback().
+@contextlib.contextmanager
+def rollback_after(connection: "psycopg.Connection"):
+    try:
+        yield
+    finally:
+        connection.rollback()
+
+
 # Every store in this package runs its own CREATE TABLE IF NOT EXISTS on
 # construction - fine for one process, but Server_Design.md §8's own "never
 # one container per game" means multiple Game Server Shards (docker-compose.yml's

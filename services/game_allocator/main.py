@@ -113,7 +113,7 @@ from server.redis.fairness_checkpoint import FairnessCheckpoint
 from server.redis.room_shard_index import RoomShardIndex
 from server.redis.rooms import RedisRoomRegistry
 from server.redis.shard_registry import ShardRegistry
-from server.server_config import MAX_ROOMS_PER_SHARD, SHARD_RECOVERY_SWEEP_INTERVAL_MS
+from server.server_config import GAME_ALLOCATION_LEASE_TTL_MS, MAX_ROOMS_PER_SHARD, SHARD_RECOVERY_SWEEP_INTERVAL_MS
 
 _logger = logging.getLogger(__name__)
 
@@ -123,7 +123,7 @@ _logger = logging.getLogger(__name__)
 _ALLOCATIONS_COUNTER = Counter("kfchess_game_allocator_allocations_total", "Total games/rooms allocated to a shard")
 
 
-def _acquire_lease(redis_client, game_id: str, shard_address: str, ttl_ms: int = 5000) -> bool:
+def _acquire_lease(redis_client, game_id: str, shard_address: str, ttl_ms: int = GAME_ALLOCATION_LEASE_TTL_MS) -> bool:
     # NX: only set if not already held. PX: auto-expires, so a crashed
     # allocator (or a shard that never actually starts the game) never
     # permanently strands a game_id's lease.
@@ -285,11 +285,26 @@ async def _sweep_for_dead_shards(
     # both seats already caught above (room_id is not None) would otherwise
     # be revisited here for nothing - skip anything already handled by the
     # room pass. One all_locations() snapshot for the whole pass (not
-    # refetched per game_id) - both usernames sharing a dead game_id are
-    # found and removed together from this same in-memory list, so this
-    # pass is O(live games), not O(live games^2), and never sees a
-    # mid-sweep write from a concurrent caller as two different snapshots.
+    # refetched per game_id), and grouped by game_id once, up front - the
+    # previous version re-scanned this whole snapshot again *inside* the
+    # loop, once per dead game_id found ("for other_username, other_location
+    # in all_locations"), which is O(live games x dead games), not the
+    # O(live games) this comment used to claim (true only when at most one
+    # dead game_id ever turns up in a single sweep). That quadratic cost
+    # lands exactly when it matters most: a shard hosting hundreds of
+    # concurrent games dying at once is precisely the scenario this sweep
+    # exists for, and re-scanning the whole snapshot per casualty would
+    # monopolize this allocator replica's single event loop for the whole
+    # sweep - delaying its own match.found/room.opponent_joined processing
+    # right as players start re-queuing after the outage. Grouping once
+    # turns "every other seat sharing this game_id" into an O(1) dict
+    # lookup, so the whole pass stays O(live games) regardless of how many
+    # of them turn out to be dead.
     all_locations = active_game_index.all_locations()
+    usernames_by_game_id = {}
+    for username, location in all_locations:
+        usernames_by_game_id.setdefault(location.game_id, []).append(username)
+
     already_voided_game_ids = set()
     for username, location in all_locations:
         if location.room_id is not None or location.game_id in already_voided_game_ids:
@@ -307,12 +322,11 @@ async def _sweep_for_dead_shards(
 
         # Only two seats ever share a game_id (WHITE/BLACK - see
         # server/game_loop.py's own _start_game) - this username plus
-        # whichever other entry in the same snapshot names the same
-        # game_id.
-        for other_username, other_location in all_locations:
-            if other_location.game_id == location.game_id:
-                active_game_index.remove(other_username)
-                busy_set.remove(other_username)
+        # whichever other entry shares the same game_id, from the index
+        # built above instead of a fresh scan.
+        for other_username in usernames_by_game_id[location.game_id]:
+            active_game_index.remove(other_username)
+            busy_set.remove(other_username)
         fairness_checkpoint.remove(location.game_id)
 
 

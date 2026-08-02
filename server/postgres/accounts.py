@@ -28,7 +28,7 @@ from typing import Optional
 import psycopg
 
 from server.accounts import Account, InvalidCredentialsError, _hash_password
-from server.postgres import commit_or_rollback, create_table_tolerating_concurrent_creation
+from server.postgres import commit_or_rollback, create_table_tolerating_concurrent_creation, rollback_after
 from server.server_config import STARTING_RATING
 
 
@@ -70,19 +70,20 @@ class PostgresUserStore:
 
     def login(self, username: str, password: str) -> Account:
         with self._database.lock:
-            row = self._database.connection.execute(
-                "SELECT password_hash, password_salt FROM accounts WHERE username = %s",
-                (username,),
-            ).fetchone()
             # autocommit=False (see open_postgres_accounts_database) means
-            # this SELECT alone opened a transaction that would otherwise
+            # this SELECT alone opens a transaction that would otherwise
             # stay open - "idle in transaction" server-side - for as long as
             # this connection lives, since a returning user's successful
-            # login never reaches _register's own commit(). Left open, it
-            # holds a lock that can block an unrelated exclusive operation
-            # (e.g. TRUNCATE accounts in a test fixture) indefinitely.
-            # row is already a plain fetched tuple, unaffected by this.
-            self._database.connection.rollback()
+            # login never reaches _register's own commit(). rollback_after
+            # (see its own docstring) guarantees the rollback that ends it
+            # runs even if execute() itself raises, not just on success -
+            # row is already a plain fetched tuple by the time it returns,
+            # unaffected by the rollback.
+            with rollback_after(self._database.connection):
+                row = self._database.connection.execute(
+                    "SELECT password_hash, password_salt FROM accounts WHERE username = %s",
+                    (username,),
+                ).fetchone()
 
         # Released above, before the deliberately-slow PBKDF2 hash below -
         # holding this lock across it would serialize every concurrent
@@ -137,16 +138,16 @@ class PostgresRatingStore:
 
     def _fetch_row(self, username: str):
         with self._database.lock:
-            row = self._database.connection.execute(
-                "SELECT rating FROM accounts WHERE username = %s", (username,)
-            ).fetchone()
-            # Same reasoning as PostgresUserStore.login's own rollback()
-            # above - a read-only SELECT under autocommit=False would
-            # otherwise leave this connection idle in an open transaction
-            # indefinitely (rating_for is called far more often than any
-            # write path here, so this is the more consequential of the two).
-            self._database.connection.rollback()
-            return row
+            # Same reasoning as PostgresUserStore.login's own use of
+            # rollback_after - a read-only SELECT under autocommit=False
+            # would otherwise leave this connection idle in an open
+            # transaction indefinitely (rating_for is called far more often
+            # than any write path here, so a wedged connection from an
+            # unguarded rollback would be the more consequential of the two).
+            with rollback_after(self._database.connection):
+                return self._database.connection.execute(
+                    "SELECT rating FROM accounts WHERE username = %s", (username,)
+                ).fetchone()
 
     def update_rating(self, username: str, rating: int) -> None:
         with self._database.lock:

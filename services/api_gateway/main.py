@@ -67,6 +67,7 @@ gap (a crashed game's cleanup is skipped, same as its history).
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 from typing import Dict, Optional
@@ -93,6 +94,7 @@ from server.redis.presence import Presence
 from server.redis.room_shard_index import RoomShardIndex
 from server.redis.rooms import RedisRoomRegistry
 from server.rooms import RoomError
+from server.server_config import ROOM_RECONCILE_INTERVAL_S
 from tls_config import get_server_ssl_context
 
 _logger = logging.getLogger(__name__)
@@ -480,6 +482,54 @@ async def _on_game_finished(rooms: RedisRoomRegistry, room_shard_index: RoomShar
         room_shard_index.remove(event.room_id)
 
 
+# One sweep's worth of _reconcile_started_rooms's own logic, split out so
+# it's callable (and unit-testable) without going through that function's
+# infinite sleep loop. Returns the room_ids still missing a shard this pass
+# - next call's own `suspected` argument.
+async def _reconcile_started_rooms_once(rooms: RedisRoomRegistry, room_shard_index: RoomShardIndex, suspected: set) -> set:
+    still_missing = set()
+    for room_id in rooms.started_room_ids():
+        if room_shard_index.get(room_id) is not None:
+            continue
+        still_missing.add(room_id)
+        if room_id in suspected:
+            room_id_ctx.set(room_id)
+            # Isolated per room_id, not just per sweep: a transient failure
+            # closing one suspected room must not also skip every other
+            # room_id still to be visited this pass, nor skip the
+            # still_missing this function returns (which would otherwise
+            # leave every room this pass did reach stuck re-suspected next
+            # interval instead of, at worst, this one room's own closure
+            # being retried).
+            try:
+                rooms.close(room_id)
+                _logger.info(
+                    "reconciliation closed room %s - no shard owns it, and its game.finished was never delivered",
+                    room_id,
+                )
+            except Exception:
+                _logger.exception("failed to close room %s during reconciliation - will retry next interval", room_id)
+    return still_missing
+
+
+async def _reconcile_started_rooms(rooms: RedisRoomRegistry, room_shard_index: RoomShardIndex) -> None:
+    # A room seen with no RoomShardIndex owner is only actually closed once
+    # it's been seen that way on two consecutive sweeps, not the first time
+    # - a room that only just started can briefly have no shard yet
+    # (services/game_allocator/main.py hasn't finished allocating one), and
+    # that handoff should never come anywhere near taking a whole
+    # ROOM_RECONCILE_INTERVAL_S. Requiring two consecutive misses turns "no
+    # shard this instant" into "no shard for a whole sweep interval" before
+    # this ever closes a room that's actually still being set up.
+    suspected: set = set()
+    while True:
+        await asyncio.sleep(ROOM_RECONCILE_INTERVAL_S)
+        try:
+            suspected = await _reconcile_started_rooms_once(rooms, room_shard_index, suspected)
+        except Exception:
+            _logger.exception("room reconciliation sweep failed - will retry next interval")
+
+
 async def _on_startup(app: web.Application) -> None:
     from server.nats.client import connect as connect_nats
 
@@ -494,9 +544,16 @@ async def _on_startup(app: web.Application) -> None:
         await _on_game_finished(rooms, room_shard_index, msg)
 
     app["game_finished_sub"] = await nats_connection.subscribe(GameFinished.SUBJECT, cb=_on_message)
+    # Backstop for the fact that the subscription above is the *only* other
+    # cleanup a started room ever gets, and depends on a publish that can
+    # fail permanently (see _reconcile_started_rooms's own docstring).
+    app["room_reconcile_task"] = asyncio.create_task(_reconcile_started_rooms(rooms, room_shard_index))
 
 
 async def _on_cleanup(app: web.Application) -> None:
+    app["room_reconcile_task"].cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await app["room_reconcile_task"]
     await app["game_finished_sub"].unsubscribe()
     await app["nats_connection"].close()
 
@@ -600,11 +657,11 @@ def build_app() -> web.Application:
 def main() -> None:  # pragma: no cover
     configure_logging()
     port = int(os.environ.get("API_GATEWAY_PORT", 8080))
-    # SSL_CERT_FILE/SSL_KEY_FILE both unset (the default) keeps today's
+    # KFCHESS_SSL_CERT_FILE/KFCHESS_SSL_KEY_FILE both unset (the default) keeps today's
     # plaintext http:// behavior - see tls_config.py's own docstring. This
     # is the other public-facing listener (Server_Design.md §3's edge
     # tier, alongside ws-gateway) real clients speak REST to directly.
-    ssl_context = get_server_ssl_context(os.environ.get("SSL_CERT_FILE"), os.environ.get("SSL_KEY_FILE"))
+    ssl_context = get_server_ssl_context(os.environ.get("KFCHESS_SSL_CERT_FILE"), os.environ.get("KFCHESS_SSL_KEY_FILE"))
     web.run_app(build_app(), host="0.0.0.0", port=port, ssl_context=ssl_context)
 
 

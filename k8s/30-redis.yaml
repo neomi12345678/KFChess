@@ -50,6 +50,20 @@ spec:
               command: ["redis-cli", "ping"]
             initialDelaySeconds: 10
             periodSeconds: 10
+          # Every other Deployment/StatefulSet in this manifest set (see
+          # 50/51/52/60/61/70) already sets these - this single instance is
+          # what every stateless role's own BusySet/matchmaking-queue/
+          # presence/lease calls depend on, so it's the last place to leave
+          # unbounded and the first candidate for eviction under node
+          # pressure otherwise (BestEffort/Burstable QoS with no requests
+          # set at all).
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
           volumeMounts:
             - name: data
               mountPath: /data

@@ -136,8 +136,21 @@ class NetworkGameClient:
     ):
         self._incoming: "queue.Queue[object]" = queue.Queue()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # Set by _run the instant the background thread starts - lets a
+        # connect-timeout below cancel the still-pending connect attempt
+        # instead of leaving it (and the thread blocked inside it) running
+        # forever with no reference anything could ever cancel it through,
+        # since this constructor is about to raise and never hand the
+        # caller an object to call close() on.
+        self._connect_task: Optional["asyncio.Task"] = None
         self._websocket = None
         self._connected = threading.Event()
+        # Set once the background thread's receive loop exits for any reason
+        # (server closed the socket, the network dropped, ...) - the GUI
+        # frame loop (play_online.py) has no other way to learn the
+        # connection is gone, since poll_messages() just silently starts
+        # returning an empty list forever otherwise. See is_connected().
+        self._connection_lost = threading.Event()
         self._connect_error: Optional[BaseException] = None
         self._username: Optional[str] = None
         # The session token login() captures from a successful LoginAckMessage
@@ -157,17 +170,34 @@ class NetworkGameClient:
         self._thread.start()
 
         if not self._connected.wait(timeout=connect_timeout):
+            # Cancels the still-pending websockets.connect() (see _run) -
+            # without this, a host that never completes or fails the
+            # handshake (firewalled, silently dropping the TCP connection)
+            # leaves the background thread blocked inside it indefinitely,
+            # even though this constructor is about to raise and this
+            # half-built client is never returned to anything that could
+            # call close() on it later.
+            if self._loop is not None and self._connect_task is not None:
+                self._loop.call_soon_threadsafe(self._connect_task.cancel)
             raise NetworkClientError(f"timed out connecting to {self._ws_scheme}://{host}:{port}")
         if self._connect_error is not None:
             raise NetworkClientError(f"could not connect to {self._ws_scheme}://{host}:{port}") from self._connect_error
 
     # Runs entirely on the background thread - owns the event loop and the
-    # real websocket connection for this client's whole lifetime.
+    # real websocket connection for this client's whole lifetime. Runs
+    # _connect_and_receive as an explicit Task (not just
+    # run_until_complete(coroutine)) so __init__'s own connect-timeout
+    # branch has something to actually cancel - a bare coroutine handed to
+    # run_until_complete has no handle another thread could reach in to
+    # stop early.
     def _run(self, host: str, port: int) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        self._connect_task = self._loop.create_task(self._connect_and_receive(host, port))
         try:
-            self._loop.run_until_complete(self._connect_and_receive(host, port))
+            self._loop.run_until_complete(self._connect_task)
+        except asyncio.CancelledError:
+            pass
         finally:
             self._loop.close()
 
@@ -182,9 +212,33 @@ class NetworkGameClient:
         self._connected.set()
         try:
             async for message in self._websocket:
-                self._incoming.put(decode_incoming(message))
+                # One malformed/unrecognized-shape message (a recognized
+                # "type" tag with a missing/mistyped field, or plain garbage
+                # that isn't even valid JSON) must not take the whole
+                # receive loop down with it - that would silently orphan
+                # this connection exactly like a real disconnect, just from
+                # a cause the server-side fix for the same class of bug
+                # (see server/ws_server.py's _handle_message) doesn't cover.
+                try:
+                    self._incoming.put(decode_incoming(message))
+                except Exception as error:
+                    print(f"NetworkGameClient: ignoring malformed message: {error}")
         except websockets.exceptions.ConnectionClosed:
             pass
+        except Exception as error:
+            # Anything else the transport can raise (a reset socket, a TLS
+            # error mid-stream, ...) ends the receive loop the same way a
+            # clean disconnect does - logged here instead of propagating
+            # out of _run and becoming an unhandled-exception-in-a-thread
+            # warning nobody is watching for.
+            print(f"NetworkGameClient: receive loop ending after a transport error: {error}")
+        finally:
+            # However this loop ended - a clean ConnectionClosed, or the
+            # socket dying some other way - the websocket is no longer
+            # usable. Clearing it (rather than leaving a dead reference
+            # behind) is what makes close()'s own guard below correct.
+            self._websocket = None
+            self._connection_lost.set()
 
     # Thread-safe: called from the GUI thread, actually sends on the
     # background thread's own event loop. Fire-and-forget by design (the GUI
@@ -201,6 +255,14 @@ class NetworkGameClient:
         error = future.exception()
         if error is not None:
             print(f"NetworkGameClient: failed to send command: {error}")
+
+    # True until the background thread's receive loop has ended for any
+    # reason. A caller polling this every frame (see play_online.py) is the
+    # only way to learn the connection died - poll_messages() alone can't
+    # tell "nothing new arrived this frame" apart from "nothing will ever
+    # arrive again", since both drain to an empty list.
+    def is_connected(self) -> bool:
+        return not self._connection_lost.is_set()
 
     # Non-blocking - called once per GUI frame (see play_online.py) to
     # drain whatever arrived since the last poll, in order. Each item is
@@ -378,6 +440,15 @@ class NetworkGameClient:
                 )
 
     def close(self) -> None:
-        if self._websocket is not None and self._loop is not None:
-            asyncio.run_coroutine_threadsafe(self._websocket.close(), self._loop)
+        # self._websocket/_loop being non-None is necessary but not
+        # sufficient - the receive loop may have already ended (server
+        # disconnect, a transport error) and closed the loop out from under
+        # us between that check and this call. run_coroutine_threadsafe
+        # raises RuntimeError synchronously in that case; there is nothing
+        # left to close, so that's a no-op here, not a crash for the caller.
+        if self._websocket is not None and self._loop is not None and not self._loop.is_closed():
+            try:
+                asyncio.run_coroutine_threadsafe(self._websocket.close(), self._loop)
+            except RuntimeError:
+                pass
         self._thread.join(timeout=5.0)

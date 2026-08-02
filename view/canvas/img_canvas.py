@@ -24,7 +24,8 @@ _COOLDOWN_BAR_HEIGHT_FRAC = 0.1
 _PANEL_FILL_COLOR = (20, 20, 20)
 _HIGHLIGHT_COLOR = (0, 255, 255)  # gold - matches view/renderer.py's own _GOLD
 _HIGHLIGHT_ALPHA = 0.35
-_COOLDOWN_BAR_COLOR = (0, 0, 255)  # red
+_COOLDOWN_BAR_COLOR = (0, 0, 255)  # bright red - still able to act/defend
+_COOLDOWN_REST_COLOR = (0, 0, 130)  # dull red - unavailable, but no longer defending
 _TEXT_COLOR = (255, 255, 255, 255)
 _DEFAULT_FONT_SIZE = 1.0
 
@@ -136,12 +137,15 @@ class ImgCanvas:
     # *center* in pixels before calling here, but Img.draw_on takes a
     # top-left corner - shift by half the sprite size to compensate.
     #
-    # key is "{piece_id}:{color}:{kind}:{state}" (see view/renderer.py) - the
-    # id lets SpriteAnimator track how long this specific piece has been in
-    # its current state, so its animation frame advances independently of
-    # every other piece on the board.
-    def draw_image(self, key: str, x: int, y: int) -> None:
-        piece_id, color, kind, state = key.split(":")
+    # piece_id lets SpriteAnimator track how long this specific piece has
+    # been in its current state, so its animation frame advances
+    # independently of every other piece on the board. Four explicit
+    # fields, not one colon-joined key string (view/renderer.py used to
+    # build "{piece_id}:{color}:{kind}:{state}" just to have this method
+    # split it back apart) - nothing enforced that the two sides agreed on
+    # field order/count beyond both happening to be right, and a piece_id
+    # containing ":" would have silently corrupted the split.
+    def draw_image(self, piece_id: str, color: str, kind: str, state: str, x: int, y: int) -> None:
         self._piece_ids_drawn.add(piece_id)
         code = piece_config.piece_code(kind, color)
         path = self._animator.sprite_path(piece_id, code, state)
@@ -189,19 +193,53 @@ class ImgCanvas:
     # fraction 1.0 draws it at its full (short) length, fraction 0.0 draws
     # nothing. Solid fill, not alpha-blended like highlight_cell above: this
     # is meant to read as a clock/timer, not a tint on the square
-    # underneath it. color is BGR, like every other color this class takes
-    # (cv2's own convention, see debug_mouse.py's HOVER_COLOR/CLICK_COLOR
-    # for the same (B, G, R) ordering) - defaults to red.
-    def draw_cooldown_bar(self, row: int, col: int, fraction: float, color=_COOLDOWN_BAR_COLOR) -> None:
+    # underneath it. color/rest_color are BGR, like every other color this
+    # class takes (cv2's own convention, see debug_mouse.py's HOVER_COLOR/
+    # CLICK_COLOR for the same (B, G, R) ordering).
+    #
+    # defend_fraction (see view/renderer.py's own docstring for where it
+    # comes from) splits the bar into two segments instead of one solid
+    # color - without it, a jumping piece's cooldown bar looks identical
+    # whether it can still reverse-capture an attacker landing on its
+    # square or already lost that ability and is merely finishing its
+    # short_rest, which is exactly what made that outcome look like it
+    # "randomly" worked or didn't depending on when the attack actually
+    # landed. The bar depletes from its outer edge inward toward x (this
+    # class's own existing behavior - bar_width shrinks toward 0, x stays
+    # fixed), so the segment nearest x is the *last* to disappear - that's
+    # the segment reserved for "no longer defending, just finishing up"
+    # (rest_color), sized to (1 - defend_fraction) of the bar's full
+    # length; whatever's left beyond it (only present while bar_width is
+    # still bigger than that reserved segment - i.e., genuinely early
+    # enough to still be defending) is drawn in the defending color
+    # instead. defend_fraction=1.0 (the default) reserves nothing, so the
+    # whole bar stays one solid color - unchanged from before this existed,
+    # and exactly right for a piece resting after an ordinary move, which
+    # never had a defense window to distinguish from its cooldown at all.
+    def draw_cooldown_bar(
+        self,
+        row: int,
+        col: int,
+        fraction: float,
+        defend_fraction: float = 1.0,
+        color=_COOLDOWN_BAR_COLOR,
+        rest_color=_COOLDOWN_REST_COLOR,
+    ) -> None:
         fraction = max(0.0, min(1.0, fraction))
         if fraction <= 0.0:
             return
+        defend_fraction = max(0.0, min(1.0, defend_fraction))
         bar_height = max(1, round(self._cell_size * _COOLDOWN_BAR_HEIGHT_FRAC))
         full_bar_width = round(self._cell_size * _COOLDOWN_BAR_LENGTH_FRAC)
         bar_width = round(full_bar_width * fraction)
+        rest_width = round(full_bar_width * (1.0 - defend_fraction))
+        rest_segment_width = min(bar_width, rest_width)
         x = self._board_offset_x + col * self._cell_size + (self._cell_size - full_bar_width) // 2
         y = row * self._cell_size + self._cell_size - bar_height
-        self._frame.img[y:y + bar_height, x:x + bar_width, :3] = color
+        if rest_segment_width > 0:
+            self._frame.img[y:y + bar_height, x:x + rest_segment_width, :3] = rest_color
+        if bar_width > rest_segment_width:
+            self._frame.img[y:y + bar_height, x + rest_segment_width:x + bar_width, :3] = color
 
     # cv2.putText positions (x, y) at the text's baseline, not a top-left
     # corner - without compensating, y=0 (as Renderer's "Game Over" message
